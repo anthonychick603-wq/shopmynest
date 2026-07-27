@@ -1,0 +1,57 @@
+<!-- wp:group {"tagName":"header","metadata":{"name":"Header Container"},"align":"full","className":"mynest-header","style":{"spacing":{"padding":{"top":"0","bottom":"0"},"margin":{"top":"0","bottom":"0"}}},"layout":{"type":"constrained"}} -->
+<div class="wp-block-group alignfull mynest-header" style="margin-top:0;margin-bottom:0;padding-top:0;padding-bottom:0">
+
+	<!-- wp:group {"metadata":{"name":"Announcement Bar"},"align":"full","className":"mynest-announcement-bar","style":{"spacing":{"padding":{"top":"var:preset|spacing|20","bottom":"var:preset|spacing|20"},"margin":{"top":"0","bottom":"0"}}},"layout":{"type":"constrained"}} -->
+	<div class="wp-block-group alignfull mynest-announcement-bar" style="margin-top:0;margin-bottom:0;padding-top:var(--wp--preset--spacing--20);padding-bottom:var(--wp--preset--spacing--20)">
+		<!-- wp:paragraph {"align":"center","fontSize":"small"} -->
+		<p class="has-text-align-center has-small-font-size">Handmade by real makers &middot; Thoughtful buyers</p>
+		<!-- /wp:paragraph -->
+	</div>
+	<!-- /wp:group -->
+
+	<!-- wp:group {"metadata":{"name":"Main Bar"},"align":"wide","className":"mynest-header-bar mynest-header-search-row","style":{"spacing":{"margin":{"top":"0","bottom":"0"},"padding":{"top":"var:preset|spacing|30","bottom":"var:preset|spacing|30"}}},"layout":{"type":"flex","flexWrap":"nowrap","justifyContent":"space-between"}} -->
+	<div class="wp-block-group alignwide mynest-header-bar mynest-header-search-row" style="margin-top:0;margin-bottom:0;padding-top:var(--wp--preset--spacing--30);padding-bottom:var(--wp--preset--spacing--30)">
+
+		<!-- wp:group {"metadata":{"name":"Logo + Title"},"style":{"spacing":{"blockGap":"var:preset|spacing|20"}},"layout":{"type":"flex","flexWrap":"nowrap"}} -->
+		<div class="wp-block-group">
+			<!-- wp:site-logo {"width":40} /-->
+
+			<!-- wp:site-title {"level":0,"fontSize":"medium"} /-->
+		</div>
+		<!-- /wp:group -->
+
+		<!-- wp:search {"showLabel":false,"placeholder":"Search handmade goods…","buttonText":"Search","buttonPosition":"button-inside","buttonUseIcon":true,"align":"center"} /-->
+
+		<!-- wp:group {"metadata":{"name":"Header Actions"},"className":"mynest-header-actions","style":{"spacing":{"blockGap":"var:preset|spacing|30"}},"layout":{"type":"flex","flexWrap":"nowrap"}} -->
+		<div class="wp-block-group mynest-header-actions">
+			<!-- wp:woocommerce/customer-account {"displayStyle":"icon_only"} /-->
+
+			<!-- wp:woocommerce/mini-cart /-->
+		</div>
+		<!-- /wp:group -->
+	</div>
+	<!-- /wp:group -->
+
+	<!-- wp:group {"metadata":{"name":"Navigation Row"},"align":"wide","style":{"spacing":{"margin":{"top":"0","bottom":"0"},"padding":{"top":"var:preset|spacing|20","bottom":"var:preset|spacing|20"}}},"layout":{"type":"flex","flexWrap":"nowrap","justifyContent":"space-between"}} -->
+	<div class="wp-block-group alignwide" style="margin-top:0;margin-bottom:0;padding-top:var(--wp--preset--spacing--20);padding-bottom:var(--wp--preset--spacing--20)">
+		<!-- wp:navigation {"overlayMenu":"never","className":"order-1 md:order-0"} -->
+		<!-- wp:navigation-link {"label":"Shop","url":"/shop/","kind":"custom"} /-->
+
+		<!-- wp:navigation-submenu {"label":"Categories","url":"/shop/","kind":"custom"} -->
+		<!-- wp:navigation-link {"label":"Home Decor","url":"/product-category/home-decor/","kind":"custom"} /-->
+
+		<!-- wp:navigation-link {"label":"Jewelry","url":"/product-category/jewelry/","kind":"custom"} /-->
+
+		<!-- wp:navigation-link {"label":"Baby &amp; Children","url":"/product-category/baby-children/","kind":"custom"} /-->
+
+		<!-- wp:navigation-link {"label":"Art &amp; Prints","url":"/product-category/art-prints/","kind":"custom"} /-->
+		<!-- /wp:navigation-submenu -->
+
+		<!-- wp:navigation-link {"label":"Sell on MyNest","url":"/seller-portal/","kind":"custom"} /-->
+
+		<!-- wp:navigation-link {"label":"About","url":"/about/","kind":"custom"} /-->
+		<!-- /wp:navigation -->
+	</div>
+	<!-- /wp:group -->
+</div>
+<!-- /wp:group -->

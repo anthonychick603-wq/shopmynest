@@ -1,0 +1,32 @@
+=== ShopMyNest Branding ===
+Contributors: shopmynest
+Tags: branding, logo, favicon, login, woocommerce
+Requires at least: 6.0
+Tested up to: 6.6
+Requires PHP: 7.4
+Stable tag: 1.0.0
+License: GPLv2 or later
+
+Applies the ShopMyNest logo and brand identity across WordPress + WooCommerce.
+
+== Description ==
+
+Drops in the ShopMyNest nest-and-bird logo across your site with zero configuration:
+
+* Favicons (16/32/48/96/180/192/512) and Apple touch icon.
+* Custom wp-admin login screen with ShopMyNest logo and warm brand palette.
+* Admin bar icon replacement.
+* WooCommerce transactional email header + email color defaults.
+* `[shopmynest_logo size="300"]` shortcode.
+* Fallback site icon via the `get_site_icon_url` filter.
+
+== Installation ==
+
+1. Upload the `shopmynest-branding` folder to `/wp-content/plugins/` **or** upload the zip in **Plugins → Add New → Upload Plugin**.
+2. Activate through the **Plugins** menu.
+3. Visit **Settings → ShopMyNest** to preview.
+
+== Changelog ==
+
+= 1.0.0 =
+* Initial release.
