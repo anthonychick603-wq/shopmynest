@@ -1,0 +1,31 @@
+/*
+ * MyNest Trust & Growth Suite — wp-admin styles.
+ * Plain CSS, no framework/build step.
+ */
+
+.tnm-trust-admin-wrap .tnm-trust-admin-dispute-card {
+	background: #fff;
+	border: 1px solid #ccd0d4;
+	border-radius: 4px;
+	padding: 1em 1.5em;
+	margin: 1em 0;
+	max-width: 800px;
+}
+
+.tnm-trust-admin-dispute-card h3 {
+	margin-top: 0;
+}
+
+.tnm-trust-admin-dispute-card form label {
+	display: block;
+	margin: 0.75em 0 0.25em;
+	font-weight: 600;
+}
+
+.tnm-trust-admin-dispute-card form select,
+.tnm-trust-admin-dispute-card form input,
+.tnm-trust-admin-dispute-card form textarea {
+	display: block;
+	max-width: 420px;
+	margin-bottom: 0.5em;
+}

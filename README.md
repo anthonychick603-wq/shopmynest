@@ -12,6 +12,7 @@ wordpress-plugin/
   mynest-mobile-app-bridge/         REST endpoints consumed by the mobile app (community blog, /auth/me/permissions)
   shopmynest-branding/              Site-wide logo, favicons, login screen, admin bar, WooCommerce email header
   shopmynest-legal-pages/           /terms, /privacy, /refunds, /shipping — seeded on activation
+  mynest-trust-suite/               Disputes, favorites, offers, boosts, seller badges, Pro Seller tier
 wordpress-theme/
   mynest-marketplace-child/         Etsy + Vinted-inspired child theme (parent: Assembler)
 ```
@@ -27,10 +28,7 @@ Alongside each source directory is a built `.zip` matching the version currently
 | shopmynest-branding           | 1.0.0        | 1.0.0          | In sync |
 | shopmynest-legal-pages        | 1.0.0        | 1.0.0          | In sync |
 | mynest-marketplace-child      | 1.0.3        | not tracked    | Confirm theme is uploaded |
-
-## Known gaps
-
-- **mynest-trust-suite** (server v1.1.0) — WordPress plugin providing buyer disputes, seller badges, favorites, bundles/offers, structured attributes, listing boosts, Pro Seller tier. Source not yet in this repo. Locate the plugin ZIP or source tree on the maintainer's laptop and add under `wordpress-plugin/mynest-trust-suite/`.
+| mynest-trust-suite            | 1.1.0        | 1.1.0          | In sync |
 
 ## Deploy
 
