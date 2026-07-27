@@ -89,7 +89,7 @@ final class TNM_Shortcodes {
                         'accept_terms' => ! empty( $_POST['accept_terms'] ),
                     )
                 );
-                $message = is_wp_error( $result ) ? '<div class="tnm-notice tnm-error">' . esc_html( $result->get_error_message() ) . '</div>' : '<div class="tnm-notice tnm-success">Application submitted. The Nest team will review it.</div>';
+                $message = is_wp_error( $result ) ? '<div class="tnm-notice tnm-error">' . esc_html( $result->get_error_message() ) . '</div>' : sprintf( '<div class="tnm-notice tnm-success">Application submitted. The %s team will review it.</div>', esc_html( get_bloginfo( 'name' ) ) );
             }
         }
 
@@ -259,7 +259,7 @@ final class TNM_Shortcodes {
                             <p><?php echo ! empty( $label_settings['test_mode'] ) ? 'Test mode is enabled. Live-token label purchases are blocked.' : 'Live mode is enabled. Purchasing a label can charge the connected Shippo account.'; ?></p>
                         <?php else : ?>
                             <p class="tnm-connection-status is-disconnected"><strong>Not configured</strong></p>
-                            <p>An administrator must add a Shippo API token under <strong>The Nest → Shipping Labels</strong>.</p>
+                            <p>An administrator must add a Shippo API token under <strong><?php echo esc_html( get_bloginfo( 'name' ) ); ?> → Shipping Labels</strong>.</p>
                         <?php endif; ?>
                         <h3>How label purchasing works</h3>
                         <ol class="tnm-steps">
@@ -707,7 +707,7 @@ final class TNM_Shortcodes {
         ob_start();
         ?>
         <div class="tnm-feed">
-            <header class="tnm-feed-header"><h1>The Nest</h1><p><?php echo esc_html( 'following' === $feed['mode'] ? 'Updates from shops you follow' : 'Discover makers, artisans, and new listings' ); ?></p></header>
+            <header class="tnm-feed-header"><h1><?php echo esc_html( get_bloginfo( 'name' ) ); ?></h1><p><?php echo esc_html( 'following' === $feed['mode'] ? 'Updates from shops you follow' : 'Discover makers, artisans, and new listings' ); ?></p></header>
             <?php if ( ! $feed['items'] ) : ?><div class="tnm-card"><p>No posts yet. Browse the shop and follow sellers to personalize your feed.</p></div><?php endif; ?>
             <?php
             foreach ( $feed['items'] as $item ) :

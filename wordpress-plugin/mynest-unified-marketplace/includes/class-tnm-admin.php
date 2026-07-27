@@ -41,7 +41,7 @@ final class TNM_Admin {
         }
         ?>
         <div class="wrap">
-            <h1>The Nest Marketplace</h1>
+            <h1><?php echo esc_html( get_bloginfo( 'name' ) . ' Marketplace' ); ?></h1>
             <p>Marketplace operations, seller activity, earnings, and mobile app integration.</p>
             <?php if ( is_array( $notice ) && ! empty( $notice['message'] ) ) : ?>
                 <div class="notice notice-<?php echo 'success' === ( $notice['type'] ?? '' ) ? 'success' : 'error'; ?> is-dismissible"><p><?php echo esc_html( $notice['message'] ); ?></p></div>
@@ -96,7 +96,7 @@ final class TNM_Admin {
         $settings = get_option( 'tnm_settings', array() );
         ?>
         <div class="wrap">
-            <h1>The Nest Settings</h1>
+            <h1><?php echo esc_html( get_bloginfo( 'name' ) . ' Settings' ); ?></h1>
             <?php if ( isset( $_GET['updated'] ) ) : ?><div class="notice notice-success is-dismissible"><p>Settings saved.</p></div><?php endif; ?>
             <form action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" method="post">
                 <?php wp_nonce_field( 'tnm_save_settings' ); ?>
@@ -243,7 +243,7 @@ final class TNM_Admin {
 
     public static function api(): void {
         ?>
-        <div class="wrap"><h1>The Nest App API</h1>
+        <div class="wrap"><h1><?php echo esc_html( get_bloginfo( 'name' ) . ' App API' ); ?></h1>
             <p>Base URL: <code><?php echo esc_html( rest_url( 'the-nest/v1/' ) ); ?></code></p>
             <p>The app signs in through <code>POST auth/login</code> and sends the returned token in <code>Authorization: Bearer TOKEN</code>. HTTPS is required for production.</p>
             <table class="widefat striped" style="max-width:1100px"><thead><tr><th>Area</th><th>Endpoints</th></tr></thead><tbody>

@@ -77,8 +77,8 @@ function mnu_labels_page(): void {
     $live_key_in_test_mode = ! empty( $settings['test_mode'] ) && str_starts_with( $settings['shippo_token'], 'shippo_live_' );
     ?>
     <div class="wrap">
-        <h1>The Nest Shipping Labels</h1>
-        <p>Configure the Shippo account used to rate shipments and purchase seller labels. Start with a Shippo test token. You can also configure the same token under <a href="<?php echo esc_url( admin_url( 'admin.php?page=tnm-settings' ) ); ?>">The Nest → Settings</a>.</p>
+        <h1><?php echo esc_html( get_bloginfo( 'name' ) . ' Shipping Labels' ); ?></h1>
+        <p>Configure the Shippo account used to rate shipments and purchase seller labels. Start with a Shippo test token. You can also configure the same token under <a href="<?php echo esc_url( admin_url( 'admin.php?page=tnm-settings' ) ); ?>"><?php echo esc_html( get_bloginfo( 'name' ) ); ?> → Settings</a>.</p>
         <?php if ( $live_key_in_test_mode ) : ?>
             <div class="notice notice-warning inline"><p>A live Shippo token is saved while test mode is enabled. Label purchases are blocked until you use a test token or intentionally disable test mode.</p></div>
         <?php endif; ?>
@@ -240,7 +240,7 @@ function mnu_labels_shippo_error_message( mixed $data ): string {
 function mnu_labels_shippo_api_request( string $method, string $path, array $body = array() ): array|WP_Error {
     $settings = mnu_labels_settings();
     if ( empty( $settings['shippo_token'] ) ) {
-        return new WP_Error( 'shippo_not_configured', 'Shippo API token is missing. An administrator must configure it under The Nest → Shipping Labels.', array( 'status' => 503 ) );
+        return new WP_Error( 'shippo_not_configured', sprintf( 'Shippo API token is missing. An administrator must configure it under %s → Shipping Labels.', get_bloginfo( 'name' ) ), array( 'status' => 503 ) );
     }
 
     $args = array(

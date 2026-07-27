@@ -34,7 +34,7 @@ final class MNU_System {
             return;
         }
         if ( self::$backend_conflict ) {
-            echo '<div class="notice notice-error"><p><strong>MyNest Unified Marketplace:</strong> Another The Nest Marketplace backend is active. Deactivate the older backend before using the unified marketplace engine.</p></div>';
+            echo '<div class="notice notice-error"><p><strong>MyNest Unified Marketplace:</strong> Another MyNest marketplace backend is active. Deactivate the older backend before using the unified marketplace engine.</p></div>';
             return;
         }
     }
@@ -113,8 +113,8 @@ final class MNU_System {
             array( 'label' => 'Marketplace tables', 'ok' => ! $missing_tables, 'detail' => $missing_tables ? 'Missing: ' . implode( ', ', $missing_tables ) : 'All six data tables exist.' ),
             array( 'label' => 'Marketplace pages', 'ok' => ! $missing_pages, 'detail' => $missing_pages ? 'Missing: ' . implode( ', ', $missing_pages ) : 'Required pages are present.' ),
             array( 'label' => 'Seller roles', 'ok' => (bool) get_role( 'tnm_seller' ) && (bool) get_role( 'mynest_seller' ), 'detail' => 'Legacy and unified seller roles are supported without replacing administrator roles.' ),
-            array( 'label' => 'Native Stripe checkout', 'ok' => ! empty( $settings['publishable_key'] ) && ! empty( $settings['secret_key'] ), 'detail' => ! empty( $settings['publishable_key'] ) && ! empty( $settings['secret_key'] ) ? 'Stripe keys are configured.' : 'Configure keys under The Nest → Native Checkout, or use the active WooCommerce Stripe settings.' ),
-            array( 'label' => 'Shippo labels', 'ok' => ! empty( $shippo['shippo_token'] ), 'detail' => ! empty( $shippo['shippo_token'] ) ? 'Shippo token is configured.' : 'Configure Shippo under The Nest → Shipping Labels or Operations.' ),
+            array( 'label' => 'Native Stripe checkout', 'ok' => ! empty( $settings['publishable_key'] ) && ! empty( $settings['secret_key'] ), 'detail' => ! empty( $settings['publishable_key'] ) && ! empty( $settings['secret_key'] ) ? 'Stripe keys are configured.' : sprintf( 'Configure keys under %s → Native Checkout, or use the active WooCommerce Stripe settings.', get_bloginfo( 'name' ) ) ),
+            array( 'label' => 'Shippo labels', 'ok' => ! empty( $shippo['shippo_token'] ), 'detail' => ! empty( $shippo['shippo_token'] ) ? 'Shippo token is configured.' : sprintf( 'Configure Shippo under %s → Shipping Labels or Operations.', get_bloginfo( 'name' ) ) ),
             array( 'label' => 'Automatic payouts', 'ok' => 'yes' !== tnm_get_option( 'automatic_payouts', 'no' ), 'detail' => 'yes' === tnm_get_option( 'automatic_payouts', 'no' ) ? 'Enabled — verify sandbox and payout controls before live use.' : 'Disabled, which is safest during cutover.' ),
         );
     }

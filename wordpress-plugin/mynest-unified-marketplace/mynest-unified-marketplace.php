@@ -189,7 +189,7 @@ final class MNU_Plugin {
 		if ( ! current_user_can( 'activate_plugins' ) ) {
 			return;
 		}
-		echo '<div class="notice notice-error"><p><strong>MyNest Unified Marketplace did not start:</strong> another old MyNest/The Nest marketplace backend is active. Leave this plugin and WooCommerce active, then deactivate the other custom marketplace plugin.</p></div>';
+		echo '<div class="notice notice-error"><p><strong>MyNest Unified Marketplace did not start:</strong> another old MyNest marketplace backend is active. Leave this plugin and WooCommerce active, then deactivate the other custom marketplace plugin.</p></div>';
 	}
 }
 

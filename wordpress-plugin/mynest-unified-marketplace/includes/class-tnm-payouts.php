@@ -188,8 +188,8 @@ final class TNM_Payouts {
         $body = array(
             'sender_batch_header' => array(
                 'sender_batch_id' => 'tnm-' . $payout_id . '-' . wp_generate_uuid4(),
-                'email_subject'   => 'You received a payout from The Nest',
-                'email_message'   => 'Your seller earnings payout from The Nest has been sent.',
+                'email_subject'   => sprintf( 'You received a payout from %s', get_bloginfo( 'name' ) ),
+                'email_message'   => sprintf( 'Your seller earnings payout from %s has been sent.', get_bloginfo( 'name' ) ),
             ),
             'items' => array(
                 array(
@@ -199,7 +199,7 @@ final class TNM_Payouts {
                         'currency' => $payout['currency'],
                     ),
                     'receiver'        => $payout['destination'],
-                    'note'            => 'The Nest seller payout #' . $payout_id,
+                    'note'            => get_bloginfo( 'name' ) . ' seller payout #' . $payout_id,
                     'sender_item_id'  => (string) $payout_id,
                 ),
             ),

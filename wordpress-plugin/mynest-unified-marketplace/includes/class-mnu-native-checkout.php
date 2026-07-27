@@ -84,7 +84,7 @@ function mnu_native_settings_page(): void {
     }
     $settings = mnu_native_get_settings();
     ?>
-    <div class="wrap"><h1>The Nest Native Checkout</h1>
+    <div class="wrap"><h1><?php echo esc_html( get_bloginfo( 'name' ) . ' Native Checkout' ); ?></h1>
         <p>Dedicated keys override the active WooCommerce Stripe Gateway keys. Leave secret fields blank to keep their current values.</p>
         <form method="post"><?php wp_nonce_field( 'save_thenest_native', 'mnu_native_nonce' ); ?>
             <table class="form-table">
@@ -652,7 +652,7 @@ function mnu_native_create_order( int $user_id, array $lines, array $billing, ar
     $order->update_meta_data( '_thenest_shipping_rate_id', $clean_method_id );
     $order->update_meta_data( '_thenest_shipping_label', $clean_title );
     $order->set_payment_method( 'stripe' );
-    $order->set_payment_method_title( 'Card — The Nest app' );
+    $order->set_payment_method_title( 'Card — ' . get_bloginfo( 'name' ) . ' app' );
     if ( $checkout_token ) {
         $order->update_meta_data( '_thenest_checkout_token', $checkout_token );
     }
@@ -949,7 +949,7 @@ function mnu_native_complete( WP_REST_Request $request ): array|WP_Error {
         }
         if ( ! $order->is_paid() ) {
             $order->payment_complete( $intent_id );
-            $order->add_order_note( 'Paid through The Nest native checkout.' );
+            $order->add_order_note( 'Paid through ' . get_bloginfo( 'name' ) . ' native checkout.' );
         }
         return array( 'ok' => true, 'status' => $order->get_status(), 'order_id' => $order->get_id() );
     }
@@ -1019,7 +1019,7 @@ function mnu_native_webhook( WP_REST_Request $request ): array|WP_Error {
             $received_currency = strtolower( sanitize_key( (string) ( $intent['currency'] ?? '' ) ) );
             if ( $expected_amount === $received_amount && $expected_currency === $received_currency ) {
                 $order->payment_complete( sanitize_text_field( (string) $intent['id'] ) );
-                $order->add_order_note( 'Stripe webhook confirmed payment for The Nest native checkout.' );
+                $order->add_order_note( 'Stripe webhook confirmed payment for ' . get_bloginfo( 'name' ) . ' native checkout.' );
             } else {
                 $order->add_order_note( 'Stripe webhook payment was not applied because the amount or currency did not match the order.' );
                 $order->save();

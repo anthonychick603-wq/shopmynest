@@ -123,8 +123,8 @@ final class TNM_Applications {
 
         // Notify/email the applicant only the first time the role is granted.
         if ( $newly_promoted ) {
-            tnm_notify( $user->ID, $reviewer_id, 'application_approved', 'Your seller application was approved', 'Welcome to The Nest. Your seller dashboard is ready.', $application_id, 'tnm_application', tnm_page_url( 'seller_dashboard' ) );
-            wp_mail( $user->user_email, 'Your The Nest seller application was approved', 'Your seller account is active. Sign in to open your Seller Dashboard.' );
+            tnm_notify( $user->ID, $reviewer_id, 'application_approved', 'Your seller application was approved', sprintf( 'Welcome to %s. Your seller dashboard is ready.', get_bloginfo( 'name' ) ), $application_id, 'tnm_application', tnm_page_url( 'seller_dashboard' ) );
+            wp_mail( $user->user_email, sprintf( 'Your %s seller application was approved', get_bloginfo( 'name' ) ), 'Your seller account is active. Sign in to open your Seller Dashboard.' );
         }
         return true;
     }
@@ -156,7 +156,7 @@ final class TNM_Applications {
         $user = get_userdata( (int) $application->post_author );
         if ( $user ) {
             tnm_notify( $user->ID, $reviewer_id, 'application_rejected', 'Seller application update', $reason ?: 'Your application was not approved at this time.', $application_id, 'tnm_application' );
-            wp_mail( $user->user_email, 'Update on your The Nest seller application', $reason ?: 'Your seller application was not approved at this time.' );
+            wp_mail( $user->user_email, sprintf( 'Update on your %s seller application', get_bloginfo( 'name' ) ), $reason ?: 'Your seller application was not approved at this time.' );
         }
         return true;
     }
