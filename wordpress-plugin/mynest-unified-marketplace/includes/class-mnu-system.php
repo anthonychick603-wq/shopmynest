@@ -34,7 +34,7 @@ final class MNU_System {
             return;
         }
         if ( self::$backend_conflict ) {
-            echo '<div class="notice notice-error"><p><strong>MyNest Unified Marketplace:</strong> Another MyNest marketplace backend is active. Deactivate the older backend before using the unified marketplace engine.</p></div>';
+            echo '<div class="notice notice-error"><p><strong>MyNest Unified Marketplace:</strong> Another ' . esc_html( get_bloginfo( 'name' ) ) . ' Marketplace backend is active. Deactivate the older backend before using the unified marketplace engine.</p></div>';
             return;
         }
     }

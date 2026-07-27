@@ -16,6 +16,11 @@ final class TNM_Marketplace {
         add_filter( 'woocommerce_product_get_price', array( __CLASS__, 'normalize_price' ), 20, 2 );
         add_filter( 'woocommerce_product_get_regular_price', array( __CLASS__, 'normalize_price' ), 20, 2 );
         add_filter( 'map_meta_cap', array( __CLASS__, 'protect_products' ), 20, 4 );
+        // Sellers hold edit_products/publish_products, so the generic product REST
+        // controllers would otherwise let a vendor create a listing without going
+        // through create_product() and its Stripe check.
+        add_filter( 'woocommerce_rest_check_permissions', array( __CLASS__, 'block_wc_rest_listing' ), 20, 4 );
+        add_filter( 'rest_pre_insert_product', array( __CLASS__, 'block_core_rest_listing' ), 10, 2 );
         add_action( 'save_post_product', array( __CLASS__, 'stamp_product_seller' ), 20, 3 );
         add_action( 'template_redirect', array( __CLASS__, 'redirect_seller_admin' ) );
         add_action( 'admin_init', array( __CLASS__, 'redirect_seller_wp_admin' ) );
@@ -138,6 +143,30 @@ final class TNM_Marketplace {
             return array( 'do_not_allow' );
         }
         return $caps;
+    }
+
+    /**
+     * @param mixed $permission
+     * @return mixed
+     */
+    public static function block_wc_rest_listing( $permission, string $context, int $object_id, string $post_type ) {
+        if ( true !== $permission || 'create' !== $context || 'product' !== $post_type ) {
+            return $permission;
+        }
+        return tnm_seller_listing_blocked() ? false : $permission;
+    }
+
+    /**
+     * @param mixed $prepared
+     * @return mixed
+     */
+    public static function block_core_rest_listing( $prepared, WP_REST_Request $request ) {
+        // Set only when an existing product is being updated; edits stay allowed,
+        // matching update_product(), which blocks the publish transition instead.
+        if ( ! empty( $request['id'] ) || ! tnm_seller_listing_blocked() ) {
+            return $prepared;
+        }
+        return tnm_json_error( 'stripe_onboarding_required', tnm_seller_listing_blocked_message(), 403 );
     }
 
     public static function stamp_product_seller( int $post_id, WP_Post $post, bool $update ): void {

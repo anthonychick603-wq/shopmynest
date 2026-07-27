@@ -57,6 +57,28 @@ function tnm_is_marketplace_user( int $user_id = 0 ): bool {
     return tnm_is_seller( $user_id ) || tnm_is_admin_or_manager( $user_id );
 }
 
+/**
+ * Whether this user is a vendor who has not yet met the Stripe requirement for
+ * listing products.
+ *
+ * `tnm_stripe_payouts_enabled` user meta (read through MNU_Connect) is the one
+ * source of truth for "Stripe is connected enough to sell"; the mobile app gates
+ * its new-listing screen on the same value via nest-connect/v1/status. Admins and
+ * shop managers are not vendors (tnm_is_seller() already excludes them) and list
+ * on a seller's behalf, so they are never blocked.
+ */
+function tnm_seller_listing_blocked( int $user_id = 0 ): bool {
+    $user_id = $user_id ?: get_current_user_id();
+    if ( ! tnm_is_seller( $user_id ) ) {
+        return false;
+    }
+    return class_exists( 'MNU_Connect' ) && ! MNU_Connect::seller_can_sell( $user_id );
+}
+
+function tnm_seller_listing_blocked_message(): string {
+    return 'Connect your Stripe account before you can list products for sale. Open your seller dashboard to finish Stripe onboarding.';
+}
+
 function tnm_is_admin_or_manager( int $user_id = 0 ): bool {
     $user_id = $user_id ?: get_current_user_id();
     return user_can( $user_id, 'manage_woocommerce' ) || user_can( $user_id, 'manage_options' );
@@ -279,7 +301,35 @@ function tnm_user_avatar_url( int $user_id, int $size = 256 ): string {
     return $custom ?: get_avatar_url( $user_id, array( 'size' => $size ) );
 }
 
+/**
+ * One of not_submitted|pending|approved|rejected. The app keys its seller
+ * onboarding screens off these exact four values.
+ */
+function tnm_seller_application_status( int $user_id ): string {
+    if ( tnm_is_seller( $user_id ) ) {
+        return 'approved';
+    }
+    $ids = get_posts(
+        array(
+            'post_type'        => 'tnm_application',
+            'post_status'      => array( 'pending', 'publish', 'draft' ),
+            'author'           => $user_id,
+            'posts_per_page'   => 1,
+            'orderby'          => 'ID',
+            'order'            => 'DESC',
+            'fields'           => 'ids',
+            'suppress_filters' => false,
+        )
+    );
+    if ( ! $ids ) {
+        return 'not_submitted';
+    }
+    $status = sanitize_key( (string) get_post_meta( (int) $ids[0], '_tnm_status', true ) );
+    return in_array( $status, array( 'pending', 'approved', 'rejected' ), true ) ? $status : 'pending';
+}
+
 function tnm_rest_user_data( WP_User $user ): array {
+    $is_seller = tnm_is_seller( $user->ID );
     return array(
         'id'           => $user->ID,
         'username'     => $user->user_login,
@@ -287,10 +337,14 @@ function tnm_rest_user_data( WP_User $user ): array {
         'display_name' => $user->display_name,
         'avatar'       => tnm_user_avatar_url( $user->ID, 256 ),
         'roles'        => array_values( $user->roles ),
-        'is_seller'    => tnm_is_seller( $user->ID ),
+        'is_seller'    => $is_seller,
         // Mirrors the seller() REST permission gate, so the app only shows
         // seller-only UI to accounts the seller routes will actually accept.
-        'is_approved_seller' => tnm_is_seller( $user->ID ) || tnm_is_admin_or_manager( $user->ID ),
+        'is_approved_seller' => $is_seller || tnm_is_admin_or_manager( $user->ID ),
         'store_name'   => tnm_seller_display_name( $user->ID ),
+        // null, not 0, for non-sellers: the app treats any present value as a
+        // real seller id and would fetch store "0".
+        'seller_id'    => $is_seller ? $user->ID : null,
+        'seller_status' => tnm_seller_application_status( $user->ID ),
     );
 }

@@ -598,6 +598,7 @@ function mnu_labels_store_transaction( WC_Order $order, int $seller_id, array $t
                     'Order shipped',
                     'Your MyNest order #' . $order->get_order_number() . ' has shipped.',
                     array(
+                        'type'      => 'order_shipped',
                         'order_id'  => $order->get_id(),
                         'seller_id' => $seller_id,
                     )
