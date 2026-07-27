@@ -1,0 +1,253 @@
+/*
+ * MyNest Trust & Growth Suite — front-end styles.
+ * Plain CSS, no framework/build step.
+ */
+
+.tnm-trust-panel {
+	max-width: 900px;
+	margin: 1.5em 0;
+	font-size: 15px;
+}
+
+.tnm-trust-notice {
+	padding: 0.75em 1em;
+	background: #f6f3ee;
+	border-left: 4px solid #b08d57;
+	border-radius: 4px;
+}
+
+.tnm-trust-list {
+	margin-top: 1em;
+}
+
+.tnm-trust-dispute-card,
+.tnm-trust-offer-card {
+	border: 1px solid #e0dcd4;
+	border-radius: 8px;
+	padding: 1em;
+	margin-bottom: 1em;
+	background: #fff;
+}
+
+.tnm-trust-dispute-card h4,
+.tnm-trust-offer-card h4 {
+	margin-top: 0;
+}
+
+.tnm-trust-status-pill {
+	display: inline-block;
+	padding: 0.15em 0.6em;
+	border-radius: 999px;
+	font-size: 0.8em;
+	font-weight: 600;
+	background: #eee;
+	color: #444;
+	text-transform: uppercase;
+	letter-spacing: 0.02em;
+}
+
+.tnm-trust-status-pill.status-resolved_refund,
+.tnm-trust-status-pill.status-resolved_partial,
+.tnm-trust-status-pill.status-accepted {
+	background: #dff2e6;
+	color: #1a7f4e;
+}
+
+.tnm-trust-status-pill.status-escalated,
+.tnm-trust-status-pill.status-declined,
+.tnm-trust-status-pill.status-expired {
+	background: #fbe1e1;
+	color: #a02c2c;
+}
+
+.tnm-trust-input,
+.tnm-trust-dispute-form textarea,
+.tnm-trust-dispute-form select,
+.tnm-trust-dispute-form input {
+	display: block;
+	width: 100%;
+	max-width: 420px;
+	margin: 0.25em 0 0.75em;
+	padding: 0.5em;
+	border: 1px solid #ccc;
+	border-radius: 4px;
+	font-size: 14px;
+}
+
+.tnm-trust-btn {
+	display: inline-block;
+	padding: 0.55em 1.2em;
+	border: none;
+	border-radius: 6px;
+	background: #1a1a1a;
+	color: #fff;
+	cursor: pointer;
+	font-size: 14px;
+}
+
+.tnm-trust-btn:hover {
+	background: #333;
+}
+
+.tnm-trust-form-message {
+	font-size: 0.9em;
+	min-height: 1.2em;
+}
+
+.tnm-trust-form-message.is-error {
+	color: #a02c2c;
+}
+
+.tnm-trust-form-message.is-success {
+	color: #1a7f4e;
+}
+
+/* Favorite heart button */
+.tnm-trust-favorite-btn {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.35em;
+	background: transparent;
+	border: none;
+	cursor: pointer;
+	color: #999;
+	padding: 0.2em 0.4em;
+	transition: color 0.15s ease, transform 0.1s ease;
+}
+
+.tnm-trust-favorite-btn:hover {
+	transform: scale(1.08);
+}
+
+.tnm-trust-favorite-btn.is-favorited {
+	color: #d1425b;
+}
+
+.tnm-trust-heart-icon {
+	flex-shrink: 0;
+}
+
+.tnm-trust-favorite-count {
+	font-size: 0.85em;
+}
+
+/* Seller badge */
+.tnm-trust-seller-badge {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.3em;
+	font-size: 0.9em;
+	font-weight: 600;
+	cursor: help;
+}
+
+/* Personalized feed grid */
+.tnm-trust-feed-grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+	gap: 1.25em;
+	margin: 1em 0;
+}
+
+.tnm-trust-feed-item {
+	border: 1px solid #eee;
+	border-radius: 8px;
+	overflow: hidden;
+	background: #fff;
+	display: flex;
+	flex-direction: column;
+}
+
+.tnm-trust-feed-item img {
+	width: 100%;
+	height: 200px;
+	object-fit: cover;
+	display: block;
+}
+
+.tnm-trust-feed-item-body {
+	padding: 0.75em;
+	display: flex;
+	flex-direction: column;
+	gap: 0.35em;
+	flex: 1;
+}
+
+.tnm-trust-feed-item-title {
+	font-weight: 600;
+	font-size: 0.95em;
+	text-decoration: none;
+	color: #1a1a1a;
+}
+
+.tnm-trust-feed-item-price {
+	font-size: 0.9em;
+	color: #555;
+}
+
+.tnm-trust-feed-load-more {
+	display: block;
+	margin: 1.5em auto;
+}
+
+/* Make an offer / bundle builder */
+.tnm-trust-make-offer-widget {
+	margin: 1em 0;
+	display: flex;
+	gap: 0.5em;
+	flex-wrap: wrap;
+}
+
+.tnm-trust-make-offer-modal {
+	width: 100%;
+	max-width: 320px;
+	border: 1px solid #ddd;
+	border-radius: 8px;
+	padding: 1em;
+	margin-top: 0.5em;
+	background: #fafafa;
+}
+
+.tnm-trust-bundle-bar {
+	position: fixed;
+	bottom: 0;
+	left: 0;
+	right: 0;
+	background: #1a1a1a;
+	color: #fff;
+	padding: 0.75em 1.25em;
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 1em;
+	z-index: 9999;
+}
+
+.tnm-trust-bundle-bar .tnm-trust-btn {
+	background: #fff;
+	color: #1a1a1a;
+}
+
+/* Filters */
+.tnm-trust-filters {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 1.5em;
+	margin-bottom: 1.5em;
+}
+
+.tnm-trust-filter-group {
+	border: none;
+	padding: 0;
+}
+
+.tnm-trust-filter-group legend {
+	font-weight: 600;
+	margin-bottom: 0.4em;
+}
+
+.tnm-trust-filter-option {
+	display: block;
+	font-size: 0.9em;
+	margin-bottom: 0.25em;
+}

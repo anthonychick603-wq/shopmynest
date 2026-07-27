@@ -1,0 +1,49 @@
+<!-- wp:template-part {"slug":"header"} /-->
+
+<!-- wp:group {"tagName":"main","metadata":{"name":"Main"},"layout":{"type":"constrained","contentSize":"560px","wideSize":"720px"}} -->
+<main class="wp-block-group">
+
+	<!-- wp:spacer {"height":"var:preset|spacing|70"} -->
+	<div style="height:var(--wp--preset--spacing--70)" aria-hidden="true" class="wp-block-spacer"></div>
+	<!-- /wp:spacer -->
+
+	<!-- wp:group {"className":"mynest-empty-state","layout":{"type":"constrained"}} -->
+	<div class="wp-block-group mynest-empty-state">
+		<!-- wp:heading {"textAlign":"center","level":1,"fontSize":"xx-large"} -->
+		<h1 class="wp-block-heading has-text-align-center has-xx-large-font-size">Page not found</h1>
+		<!-- /wp:heading -->
+
+		<!-- wp:paragraph {"align":"center"} -->
+		<p class="has-text-align-center">The page you&#8217;re looking for has wandered off. Try searching for what you need, or explore a popular category below.</p>
+		<!-- /wp:paragraph -->
+
+		<!-- wp:search {"label":"Search","showLabel":false,"placeholder":"Search handmade goods&hellip;","buttonText":"Search","buttonPosition":"button-inside","buttonUseIcon":true,"width":100,"widthUnit":"%","align":"center"} /-->
+
+		<!-- wp:html -->
+		<ul class="mynest-chips">
+			<li><a class="chip" href="/product-category/home-living/">Home &amp; Living</a></li>
+			<li><a class="chip" href="/product-category/jewelry/">Jewelry</a></li>
+			<li><a class="chip" href="/product-category/clothing-accessories/">Clothing &amp; Accessories</a></li>
+			<li><a class="chip" href="/product-category/art-collectibles/">Art &amp; Collectibles</a></li>
+			<li><a class="chip" href="/product-category/craft-supplies/">Craft Supplies</a></li>
+			<li><a class="chip" href="/product-category/vintage/">Vintage</a></li>
+		</ul>
+		<!-- /wp:html -->
+
+		<!-- wp:buttons {"layout":{"type":"flex","justifyContent":"center"}} -->
+		<div class="wp-block-buttons">
+			<!-- wp:button -->
+			<div class="wp-block-button"><a class="wp-block-button__link wp-element-button" href="/shop/">Go to the shop</a></div>
+			<!-- /wp:button -->
+		</div>
+		<!-- /wp:buttons -->
+	</div>
+	<!-- /wp:group -->
+
+	<!-- wp:spacer {"height":"var:preset|spacing|70"} -->
+	<div style="height:var(--wp--preset--spacing--70)" aria-hidden="true" class="wp-block-spacer"></div>
+	<!-- /wp:spacer -->
+</main>
+<!-- /wp:group -->
+
+<!-- wp:template-part {"slug":"footer"} /-->

@@ -1,0 +1,1034 @@
+<?php
+
+defined( 'ABSPATH' ) || exit;
+
+if ( ! defined( 'MNU_NATIVE_NS' ) ) {
+    define( 'MNU_NATIVE_NS', 'nest-native/v1' );
+}
+if ( ! defined( 'MNU_NATIVE_VERSION' ) ) {
+    define( 'MNU_NATIVE_VERSION', '5.0.0' );
+}
+
+function mnu_native_current_user_id( ?WP_REST_Request $request = null ): int {
+    if ( class_exists( 'MNU_Ops' ) ) {
+        return MNU_Ops::get_bearer_user_id( $request );
+    }
+
+    return get_current_user_id();
+}
+
+function mnu_native_settings_defaults(): array {
+    return array(
+        'publishable_key'        => '',
+        'secret_key'             => '',
+        'webhook_secret'          => '',
+        'currency'                => strtolower( get_woocommerce_currency() ?: 'usd' ),
+        'test_mode'               => 1,
+        'flat_shipping'           => '6.95',
+        'free_shipping_threshold' => '50.00',
+    );
+}
+
+function mnu_native_get_settings(): array {
+    $stored   = (array) get_option( 'thenest_native_checkout_settings', array() );
+    $settings = array_merge( mnu_native_settings_defaults(), $stored );
+
+    // Reuse the active WooCommerce Stripe Gateway keys when dedicated native keys are blank.
+    $stripe = (array) get_option( 'woocommerce_stripe_settings', array() );
+    if ( $stripe ) {
+        $gateway_test_mode = 'yes' === ( $stripe['testmode'] ?? 'no' );
+        $using_fallback    = empty( $stored['publishable_key'] ) || empty( $stored['secret_key'] );
+        if ( empty( $settings['publishable_key'] ) ) {
+            $settings['publishable_key'] = (string) ( $gateway_test_mode ? ( $stripe['test_publishable_key'] ?? '' ) : ( $stripe['publishable_key'] ?? '' ) );
+        }
+        if ( empty( $settings['secret_key'] ) ) {
+            $settings['secret_key'] = (string) ( $gateway_test_mode ? ( $stripe['test_secret_key'] ?? '' ) : ( $stripe['secret_key'] ?? '' ) );
+        }
+        if ( $using_fallback && ! array_key_exists( 'test_mode', $stored ) ) {
+            $settings['test_mode'] = $gateway_test_mode ? 1 : 0;
+        }
+    }
+    return $settings;
+}
+
+function mnu_native_admin_menu(): void {
+    add_submenu_page( 'tnm-marketplace', 'Native Checkout', 'Native Checkout', 'manage_woocommerce', 'thenest-native-checkout', 'mnu_native_settings_page' );
+}
+add_action( 'admin_menu', 'mnu_native_admin_menu', 20 );
+
+function mnu_native_settings_page(): void {
+    if ( ! current_user_can( 'manage_woocommerce' ) ) {
+        return;
+    }
+    $stored = (array) get_option( 'thenest_native_checkout_settings', array() );
+    if ( isset( $_POST['mnu_native_nonce'] ) && wp_verify_nonce( sanitize_text_field( wp_unslash( $_POST['mnu_native_nonce'] ) ), 'save_thenest_native' ) ) {
+        $stored = array_merge(
+            mnu_native_settings_defaults(),
+            $stored,
+            array(
+                'publishable_key'        => sanitize_text_field( wp_unslash( $_POST['publishable_key'] ?? '' ) ),
+                'currency'                => strtolower( sanitize_key( wp_unslash( $_POST['currency'] ?? 'usd' ) ) ),
+                'test_mode'               => ! empty( $_POST['test_mode'] ) ? 1 : 0,
+                'flat_shipping'           => wc_format_decimal( wp_unslash( $_POST['flat_shipping'] ?? '6.95' ) ),
+                'free_shipping_threshold' => wc_format_decimal( wp_unslash( $_POST['free_shipping_threshold'] ?? '50' ) ),
+            )
+        );
+        if ( ! empty( $_POST['secret_key'] ) ) {
+            $stored['secret_key'] = sanitize_text_field( wp_unslash( $_POST['secret_key'] ) );
+        }
+        if ( ! empty( $_POST['webhook_secret'] ) ) {
+            $stored['webhook_secret'] = sanitize_text_field( wp_unslash( $_POST['webhook_secret'] ) );
+        }
+        update_option( 'thenest_native_checkout_settings', $stored, false );
+        echo '<div class="notice notice-success"><p>Native checkout settings saved.</p></div>';
+    }
+    $settings = mnu_native_get_settings();
+    ?>
+    <div class="wrap"><h1><?php echo esc_html( get_bloginfo( 'name' ) . ' Native Checkout' ); ?></h1>
+        <p>Dedicated keys override the active WooCommerce Stripe Gateway keys. Leave secret fields blank to keep their current values.</p>
+        <form method="post"><?php wp_nonce_field( 'save_thenest_native', 'mnu_native_nonce' ); ?>
+            <table class="form-table">
+                <tr><th><label for="mnu-pk">Stripe publishable key</label></th><td><input id="mnu-pk" type="text" class="regular-text" name="publishable_key" value="<?php echo esc_attr( $stored['publishable_key'] ?? '' ); ?>"></td></tr>
+                <tr><th><label for="mnu-sk">Stripe secret key</label></th><td><input id="mnu-sk" type="password" class="regular-text" name="secret_key" value="" autocomplete="new-password" placeholder="Leave blank to keep saved/fallback key"></td></tr>
+                <tr><th><label for="mnu-wh">Stripe webhook signing secret</label></th><td><input id="mnu-wh" type="password" class="regular-text" name="webhook_secret" value="" autocomplete="new-password" placeholder="whsec_…"><p class="description">Required before the webhook can mark orders paid.</p></td></tr>
+                <tr><th><label for="mnu-currency">Currency</label></th><td><input id="mnu-currency" type="text" name="currency" value="<?php echo esc_attr( $settings['currency'] ); ?>" maxlength="3"></td></tr>
+                <tr><th><label for="mnu-flat">Fallback flat shipping</label></th><td><input id="mnu-flat" type="number" name="flat_shipping" value="<?php echo esc_attr( $settings['flat_shipping'] ); ?>" min="0" step="0.01"></td></tr>
+                <tr><th><label for="mnu-free">Free-shipping threshold</label></th><td><input id="mnu-free" type="number" name="free_shipping_threshold" value="<?php echo esc_attr( $settings['free_shipping_threshold'] ); ?>" min="0" step="0.01"></td></tr>
+                <tr><th>Test mode</th><td><label><input type="checkbox" name="test_mode" <?php checked( ! empty( $settings['test_mode'] ) ); ?>> Use test mode</label></td></tr>
+            </table><?php submit_button(); ?>
+        </form>
+        <p>Webhook URL: <code><?php echo esc_html( rest_url( MNU_NATIVE_NS . '/stripe-webhook' ) ); ?></code></p>
+    </div>
+    <?php
+}
+
+function mnu_native_rest_routes(): void {
+    register_rest_route(
+        MNU_NATIVE_NS,
+        '/health',
+        array(
+            'methods'             => WP_REST_Server::READABLE,
+            'callback'            => static function (): array {
+                $settings = mnu_native_get_settings();
+                return array(
+                    'ok'                 => true,
+                    'version'            => MNU_NATIVE_VERSION,
+                    'stripe_configured'  => ! empty( $settings['publishable_key'] ) && ! empty( $settings['secret_key'] ),
+                    'webhook_configured' => ! empty( $settings['webhook_secret'] ),
+                );
+            },
+            'permission_callback' => '__return_true',
+        )
+    );
+    register_rest_route( MNU_NATIVE_NS, '/checkout/quote', array( 'methods' => WP_REST_Server::CREATABLE, 'callback' => 'mnu_native_quote', 'permission_callback' => 'mnu_native_auth' ) );
+    register_rest_route( MNU_NATIVE_NS, '/checkout/create-intent', array( 'methods' => WP_REST_Server::CREATABLE, 'callback' => 'mnu_native_create_intent', 'permission_callback' => 'mnu_native_auth' ) );
+    register_rest_route( MNU_NATIVE_NS, '/checkout/complete', array( 'methods' => WP_REST_Server::CREATABLE, 'callback' => 'mnu_native_complete', 'permission_callback' => 'mnu_native_auth' ) );
+    register_rest_route( MNU_NATIVE_NS, '/stripe-webhook', array( 'methods' => WP_REST_Server::CREATABLE, 'callback' => 'mnu_native_webhook', 'permission_callback' => '__return_true' ) );
+}
+add_action( 'rest_api_init', 'mnu_native_rest_routes' );
+
+function mnu_native_auth( WP_REST_Request $request ): bool|WP_Error {
+    return mnu_native_current_user_id( $request ) > 0 ? true : new WP_Error( 'not_logged_in', 'You must be logged in.', array( 'status' => 401 ) );
+}
+
+function mnu_native_cents( float|string $amount ): int {
+    return (int) round( (float) $amount * 100 );
+}
+
+function mnu_native_calc_items( array $items ): array|WP_Error {
+    $lines    = array();
+    $subtotal = 0.0;
+    foreach ( $items as $row ) {
+        $product_id = absint( $row['product_id'] ?? ( $row['product']['id'] ?? 0 ) );
+        $quantity   = max( 1, absint( $row['quantity'] ?? 1 ) );
+        $product    = wc_get_product( $product_id );
+        if ( ! $product || ! $product->is_purchasable() ) {
+            return new WP_Error( 'invalid_product', 'One or more products are unavailable.', array( 'status' => 409, 'product_id' => $product_id ) );
+        }
+        if ( ! $product->has_enough_stock( $quantity ) ) {
+            return new WP_Error( 'insufficient_stock', $product->get_name() . ' does not have enough stock.', array( 'status' => 409, 'product_id' => $product_id ) );
+        }
+        if ( class_exists( 'MNU_Connect' ) ) {
+            $seller_id = (int) tnm_get_product_seller_id( $product );
+            if ( $seller_id > 0 ) {
+                $seller_status = MNU_Connect::cached_status( $seller_id );
+                if ( ! $seller_status['charges_enabled'] || ! $seller_status['payouts_enabled'] ) {
+                    return new WP_Error( 'seller_not_ready', $product->get_name() . ' is temporarily unavailable because its seller has not finished payment setup.', array( 'status' => 409, 'product_id' => $product_id ) );
+                }
+            }
+        }
+        $price      = (float) wc_get_price_excluding_tax( $product );
+        $line_total = $price * $quantity;
+        $subtotal  += $line_total;
+        $lines[]    = array(
+            'product'    => $product,
+            'product_id' => $product_id,
+            'quantity'   => $quantity,
+            'price'      => $price,
+            'line_total' => $line_total,
+            'name'       => $product->get_name(),
+        );
+    }
+    return $lines ? array( $lines, $subtotal ) : new WP_Error( 'empty_cart', 'No valid products found.', array( 'status' => 400 ) );
+}
+
+function mnu_native_flat_shipping( float $subtotal ): float {
+    $settings  = mnu_native_get_settings();
+    $threshold = max( 0, (float) $settings['free_shipping_threshold'] );
+    return $threshold > 0 && $subtotal >= $threshold ? 0.0 : max( 0, (float) $settings['flat_shipping'] );
+}
+
+/**
+ * Map an incoming (already-sanitized) address array to a WooCommerce shipping
+ * package "destination" array. Country is normalized to a 2-letter uppercase
+ * code (empty when invalid, which signals "no usable address").
+ *
+ * @param array<string, string> $address
+ * @return array<string, string>
+ */
+function mnu_native_map_destination( array $address ): array {
+    $country   = strtoupper( sanitize_text_field( (string) ( $address['country'] ?? '' ) ) );
+    $address_1 = sanitize_text_field( (string) ( $address['address_1'] ?? $address['address'] ?? '' ) );
+
+    return array(
+        'country'   => preg_match( '/^[A-Z]{2}$/', $country ) ? $country : '',
+        'state'     => sanitize_text_field( (string) ( $address['state'] ?? '' ) ),
+        'postcode'  => sanitize_text_field( (string) ( $address['postcode'] ?? '' ) ),
+        'city'      => sanitize_text_field( (string) ( $address['city'] ?? '' ) ),
+        'address'   => $address_1,
+        'address_1' => $address_1,
+        'address_2' => sanitize_text_field( (string) ( $address['address_2'] ?? '' ) ),
+    );
+}
+
+/**
+ * Log a live-rate diagnostic, but only when WP_DEBUG is on, so production error
+ * logs are never flooded by routine rate lookups.
+ */
+function mnu_native_shipping_debug_log( string $message ): void {
+    if ( defined( 'WP_DEBUG' ) && WP_DEBUG ) {
+        error_log( '[MyNest native checkout shipping] ' . $message );
+    }
+}
+
+/**
+ * Map a sanitized checkout destination address to a Shippo "to" address.
+ *
+ * @param array<string, string> $address
+ * @return array<string, string>
+ */
+function mnu_native_shippo_destination( array $address ): array {
+    $mapped = mnu_native_map_destination( $address );
+    $name   = trim( (string) ( $address['first_name'] ?? '' ) . ' ' . (string) ( $address['last_name'] ?? '' ) );
+
+    return array(
+        'name'    => $name ?: 'Customer',
+        'street1' => (string) $mapped['address_1'],
+        'street2' => (string) $mapped['address_2'],
+        'city'    => (string) $mapped['city'],
+        'state'   => (string) $mapped['state'],
+        'zip'     => (string) $mapped['postcode'],
+        'country' => (string) $mapped['country'],
+        'phone'   => (string) ( $address['phone'] ?? '' ),
+        'email'   => (string) ( $address['email'] ?? '' ),
+    );
+}
+
+/**
+ * Build a seller's Shippo "from" address from their shipping profile.
+ *
+ * @return array<string, string>
+ */
+function mnu_native_seller_ship_from( int $seller_id ): array {
+    $profile = mnu_ship_get_profile( $seller_id );
+    $seller  = get_userdata( $seller_id );
+
+    return array(
+        'name'    => (string) ( $profile['ship_from_name'] ?: ( $seller ? $seller->display_name : tnm_seller_display_name( $seller_id ) ) ),
+        'company' => (string) ( $profile['ship_from_company'] ?? '' ),
+        'street1' => (string) ( $profile['ship_from_street1'] ?? '' ),
+        'street2' => (string) ( $profile['ship_from_street2'] ?? '' ),
+        'city'    => (string) ( $profile['ship_from_city'] ?? '' ),
+        'state'   => (string) ( $profile['ship_from_state'] ?? '' ),
+        'zip'     => (string) ( $profile['ship_from_zip'] ?? '' ),
+        'country' => (string) ( $profile['ship_from_country'] ?: 'US' ),
+        'phone'   => (string) ( $profile['ship_from_phone'] ?? '' ),
+        'email'   => $seller ? (string) $seller->user_email : '',
+    );
+}
+
+/**
+ * Aggregate a Shippo parcel (summed weight, max dimensions) for a group of cart
+ * lines that all ship from the same seller, mirroring the seller label flow's
+ * per-order parcel builder but sourced from live cart lines.
+ *
+ * @param array<int, array<string, mixed>> $lines
+ * @param array<string, string|bool>       $profile
+ * @return array<string, string>|WP_Error
+ */
+function mnu_native_parcel_for_lines( array $lines, array $profile ): array|WP_Error {
+    $weight = 0.0;
+    $length = (float) ( $profile['default_length_in'] ?? 8 );
+    $width  = (float) ( $profile['default_width_in'] ?? 6 );
+    $height = (float) ( $profile['default_height_in'] ?? 2 );
+
+    foreach ( $lines as $line ) {
+        $product_id  = (int) $line['product_id'];
+        $quantity    = max( 1, (int) $line['quantity'] );
+        $item_weight = (float) ( get_post_meta( $product_id, '_thenest_weight_oz', true ) ?: ( $profile['default_weight_oz'] ?? 8 ) );
+
+        $weight += max( 0.1, $item_weight ) * $quantity;
+        $length  = max( $length, (float) ( get_post_meta( $product_id, '_thenest_length_in', true ) ?: $length ) );
+        $width   = max( $width, (float) ( get_post_meta( $product_id, '_thenest_width_in', true ) ?: $width ) );
+        $height  = max( $height, (float) ( get_post_meta( $product_id, '_thenest_height_in', true ) ?: $height ) );
+    }
+
+    if ( $weight <= 0 || $length <= 0 || $width <= 0 || $height <= 0 ) {
+        return new WP_Error( 'invalid_parcel', 'Package weight and dimensions must all be greater than zero.' );
+    }
+
+    return array(
+        'length'        => (string) max( 0.1, $length ),
+        'width'         => (string) max( 0.1, $width ),
+        'height'        => (string) max( 0.1, $height ),
+        'distance_unit' => 'in',
+        'weight'        => (string) max( 0.1, $weight ),
+        'mass_unit'     => 'oz',
+    );
+}
+
+/**
+ * Compute real, live shipping rates for a set of cart lines shipped to a
+ * destination address by calling Shippo directly — the SAME integration
+ * (api.goshippo.com + `ShippoToken` auth + the `thenest_shippo_api_token`
+ * option) that the working seller label flow uses via mnu_labels_shippo_request().
+ *
+ * Each seller in the cart ships from their own origin, so lines are grouped by
+ * seller and rated as a separate Shippo shipment. For a single-seller cart the
+ * seller's live service levels are returned as selectable options (keyed by a
+ * STABLE carrier+service slug, not Shippo's per-request object_id, so the
+ * quote → create-intent recompute can match the buyer's choice). For a
+ * multi-seller cart the cheapest live rate per seller is summed into one honest
+ * live total. Any failure returns a WP_Error so mnu_native_shipping_options()
+ * degrades to the flat-rate estimate rather than breaking checkout.
+ *
+ * @param array<int, array<string, mixed>> $lines   Lines from mnu_native_calc_items().
+ * @param array<string, string>            $address Sanitized destination address.
+ * @return array<int, array<string, mixed>>|WP_Error List of {id,label,amount,method_id} or error.
+ */
+function mnu_native_get_live_shipping_rates( array $lines, array $address ): array|WP_Error {
+    if ( ! function_exists( 'mnu_labels_shippo_request' ) || ! function_exists( 'mnu_ship_get_profile' ) ) {
+        return new WP_Error( 'shipping_unavailable', 'Live shipping calculation is unavailable.' );
+    }
+
+    if ( '' === mnu_native_map_destination( $address )['country'] ) {
+        return new WP_Error( 'invalid_shipping_address', 'A valid destination country is required to calculate shipping.' );
+    }
+
+    $to = mnu_native_shippo_destination( $address );
+    if ( '' === $to['street1'] || '' === $to['city'] || '' === $to['zip'] ) {
+        return new WP_Error( 'incomplete_shipping_address', 'A complete destination address is required for live rates.' );
+    }
+
+    // Group cart lines by their selling vendor: each seller ships from their own
+    // origin, so each needs its own Shippo shipment.
+    $by_seller = array();
+    foreach ( $lines as $line ) {
+        $product = $line['product'] ?? null;
+        if ( ! $product instanceof WC_Product ) {
+            continue;
+        }
+        $seller_id                 = (int) tnm_get_product_seller_id( $product );
+        $by_seller[ $seller_id ][] = $line;
+    }
+    if ( ! $by_seller ) {
+        return new WP_Error( 'empty_cart', 'No shippable products found.' );
+    }
+
+    $single_seller = 1 === count( $by_seller );
+    $options       = array();
+    $combined_cost = 0.0;
+
+    foreach ( $by_seller as $seller_id => $seller_lines ) {
+        if ( $seller_id <= 0 ) {
+            return new WP_Error( 'no_ship_from', 'A product is missing its seller ship-from address.' );
+        }
+
+        $profile = mnu_ship_get_profile( $seller_id );
+        $from    = mnu_native_seller_ship_from( $seller_id );
+        if ( '' === $from['street1'] || '' === $from['city'] || '' === $from['zip'] ) {
+            mnu_native_shipping_debug_log( sprintf( 'Seller %d has an incomplete ship-from address; skipping live rates.', $seller_id ) );
+            return new WP_Error( 'incomplete_ship_from', 'The seller ship-from address is incomplete.' );
+        }
+
+        $parcel = mnu_native_parcel_for_lines( $seller_lines, $profile );
+        if ( is_wp_error( $parcel ) ) {
+            return $parcel;
+        }
+
+        $shipment = mnu_labels_shippo_request(
+            '/shipments/',
+            array(
+                'address_from' => $from,
+                'address_to'   => $to,
+                'parcels'      => array( $parcel ),
+                'async'        => false,
+            )
+        );
+        if ( is_wp_error( $shipment ) ) {
+            mnu_native_shipping_debug_log( sprintf( 'Shippo shipment failed for seller %d: %s', $seller_id, $shipment->get_error_message() ) );
+            return $shipment;
+        }
+
+        $rates = function_exists( 'mnu_labels_sort_rates' )
+            ? mnu_labels_sort_rates( isset( $shipment['rates'] ) && is_array( $shipment['rates'] ) ? $shipment['rates'] : array() )
+            : array();
+        if ( ! $rates ) {
+            mnu_native_shipping_debug_log(
+                sprintf(
+                    'Shippo returned no valid rates for seller %d (shipment %s): %s',
+                    $seller_id,
+                    (string) ( $shipment['object_id'] ?? '' ),
+                    function_exists( 'mnu_labels_shippo_error_message' ) ? mnu_labels_shippo_error_message( $shipment ) : 'no rates'
+                )
+            );
+            return new WP_Error( 'no_live_rates', 'No live shipping rates were returned.' );
+        }
+
+        if ( $single_seller ) {
+            foreach ( $rates as $rate ) {
+                $provider  = (string) ( $rate['provider'] ?? '' );
+                $service   = (string) ( $rate['servicelevel']['name'] ?? $rate['servicelevel_name'] ?? '' );
+                $token     = (string) ( $rate['servicelevel']['token'] ?? $rate['servicelevel_token'] ?? '' );
+                $slug      = sanitize_key( $provider . '_' . ( $token ?: $service ) );
+                $options[] = array(
+                    'id'        => 'shippo_' . ( $slug ?: substr( md5( $provider . $service ), 0, 12 ) ),
+                    'label'     => trim( $provider . ' ' . $service ) ?: 'Shipping',
+                    'amount'    => round( (float) ( $rate['amount'] ?? 0 ), wc_get_price_decimals() ),
+                    'method_id' => 'shippo',
+                );
+            }
+        } else {
+            // mnu_labels_sort_rates() sorts cheapest-first, so [0] is the cheapest.
+            $combined_cost += (float) ( $rates[0]['amount'] ?? 0 );
+        }
+    }
+
+    if ( ! $single_seller ) {
+        $options[] = array(
+            'id'        => 'shippo_combined',
+            'label'     => 'Standard shipping',
+            'amount'    => round( $combined_cost, wc_get_price_decimals() ),
+            'method_id' => 'shippo',
+        );
+    }
+
+    return $options;
+}
+
+/**
+ * Resolve the list of shipping options a buyer can pick from. Returns live
+ * carrier rates when available; otherwise degrades to a single synthetic
+ * flat-rate option so checkout never breaks (task's fallback safety net).
+ *
+ * @param array<int, array<string, mixed>> $lines
+ * @param array<string, string>            $address
+ * @param string|null                      $debug_reason Out-param set to the failure reason when the flat fallback is used.
+ * @return array<int, array<string, mixed>> Non-empty list of {id,label,amount,method_id}.
+ */
+function mnu_native_shipping_options( array $lines, float $subtotal, array $address, ?string &$debug_reason = null ): array {
+    $live = mnu_native_get_live_shipping_rates( $lines, $address );
+    if ( ! is_wp_error( $live ) && ! empty( $live ) ) {
+        return $live;
+    }
+
+    // Live rates were unavailable; surface the concrete reason so the site owner
+    // can diagnose why the flat estimate is being used instead.
+    $debug_reason = is_wp_error( $live )
+        ? $live->get_error_message()
+        : 'No live shipping rates were returned.';
+
+    return array(
+        array(
+            'id'        => 'thenest_standard',
+            'label'     => 'Standard shipping',
+            'amount'    => round( mnu_native_flat_shipping( $subtotal ), wc_get_price_decimals() ),
+            'method_id' => 'thenest_standard',
+        ),
+    );
+}
+
+/**
+ * Pick the cheapest option from a shipping-options list.
+ *
+ * @param array<int, array<string, mixed>> $options
+ * @return array<string, mixed>
+ */
+function mnu_native_cheapest_option( array $options ): array {
+    usort( $options, static fn( array $a, array $b ): int => ( (float) $a['amount'] ) <=> ( (float) $b['amount'] ) );
+    return $options[0] ?? array();
+}
+
+/**
+ * Read the shipping method/label/amount recorded on an order for API responses.
+ *
+ * @return array{amount: float, label: string, method_id: string}
+ */
+function mnu_native_order_shipping_summary( WC_Order $order ): array {
+    $rate_id = (string) $order->get_meta( '_thenest_shipping_rate_id', true );
+    $label   = (string) $order->get_meta( '_thenest_shipping_label', true );
+
+    return array(
+        'amount'    => (float) $order->get_shipping_total(),
+        'label'     => $label ?: 'Standard shipping',
+        'method_id' => $rate_id ?: 'thenest_standard',
+    );
+}
+
+function mnu_native_quote_signature( string $body ): string {
+    return tnm_base64url_encode( hash_hmac( 'sha256', $body, wp_salt( 'nonce' ), true ) );
+}
+
+function mnu_native_issue_quote_token( int $user_id, array $lines, float $subtotal, float $shipping, string $currency ): string {
+    $payload = array(
+        'sub'      => $user_id,
+        'iat'      => time(),
+        'exp'      => time() + ( 15 * MINUTE_IN_SECONDS ),
+        'currency' => strtolower( $currency ),
+        'subtotal' => round( $subtotal, wc_get_price_decimals() + 2 ),
+        'shipping' => round( $shipping, wc_get_price_decimals() + 2 ),
+        'items'    => array_map(
+            static fn( array $line ): array => array(
+                'product_id' => (int) $line['product_id'],
+                'quantity'   => (int) $line['quantity'],
+            ),
+            $lines
+        ),
+    );
+    $body = tnm_base64url_encode( wp_json_encode( $payload ) );
+    return $body . '.' . mnu_native_quote_signature( $body );
+}
+
+function mnu_native_decode_quote_token( string $token, int $user_id ): array|WP_Error {
+    $parts = explode( '.', $token );
+    if ( 2 !== count( $parts ) ) {
+        return new WP_Error( 'invalid_quote', 'The checkout quote is invalid.', array( 'status' => 409 ) );
+    }
+    [ $body, $signature ] = $parts;
+    if ( ! hash_equals( mnu_native_quote_signature( $body ), $signature ) ) {
+        return new WP_Error( 'invalid_quote', 'The checkout quote is invalid.', array( 'status' => 409 ) );
+    }
+    $decoded = tnm_base64url_decode( $body );
+    $payload = $decoded ? json_decode( $decoded, true ) : null;
+    if ( ! is_array( $payload ) || (int) ( $payload['sub'] ?? 0 ) !== $user_id || (int) ( $payload['exp'] ?? 0 ) < time() || ! is_array( $payload['items'] ?? null ) ) {
+        return new WP_Error( 'expired_quote', 'The checkout quote expired. Refresh the cart and try again.', array( 'status' => 409 ) );
+    }
+    return $payload;
+}
+
+function mnu_native_quote( WP_REST_Request $request ): array|WP_Error {
+    $user_id = mnu_native_current_user_id( $request );
+    if ( ! $user_id ) {
+        return new WP_Error( 'not_logged_in', 'You must be logged in.', array( 'status' => 401 ) );
+    }
+    $data   = (array) $request->get_json_params();
+    $result = mnu_native_calc_items( is_array( $data['items'] ?? null ) ? $data['items'] : array() );
+    if ( is_wp_error( $result ) ) {
+        return $result;
+    }
+    [ $lines, $subtotal ] = $result;
+    $currency = strtolower( (string) mnu_native_get_settings()['currency'] );
+
+    // An optional destination address unlocks real, live carrier rates. Without
+    // one we keep the historical flat-rate estimate untouched.
+    $raw_address  = is_array( $data['shipping_address'] ?? null )
+        ? $data['shipping_address']
+        : ( is_array( $data['shipping'] ?? null ) ? $data['shipping'] : array() );
+    $address      = mnu_native_sanitize_address( $raw_address );
+    $has_address  = '' !== ( mnu_native_map_destination( $address )['country'] );
+
+    $shipping_rates = array();
+    $debug_reason   = null;
+    if ( $has_address ) {
+        $options  = mnu_native_shipping_options( $lines, $subtotal, $address, $debug_reason );
+        $cheapest = mnu_native_cheapest_option( $options );
+        $shipping = (float) ( $cheapest['amount'] ?? mnu_native_flat_shipping( $subtotal ) );
+        // Only expose REAL live carrier rates as selectable options. When the flat
+        // estimate fallback was used, $debug_reason is set: keep shipping_rates
+        // empty so the app shows its estimated-shipping fallback (and the debug
+        // reason) instead of rendering the synthetic estimate as a real choice.
+        if ( null === $debug_reason ) {
+            $shipping_rates = array_map(
+                static fn( array $opt ): array => array(
+                    'id'     => (string) $opt['id'],
+                    'label'  => (string) $opt['label'],
+                    'amount' => (float) $opt['amount'],
+                ),
+                $options
+            );
+        }
+    } else {
+        $shipping     = mnu_native_flat_shipping( $subtotal );
+        $debug_reason = 'A complete destination address (street, city, state, ZIP, and 2-letter country) is required to fetch live shipping rates; an estimate is shown instead.';
+    }
+
+    $response = array(
+        'items' => array_map(
+            static fn( array $line ): array => array(
+                'product_id' => $line['product_id'],
+                'name'       => $line['name'],
+                'quantity'   => $line['quantity'],
+                'line_total' => $line['line_total'],
+            ),
+            $lines
+        ),
+        'subtotal'      => $subtotal,
+        'shipping'      => $shipping,
+        'tax'           => 0,
+        'tax_estimated' => true,
+        'total'         => $subtotal + $shipping,
+        'currency'      => $currency,
+        'expires_in'    => 15 * MINUTE_IN_SECONDS,
+        'quote_token'   => mnu_native_issue_quote_token( $user_id, $lines, $subtotal, $shipping, $currency ),
+    );
+    if ( $has_address ) {
+        $response['shipping_rates'] = $shipping_rates;
+    }
+    // Always surface the fallback reason at the top level (not gated on
+    // $has_address): the app renders the shipping box whenever it has a saved
+    // address, and an incomplete/unmappable destination is itself a reason worth
+    // showing to the site owner.
+    if ( null !== $debug_reason && '' !== $debug_reason ) {
+        $response['debug_reason'] = $debug_reason;
+    }
+    return $response;
+}
+
+function mnu_native_sanitize_address( mixed $address ): array {
+    $allowed = array( 'first_name', 'last_name', 'company', 'address_1', 'address_2', 'city', 'state', 'postcode', 'country', 'email', 'phone' );
+    $clean   = array();
+    foreach ( $allowed as $key ) {
+        if ( isset( $address[ $key ] ) ) {
+            $clean[ $key ] = 'email' === $key ? sanitize_email( $address[ $key ] ) : sanitize_text_field( $address[ $key ] );
+        }
+    }
+    return $clean;
+}
+
+function mnu_native_create_order( int $user_id, array $lines, array $billing, array $shipping, float $shipping_total, string $checkout_token = '', string $shipping_title = 'Standard shipping', string $shipping_method_id = 'thenest_standard' ): WC_Order|WP_Error {
+    $order = wc_create_order( array( 'customer_id' => $user_id, 'created_via' => 'the-nest-native-app' ) );
+    if ( is_wp_error( $order ) ) {
+        return $order;
+    }
+    foreach ( $lines as $line ) {
+        $item_id = $order->add_product( $line['product'], $line['quantity'] );
+        $item    = $item_id ? $order->get_item( $item_id ) : false;
+        if ( $item instanceof WC_Order_Item_Product ) {
+            TNM_Marketplace::stamp_item_snapshot( $item, $line['product'] );
+            $item->save();
+        }
+    }
+    $billing  = mnu_native_sanitize_address( $billing );
+    $shipping = mnu_native_sanitize_address( $shipping ?: $billing );
+    if ( $billing ) {
+        $order->set_address( $billing, 'billing' );
+    }
+    if ( $shipping ) {
+        $order->set_address( $shipping, 'shipping' );
+    }
+    $clean_title     = sanitize_text_field( $shipping_title ) ?: 'Standard shipping';
+    $clean_method_id = $shipping_method_id ?: 'thenest_standard';
+    if ( $shipping_total > 0 ) {
+        $shipping_item = new WC_Order_Item_Shipping();
+        $shipping_item->set_method_title( $clean_title );
+        // sanitize_key would corrupt full carrier rate ids like "flat_rate:3";
+        // the full id is preserved in order meta below for reporting/matching.
+        $shipping_item->set_method_id( sanitize_key( $clean_method_id ) ?: 'thenest_standard' );
+        $shipping_item->set_total( $shipping_total );
+        $order->add_item( $shipping_item );
+    }
+    // Record the chosen rate id/label verbatim (even for $0 free shipping) so the
+    // API can report the real selection and match it on reuse.
+    $order->update_meta_data( '_thenest_shipping_rate_id', $clean_method_id );
+    $order->update_meta_data( '_thenest_shipping_label', $clean_title );
+    $order->set_payment_method( 'stripe' );
+    $order->set_payment_method_title( 'Card — ' . get_bloginfo( 'name' ) . ' app' );
+    if ( $checkout_token ) {
+        $order->update_meta_data( '_thenest_checkout_token', $checkout_token );
+    }
+    $order->calculate_taxes();
+    $order->calculate_totals();
+    $order->set_status( 'pending' );
+    $order->save();
+    TNM_Marketplace::stamp_order_sellers( $order );
+    return $order;
+}
+
+function mnu_native_stripe_request( string $path, array $params, string $idempotency_key = '', array $extra_headers = array() ): array|WP_Error {
+    $settings = mnu_native_get_settings();
+    if ( empty( $settings['secret_key'] ) ) {
+        return new WP_Error( 'stripe_not_configured', 'Stripe is not configured.', array( 'status' => 503 ) );
+    }
+    $headers = array( 'Authorization' => 'Basic ' . base64_encode( $settings['secret_key'] . ':' ) );
+    if ( $idempotency_key ) {
+        $headers['Idempotency-Key'] = substr( preg_replace( '/[^A-Za-z0-9_\-]/', '', $idempotency_key ), 0, 255 );
+    }
+    foreach ( $extra_headers as $header_name => $header_value ) {
+        $headers[ $header_name ] = $header_value;
+    }
+    $response = wp_remote_post( 'https://api.stripe.com/v1' . $path, array( 'headers' => $headers, 'body' => $params, 'timeout' => 30 ) );
+    if ( is_wp_error( $response ) ) {
+        return $response;
+    }
+    $body = json_decode( wp_remote_retrieve_body( $response ), true );
+    $code = wp_remote_retrieve_response_code( $response );
+    if ( $code < 200 || $code >= 300 ) {
+        return new WP_Error( 'stripe_error', sanitize_text_field( $body['error']['message'] ?? 'Stripe request failed.' ), array( 'status' => 502 ) );
+    }
+    return is_array( $body ) ? $body : new WP_Error( 'stripe_invalid_response', 'Stripe returned an invalid response.', array( 'status' => 502 ) );
+}
+
+function mnu_native_stripe_get( string $path ): array|WP_Error {
+    $settings = mnu_native_get_settings();
+    if ( empty( $settings['secret_key'] ) ) {
+        return new WP_Error( 'stripe_not_configured', 'Stripe is not configured.', array( 'status' => 503 ) );
+    }
+    $response = wp_remote_get( 'https://api.stripe.com/v1' . $path, array( 'headers' => array( 'Authorization' => 'Basic ' . base64_encode( $settings['secret_key'] . ':' ) ), 'timeout' => 30 ) );
+    if ( is_wp_error( $response ) ) {
+        return $response;
+    }
+    $body = json_decode( wp_remote_retrieve_body( $response ), true );
+    $code = wp_remote_retrieve_response_code( $response );
+    if ( $code < 200 || $code >= 300 ) {
+        return new WP_Error( 'stripe_error', sanitize_text_field( $body['error']['message'] ?? 'Stripe request failed.' ), array( 'status' => 502 ) );
+    }
+    return is_array( $body ) ? $body : new WP_Error( 'stripe_invalid_response', 'Stripe returned an invalid response.', array( 'status' => 502 ) );
+}
+
+/**
+ * Get (or lazily create) the Stripe Customer for a buyer and cache its ID in
+ * user meta. Stored per mode (test/live) so switching keys can't reuse a
+ * customer that only exists in the other mode's Stripe account.
+ */
+function mnu_native_get_or_create_customer( int $user_id, array $settings ): string|WP_Error {
+    $meta_key    = ! empty( $settings['test_mode'] ) ? '_thenest_stripe_customer_id_test' : '_thenest_stripe_customer_id_live';
+    $customer_id = (string) get_user_meta( $user_id, $meta_key, true );
+    if ( $customer_id ) {
+        return $customer_id;
+    }
+
+    $user   = get_userdata( $user_id );
+    $params = array( 'metadata[wp_user_id]' => $user_id );
+    if ( $user ) {
+        if ( is_email( $user->user_email ) ) {
+            $params['email'] = $user->user_email;
+        }
+        $name = trim( $user->display_name );
+        if ( $name ) {
+            $params['name'] = $name;
+        }
+    }
+
+    $customer = mnu_native_stripe_request( '/customers', $params, 'mynest_customer_' . $user_id );
+    if ( is_wp_error( $customer ) ) {
+        return $customer;
+    }
+    if ( empty( $customer['id'] ) ) {
+        return new WP_Error( 'stripe_customer_error', 'Could not create a Stripe customer.', array( 'status' => 502 ) );
+    }
+
+    update_user_meta( $user_id, $meta_key, sanitize_text_field( $customer['id'] ) );
+    return (string) $customer['id'];
+}
+
+/**
+ * Create a short-lived ephemeral key so the PaymentSheet can display saved
+ * payment methods for the customer. Requires a pinned Stripe-Version header.
+ */
+function mnu_native_create_ephemeral_key( string $customer_id ): array|WP_Error {
+    return mnu_native_stripe_request(
+        '/ephemeral_keys',
+        array( 'customer' => $customer_id ),
+        '',
+        array( 'Stripe-Version' => '2024-06-20' )
+    );
+}
+
+function mnu_native_find_existing_order( int $user_id, string $checkout_token ): WC_Order|false {
+    if ( ! $checkout_token ) {
+        return false;
+    }
+    $orders = wc_get_orders(
+        array(
+            'customer_id' => $user_id,
+            'limit'       => 1,
+            'status'      => array( 'pending', 'failed' ),
+            'meta_key'    => '_thenest_checkout_token',
+            'meta_value'  => $checkout_token,
+            'return'      => 'objects',
+        )
+    );
+    return $orders ? $orders[0] : false;
+}
+
+function mnu_native_create_intent( WP_REST_Request $request ): array|WP_Error {
+    $user_id = mnu_native_current_user_id( $request );
+    if ( ! $user_id ) {
+        return new WP_Error( 'not_logged_in', 'You must be logged in.', array( 'status' => 401 ) );
+    }
+    $data           = (array) $request->get_json_params();
+    $checkout_token = sanitize_text_field( (string) ( $data['checkout_token'] ?? $data['request_id'] ?? '' ) );
+    $order          = mnu_native_find_existing_order( $user_id, $checkout_token );
+    $shipping_changed = false;
+
+    if ( ! $order ) {
+        $quote_token = sanitize_text_field( (string) ( $data['quote_token'] ?? '' ) );
+        if ( $quote_token ) {
+            $quote = mnu_native_decode_quote_token( $quote_token, $user_id );
+            if ( is_wp_error( $quote ) ) {
+                return $quote;
+            }
+            $source_items = $quote['items'];
+        } else {
+            // Compatibility path for older app builds: calculate all money on the
+            // server and ignore any client-supplied shipping amount.
+            $quote        = null;
+            $source_items = is_array( $data['items'] ?? null ) ? $data['items'] : array();
+        }
+
+        $result = mnu_native_calc_items( $source_items );
+        if ( is_wp_error( $result ) ) {
+            return $result;
+        }
+        [ $lines, $subtotal ] = $result;
+
+        if ( is_array( $quote ) && abs( (float) $quote['subtotal'] - $subtotal ) > 0.01 ) {
+            return new WP_Error( 'quote_changed', 'A product price changed. Refresh the cart and try again.', array( 'status' => 409 ) );
+        }
+
+        // Resolve shipping. If the app sends a destination address, ALWAYS
+        // recompute live rates on the server and only trust which rate id the
+        // client picked — never a client-supplied amount (anti-tampering).
+        $billing_raw  = is_array( $data['billing'] ?? null ) ? $data['billing'] : array();
+        $shipping_raw = is_array( $data['shipping'] ?? null ) ? $data['shipping'] : array();
+        $address_raw  = is_array( $data['shipping_address'] ?? null ) ? $data['shipping_address'] : $shipping_raw;
+        $address      = mnu_native_sanitize_address( $address_raw );
+        $has_address  = '' !== ( mnu_native_map_destination( $address )['country'] );
+
+        if ( $has_address ) {
+            $options      = mnu_native_shipping_options( $lines, $subtotal, $address );
+            $requested_id = sanitize_text_field( (string) ( $data['shipping_method_id'] ?? '' ) );
+            $chosen       = array();
+            foreach ( $options as $opt ) {
+                if ( '' !== $requested_id && (string) $opt['id'] === $requested_id ) {
+                    $chosen = $opt;
+                    break;
+                }
+            }
+            if ( ! $chosen ) {
+                // Requested rate is gone (or none supplied): fall back to the
+                // cheapest live rate rather than erroring, and flag the change.
+                $chosen = mnu_native_cheapest_option( $options );
+                if ( '' !== $requested_id ) {
+                    $shipping_changed = true;
+                }
+            }
+            $shipping_total  = (float) ( $chosen['amount'] ?? 0 );
+            $shipping_title  = (string) ( $chosen['label'] ?? 'Standard shipping' );
+            $shipping_method = (string) ( $chosen['id'] ?? 'thenest_standard' );
+        } else {
+            // No address: preserve the historical behaviour exactly.
+            $shipping_total  = is_array( $quote )
+                ? max( 0, (float) $quote['shipping'] )
+                : mnu_native_flat_shipping( $subtotal );
+            $shipping_title  = 'Standard shipping';
+            $shipping_method = 'thenest_standard';
+        }
+
+        $order = mnu_native_create_order(
+            $user_id,
+            $lines,
+            $billing_raw,
+            $address_raw ?: $shipping_raw,
+            $shipping_total,
+            $checkout_token,
+            $shipping_title,
+            $shipping_method
+        );
+        if ( is_wp_error( $order ) ) {
+            return $order;
+        }
+        if ( $quote_token ) {
+            $order->update_meta_data( '_thenest_quote_token_hash', hash( 'sha256', $quote_token ) );
+            $order->save();
+        }
+    }
+
+    $settings = mnu_native_get_settings();
+
+    $stripe_customer_id = mnu_native_get_or_create_customer( $user_id, $settings );
+    if ( is_wp_error( $stripe_customer_id ) ) {
+        return $stripe_customer_id;
+    }
+
+    $intent_id = (string) $order->get_meta( '_thenest_stripe_payment_intent', true );
+    if ( $intent_id ) {
+        $intent = mnu_native_stripe_get( '/payment_intents/' . rawurlencode( $intent_id ) );
+    } else {
+        $intent = mnu_native_stripe_request(
+            '/payment_intents',
+            array(
+                'amount'                             => mnu_native_cents( $order->get_total() ),
+                'currency'                           => strtolower( $settings['currency'] ),
+                'customer'                           => $stripe_customer_id,
+                'automatic_payment_methods[enabled]' => 'true',
+                'metadata[wc_order_id]'              => $order->get_id(),
+                'metadata[customer_id]'              => $user_id,
+                'metadata[source]'                   => 'the_nest_native_app',
+                'description'                        => 'MyNest order #' . $order->get_order_number(),
+            ),
+            'mynest_order_' . $order->get_id()
+        );
+    }
+    if ( is_wp_error( $intent ) ) {
+        return $intent;
+    }
+
+    $ephemeral_key = mnu_native_create_ephemeral_key( $stripe_customer_id );
+    if ( is_wp_error( $ephemeral_key ) ) {
+        return $ephemeral_key;
+    }
+
+    $order->update_meta_data( '_thenest_stripe_payment_intent', sanitize_text_field( $intent['id'] ) );
+    $order->save();
+    $ship_summary = mnu_native_order_shipping_summary( $order );
+    return array(
+        'publishable_key'    => $settings['publishable_key'],
+        'client_secret'      => $intent['client_secret'] ?? '',
+        'payment_intent_id'  => $intent['id'],
+        'customer_id'        => $stripe_customer_id,
+        'ephemeral_key_secret'=> $ephemeral_key['secret'] ?? '',
+        'order_id'           => $order->get_id(),
+        'amount'             => (float) $order->get_total(),
+        'currency'           => strtolower( $settings['currency'] ),
+        'shipping_total'     => $ship_summary['amount'],
+        'shipping_label'     => $ship_summary['label'],
+        'shipping_method_id' => $ship_summary['method_id'],
+        'shipping_selection_changed' => $shipping_changed,
+    );
+}
+
+function mnu_native_complete( WP_REST_Request $request ): array|WP_Error {
+    $user_id = mnu_native_current_user_id( $request );
+    $data    = (array) $request->get_json_params();
+    $order   = wc_get_order( absint( $data['order_id'] ?? 0 ) );
+    if ( ! $order ) {
+        return new WP_Error( 'invalid_order', 'Order not found.', array( 'status' => 404 ) );
+    }
+    if ( (int) $order->get_customer_id() !== $user_id && ! user_can( $user_id, 'manage_woocommerce' ) && ! user_can( $user_id, 'manage_options' ) ) {
+        return new WP_Error( 'forbidden', 'You cannot complete this order.', array( 'status' => 403 ) );
+    }
+    $saved_intent = (string) $order->get_meta( '_thenest_stripe_payment_intent', true );
+    $intent_id    = sanitize_text_field( (string) ( $data['payment_intent_id'] ?? $saved_intent ) );
+    if ( ! $intent_id || ( $saved_intent && ! hash_equals( $saved_intent, $intent_id ) ) ) {
+        return new WP_Error( 'invalid_payment_intent', 'The payment intent does not match this order.', array( 'status' => 409 ) );
+    }
+    $intent = mnu_native_stripe_get( '/payment_intents/' . rawurlencode( $intent_id ) );
+    if ( is_wp_error( $intent ) ) {
+        return $intent;
+    }
+    if ( 'succeeded' === ( $intent['status'] ?? '' ) ) {
+        $expected_amount = mnu_native_cents( $order->get_total() );
+        $received_amount = (int) ( $intent['amount_received'] ?? $intent['amount'] ?? 0 );
+        $expected_currency = strtolower( (string) mnu_native_get_settings()['currency'] );
+        $received_currency = strtolower( sanitize_key( (string) ( $intent['currency'] ?? '' ) ) );
+        if ( $expected_amount !== $received_amount || $expected_currency !== $received_currency ) {
+            $order->add_order_note( 'Native checkout payment verification failed because the Stripe amount or currency did not match the order.' );
+            $order->save();
+            return new WP_Error( 'payment_amount_mismatch', 'The payment amount did not match this order.', array( 'status' => 409 ) );
+        }
+        if ( ! $order->is_paid() ) {
+            $order->payment_complete( $intent_id );
+            $order->add_order_note( 'Paid through ' . get_bloginfo( 'name' ) . ' native checkout.' );
+        }
+        return array( 'ok' => true, 'status' => $order->get_status(), 'order_id' => $order->get_id() );
+    }
+    return array( 'ok' => false, 'payment_status' => $intent['status'] ?? 'unknown', 'order_status' => $order->get_status() );
+}
+
+function mnu_native_verify_webhook_signature( string $payload, string $signature_header, string $secret ): bool {
+    if ( ! $payload || ! $signature_header || ! $secret ) {
+        return false;
+    }
+    $timestamp  = 0;
+    $signatures = array();
+    foreach ( explode( ',', $signature_header ) as $part ) {
+        $pair = array_map( 'trim', explode( '=', $part, 2 ) );
+        if ( 2 !== count( $pair ) ) {
+            continue;
+        }
+        if ( 't' === $pair[0] ) {
+            $timestamp = (int) $pair[1];
+        } elseif ( 'v1' === $pair[0] ) {
+            $signatures[] = $pair[1];
+        }
+    }
+    if ( ! $timestamp || abs( time() - $timestamp ) > 300 || ! $signatures ) {
+        return false;
+    }
+    $expected = hash_hmac( 'sha256', $timestamp . '.' . $payload, $secret );
+    foreach ( $signatures as $signature ) {
+        if ( hash_equals( $expected, $signature ) ) {
+            return true;
+        }
+    }
+    return false;
+}
+
+function mnu_native_webhook( WP_REST_Request $request ): array|WP_Error {
+    $settings = mnu_native_get_settings();
+    $payload  = $request->get_body();
+    if ( empty( $settings['webhook_secret'] ) ) {
+        return new WP_Error( 'webhook_not_configured', 'Stripe webhook signing secret is not configured.', array( 'status' => 503 ) );
+    }
+    if ( ! mnu_native_verify_webhook_signature( $payload, (string) $request->get_header( 'stripe-signature' ), (string) $settings['webhook_secret'] ) ) {
+        return new WP_Error( 'invalid_signature', 'Invalid Stripe webhook signature.', array( 'status' => 400 ) );
+    }
+    $event = json_decode( $payload, true );
+    if ( ! is_array( $event ) ) {
+        return new WP_Error( 'invalid_payload', 'Invalid payload.', array( 'status' => 400 ) );
+    }
+    $event_type = sanitize_text_field( (string) ( $event['type'] ?? '' ) );
+
+    if ( 'account.updated' === $event_type ) {
+        if ( class_exists( 'MNU_Connect' ) ) {
+            MNU_Connect::handle_account_updated( (array) ( $event['data']['object'] ?? array() ) );
+        }
+        return array( 'received' => true );
+    }
+
+    $intent     = (array) ( $event['data']['object'] ?? array() );
+    $order_id   = absint( $intent['metadata']['wc_order_id'] ?? 0 );
+    $order      = $order_id ? wc_get_order( $order_id ) : false;
+
+    if ( $order && hash_equals( (string) $order->get_meta( '_thenest_stripe_payment_intent', true ), (string) ( $intent['id'] ?? '' ) ) ) {
+        if ( 'payment_intent.succeeded' === $event_type && ! $order->is_paid() ) {
+            $expected_amount   = mnu_native_cents( $order->get_total() );
+            $received_amount   = (int) ( $intent['amount_received'] ?? $intent['amount'] ?? 0 );
+            $expected_currency = strtolower( (string) mnu_native_get_settings()['currency'] );
+            $received_currency = strtolower( sanitize_key( (string) ( $intent['currency'] ?? '' ) ) );
+            if ( $expected_amount === $received_amount && $expected_currency === $received_currency ) {
+                $order->payment_complete( sanitize_text_field( (string) $intent['id'] ) );
+                $order->add_order_note( 'Stripe webhook confirmed payment for ' . get_bloginfo( 'name' ) . ' native checkout.' );
+            } else {
+                $order->add_order_note( 'Stripe webhook payment was not applied because the amount or currency did not match the order.' );
+                $order->save();
+            }
+        } elseif ( 'payment_intent.payment_failed' === $event_type && ! $order->is_paid() ) {
+            $order->update_status( 'failed', 'Stripe reported that the native checkout payment failed.' );
+        } elseif ( 'payment_intent.canceled' === $event_type && ! $order->is_paid() ) {
+            $order->update_status( 'cancelled', 'Stripe reported that the native checkout payment was cancelled.' );
+        }
+    }
+    return array( 'received' => true );
+}
