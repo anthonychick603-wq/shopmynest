@@ -172,6 +172,16 @@ final class MNU_Connect {
 				// account processes the charge, it only satisfies the Stripe Connect
 				// account-capability requirement so the connected account can onboard.
 				'type'                                    => 'standard',
+				// ShopMyNest sellers are homemade makers / sole proprietors, not
+				// registered companies. Prefilling `business_type=individual` tells
+				// Stripe Connect Onboarding to skip the "Individual vs Company"
+				// selection step and, crucially, never prompt the seller for an EIN
+				// (which they don't have). Stripe collects personal name/DOB/address
+				// and SSN last-4 instead, which every US individual seller can
+				// provide. Sellers who later cross IRS 1099-K reporting thresholds
+				// will still be asked for their full SSN by Stripe at that point;
+				// that is federal tax-reporting law, not a Connect setting.
+				'business_type'                           => 'individual',
 				'metadata[wp_user_id]'                    => (string) $user_id,
 				'capabilities[card_payments][requested]'  => 'true',
 				'capabilities[transfers][requested]'      => 'true',
