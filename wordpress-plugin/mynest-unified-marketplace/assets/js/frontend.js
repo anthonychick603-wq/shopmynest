@@ -45,6 +45,8 @@
     if (submit) submit.textContent = 'Create product';
     if (cancel) cancel.hidden = true;
     if (title) title.textContent = 'Add product';
+    const gate = form.closest('[data-tnm-listing-gate]');
+    if (gate && gate.dataset.tnmListingGate === 'blocked') gate.hidden = true;
     form.reset();
     if (actionField) actionField.value = 'create_product';
     if (productId) productId.value = '';
@@ -86,6 +88,10 @@
     if (submit) submit.textContent = 'Update product';
     if (cancel) cancel.hidden = false;
     if (title) title.textContent = 'Edit product';
+    // The form is hidden while Stripe onboarding is unfinished, but editing an
+    // existing listing is still permitted, so reveal it for the edit.
+    const gate = form.closest('[data-tnm-listing-gate]');
+    if (gate) gate.hidden = false;
     activateTab('products');
     form.scrollIntoView({ behavior: 'smooth', block: 'start' });
   };

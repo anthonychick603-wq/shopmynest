@@ -133,6 +133,7 @@ final class TNM_Shortcodes {
         $shipping_profile = function_exists( 'mnu_ship_get_profile' ) ? mnu_ship_get_profile( $seller_id ) : array();
         $label_settings   = function_exists( 'mnu_labels_settings' ) ? mnu_labels_settings() : array( 'shippo_token' => '', 'test_mode' => 1 );
         $connect          = class_exists( 'MNU_Connect' ) ? MNU_Connect::cached_status( $seller_id ) : null;
+        $listing_blocked  = tnm_seller_listing_blocked( $seller_id );
 
         ob_start();
         echo $notice; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
@@ -173,6 +174,15 @@ final class TNM_Shortcodes {
                 <div class="tnm-grid-2">
                     <div class="tnm-card">
                         <h2 data-tnm-form-title>Add product</h2>
+                        <?php if ( $listing_blocked ) : ?>
+                            <div class="tnm-notice tnm-error">
+                                <p><strong>Connect your bank account first.</strong></p>
+                                <p>Connect your Stripe account before you can list products for sale, so you can get paid when something sells.</p>
+                                <p><button type="button" class="tnm-button" data-tnm-open-tab="payouts">Connect with Stripe</button></p>
+                            </div>
+                        <?php endif; ?>
+                        <?php // Hidden rather than omitted while onboarding is unfinished: editing an existing listing is still allowed, and the edit button reuses this same form. ?>
+                        <div data-tnm-listing-gate="<?php echo $listing_blocked ? 'blocked' : 'open'; ?>"<?php echo $listing_blocked ? ' hidden' : ''; ?>>
                         <form method="post" enctype="multipart/form-data" class="tnm-form" data-tnm-product-form>
                             <?php wp_nonce_field( 'tnm_dashboard', 'tnm_nonce' ); ?>
                             <input type="hidden" name="tnm_action" value="create_product" data-tnm-action-field>
@@ -209,6 +219,7 @@ final class TNM_Shortcodes {
                                 <button class="tnm-button tnm-button-secondary" type="button" data-tnm-cancel-edit hidden>Cancel edit</button>
                             </div>
                         </form>
+                        </div>
                     </div>
                     <div class="tnm-card"><h2>Your products</h2><?php self::render_products_table( $products ); ?></div>
                 </div>
@@ -259,7 +270,7 @@ final class TNM_Shortcodes {
                             <p><?php echo ! empty( $label_settings['test_mode'] ) ? 'Test mode is enabled. Live-token label purchases are blocked.' : 'Live mode is enabled. Purchasing a label can charge the connected Shippo account.'; ?></p>
                         <?php else : ?>
                             <p class="tnm-connection-status is-disconnected"><strong>Not configured</strong></p>
-                            <p>An administrator must add a Shippo API token under <strong><?php echo esc_html( get_bloginfo( 'name' ) ); ?> → Shipping Labels</strong>.</p>
+                            <p>An administrator must add a Shippo API token under <strong>The Nest → Shipping Labels</strong>.</p>
                         <?php endif; ?>
                         <h3>How label purchasing works</h3>
                         <ol class="tnm-steps">
@@ -420,6 +431,12 @@ final class TNM_Shortcodes {
         $action = sanitize_key( wp_unslash( $_POST['tnm_action'] ) );
         $result = true;
         if ( 'create_product' === $action ) {
+            // Checked before the upload so a blocked attempt does not leave an
+            // orphaned attachment in the media library. TNM_Marketplace::create_product()
+            // enforces the same rule again for every other caller.
+            if ( tnm_seller_listing_blocked( $seller_id ) ) {
+                return '<div class="tnm-notice tnm-error">' . esc_html( tnm_seller_listing_blocked_message() ) . '</div>';
+            }
             $image_id = tnm_upload_image_from_request( 'image' );
             if ( is_wp_error( $image_id ) ) {
                 $result = $image_id;
@@ -707,7 +724,7 @@ final class TNM_Shortcodes {
         ob_start();
         ?>
         <div class="tnm-feed">
-            <header class="tnm-feed-header"><h1><?php echo esc_html( get_bloginfo( 'name' ) ); ?></h1><p><?php echo esc_html( 'following' === $feed['mode'] ? 'Updates from shops you follow' : 'Discover makers, artisans, and new listings' ); ?></p></header>
+            <header class="tnm-feed-header"><h1>The Nest</h1><p><?php echo esc_html( 'following' === $feed['mode'] ? 'Updates from shops you follow' : 'Discover makers, artisans, and new listings' ); ?></p></header>
             <?php if ( ! $feed['items'] ) : ?><div class="tnm-card"><p>No posts yet. Browse the shop and follow sellers to personalize your feed.</p></div><?php endif; ?>
             <?php
             foreach ( $feed['items'] as $item ) :

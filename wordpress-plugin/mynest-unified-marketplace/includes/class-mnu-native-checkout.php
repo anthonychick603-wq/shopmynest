@@ -758,17 +758,51 @@ function mnu_native_find_existing_order( int $user_id, string $checkout_token ):
     if ( ! $checkout_token ) {
         return false;
     }
+    // meta_query (not top-level meta_key/meta_value) so the lookup resolves under
+    // both legacy post storage and HPOS — this plugin declares HPOS compatible,
+    // and a lookup that silently matched nothing there would hand back a
+    // duplicate order for every retry.
     $orders = wc_get_orders(
         array(
             'customer_id' => $user_id,
             'limit'       => 1,
             'status'      => array( 'pending', 'failed' ),
-            'meta_key'    => '_thenest_checkout_token',
-            'meta_value'  => $checkout_token,
             'return'      => 'objects',
+            'meta_query'  => array(
+                array(
+                    'key'     => '_thenest_checkout_token',
+                    'value'   => $checkout_token,
+                    'compare' => '=',
+                ),
+            ),
         )
     );
     return $orders ? $orders[0] : false;
+}
+
+/**
+ * Serialise create-intent calls that share a checkout token.
+ *
+ * mnu_native_create_intent_locked() looks an order up by token and creates one
+ * when it finds none. Two concurrent requests carrying the same token can both
+ * complete that lookup before either has saved an order, and each then creates
+ * one — the exact duplicate the token exists to prevent. add_option() is the
+ * atomic primitive available here (option_name is UNIQUE), so it doubles as a
+ * mutex. Stale locks are stolen after MNU_NATIVE_INTENT_LOCK_TTL so a request
+ * that died mid-flight cannot wedge a buyer's checkout permanently.
+ */
+const MNU_NATIVE_INTENT_LOCK_TTL = 60;
+
+function mnu_native_intent_lock_acquire( int $user_id, string $checkout_token ): string|false {
+    $name = 'mnu_intent_lock_' . md5( $user_id . '|' . $checkout_token );
+    if ( add_option( $name, (string) time(), '', false ) ) {
+        return $name;
+    }
+    if ( (int) get_option( $name, 0 ) < time() - MNU_NATIVE_INTENT_LOCK_TTL ) {
+        update_option( $name, (string) time(), false );
+        return $name;
+    }
+    return false;
 }
 
 function mnu_native_create_intent( WP_REST_Request $request ): array|WP_Error {
@@ -778,6 +812,28 @@ function mnu_native_create_intent( WP_REST_Request $request ): array|WP_Error {
     }
     $data           = (array) $request->get_json_params();
     $checkout_token = sanitize_text_field( (string) ( $data['checkout_token'] ?? $data['request_id'] ?? '' ) );
+
+    // No token means an older app build with nothing to serialise on.
+    if ( ! $checkout_token ) {
+        return mnu_native_create_intent_locked( $user_id, $data, '' );
+    }
+
+    $lock = mnu_native_intent_lock_acquire( $user_id, $checkout_token );
+    if ( ! $lock ) {
+        return new WP_Error(
+            'checkout_in_progress',
+            'This checkout is already being set up. Give it a moment and try again.',
+            array( 'status' => 409 )
+        );
+    }
+    try {
+        return mnu_native_create_intent_locked( $user_id, $data, $checkout_token );
+    } finally {
+        delete_option( $lock );
+    }
+}
+
+function mnu_native_create_intent_locked( int $user_id, array $data, string $checkout_token ): array|WP_Error {
     $order          = mnu_native_find_existing_order( $user_id, $checkout_token );
     $shipping_changed = false;
 
@@ -949,7 +1005,7 @@ function mnu_native_complete( WP_REST_Request $request ): array|WP_Error {
         }
         if ( ! $order->is_paid() ) {
             $order->payment_complete( $intent_id );
-            $order->add_order_note( 'Paid through ' . get_bloginfo( 'name' ) . ' native checkout.' );
+            $order->add_order_note( 'Paid through The Nest native checkout.' );
         }
         return array( 'ok' => true, 'status' => $order->get_status(), 'order_id' => $order->get_id() );
     }
@@ -1019,7 +1075,7 @@ function mnu_native_webhook( WP_REST_Request $request ): array|WP_Error {
             $received_currency = strtolower( sanitize_key( (string) ( $intent['currency'] ?? '' ) ) );
             if ( $expected_amount === $received_amount && $expected_currency === $received_currency ) {
                 $order->payment_complete( sanitize_text_field( (string) $intent['id'] ) );
-                $order->add_order_note( 'Stripe webhook confirmed payment for ' . get_bloginfo( 'name' ) . ' native checkout.' );
+                $order->add_order_note( 'Stripe webhook confirmed payment for The Nest native checkout.' );
             } else {
                 $order->add_order_note( 'Stripe webhook payment was not applied because the amount or currency did not match the order.' );
                 $order->save();

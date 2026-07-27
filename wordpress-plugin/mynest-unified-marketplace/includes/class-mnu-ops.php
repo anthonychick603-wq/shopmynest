@@ -627,7 +627,7 @@ final class MNU_Ops {
         if ( $order->get_meta( $marker, true ) ) {
             return;
         }
-        self::notify_user( $customer_id, 'Order shipped', 'Your MyNest order #' . $order->get_order_number() . ' has shipped.', array( 'order_id' => $order->get_id(), 'seller_id' => $seller_id ) );
+        self::notify_user( $customer_id, 'Order shipped', 'Your MyNest order #' . $order->get_order_number() . ' has shipped.', array( 'type' => 'order_shipped', 'order_id' => $order->get_id(), 'seller_id' => $seller_id ) );
         $order->update_meta_data( $marker, current_time( 'mysql', true ) );
         $order->save();
     }
@@ -690,7 +690,7 @@ final class MNU_Ops {
                 (int) $seller_id,
                 'Item sold',
                 'You sold an item on MyNest. Order #' . $order->get_order_number() . ' is ready to review.',
-                array( 'order_id' => $order->get_id(), 'seller_id' => (int) $seller_id )
+                array( 'type' => 'new_order', 'order_id' => $order->get_id(), 'seller_id' => (int) $seller_id )
             );
             $order->update_meta_data( $marker, current_time( 'mysql', true ) );
         }
@@ -714,7 +714,7 @@ final class MNU_Ops {
             $user_id,
             'Order updated',
             'Your MyNest order #' . $order->get_order_number() . ' is now ' . wc_get_order_status_name( $new_status ) . '.',
-            array( 'order_id' => $order_id, 'status' => $new_status )
+            array( 'type' => 'order_update', 'order_id' => $order_id, 'status' => $new_status )
         );
         $order->update_meta_data( $marker, current_time( 'mysql', true ) );
         $order->save();
@@ -722,6 +722,11 @@ final class MNU_Ops {
 
     /**
      * Send an Expo notification. Failure is non-fatal and never blocks checkout.
+     *
+     * $data must carry a `type` the app knows how to route on, plus whatever ids
+     * that route needs (order_shipped/order_update → order_id; new_order →
+     * seller_id). See routeForPush() in the app's use-notification-routing.ts —
+     * a type it does not recognise simply opens the app without navigating.
      */
     public static function notify_user( int $user_id, string $title, string $body, array $data = array() ): bool {
         $tokens = get_user_meta( $user_id, 'thenest_expo_push_tokens', true );
