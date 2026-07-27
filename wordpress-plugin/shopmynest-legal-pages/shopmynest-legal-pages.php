@@ -3,7 +3,7 @@
  * Plugin Name: ShopMyNest Legal Pages
  * Plugin URI:  https://shopmynest.com/
  * Description: Seeds Terms of Service, Privacy Policy, Return & Refund Policy, and Shipping Policy pages on activation. Provides a settings screen so the legal entity name, business address, contact email, and effective date can be updated without editing page content. Values are substituted at render time via the_content filter.
- * Version:     1.0.0
+ * Version:     1.1.0
  * Author:      MyNest
  * Text Domain: shopmynest-legal-pages
  * Requires at least: 6.5
@@ -14,7 +14,7 @@
 defined( 'ABSPATH' ) || exit;
 
 final class ShopMyNest_Legal_Pages {
-    private const VERSION      = '1.0.0';
+    private const VERSION      = '1.1.0';
     private const OPT          = 'shopmynest_legal_settings';
     private const OPT_PAGE_IDS = 'shopmynest_legal_page_ids';
 
@@ -58,6 +58,50 @@ final class ShopMyNest_Legal_Pages {
         // Ensure the seeded pages remain published; recreate any that were
         // trashed so operators can un-trash from the settings screen.
         add_action( 'admin_notices', array( __CLASS__, 'missing_pages_notice' ) );
+
+        // 301 redirect legacy legal URLs to canonical plugin-managed slugs.
+        // Prevents duplicate-content SEO issues and ensures a single source
+        // of truth when the settings screen updates placeholders.
+        add_action( 'template_redirect', array( __CLASS__, 'redirect_legacy_slugs' ), 1 );
+    }
+
+    /**
+     * Map of legacy path (with leading slash) -> canonical slug (bare).
+     * Legacy URLs 301 to the plugin-seeded pages so both search engines
+     * and existing bookmarks land on the current content.
+     */
+    private static function legacy_redirects(): array {
+        return array(
+            '/terms-of-service' => 'terms',
+            '/terms-of-use'     => 'terms',
+            '/privacy-policy'   => 'privacy',
+            '/refund-policy'    => 'refunds',
+            '/returns-refunds'  => 'refunds',
+            '/shipping-policy'  => 'shipping',
+        );
+    }
+
+    public static function redirect_legacy_slugs(): void {
+        // Only handle GET/HEAD to avoid interfering with form posts.
+        $method = isset( $_SERVER['REQUEST_METHOD'] ) ? strtoupper( (string) $_SERVER['REQUEST_METHOD'] ) : 'GET';
+        if ( 'GET' !== $method && 'HEAD' !== $method ) {
+            return;
+        }
+
+        $request_uri  = isset( $_SERVER['REQUEST_URI'] ) ? (string) $_SERVER['REQUEST_URI'] : '';
+        $request_path = rtrim( strtok( $request_uri, '?' ), '/' );
+        if ( '' === $request_path ) {
+            return;
+        }
+
+        $map = self::legacy_redirects();
+        if ( ! array_key_exists( $request_path, $map ) ) {
+            return;
+        }
+
+        $target = home_url( '/' . $map[ $request_path ] . '/' );
+        wp_safe_redirect( $target, 301 );
+        exit;
     }
 
     public static function activate(): void {

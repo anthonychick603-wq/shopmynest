@@ -11,7 +11,7 @@ final class TNM_Admin {
     }
 
     public static function menu(): void {
-        add_menu_page( 'The Nest Marketplace', 'The Nest', 'manage_woocommerce', 'tnm-marketplace', array( __CLASS__, 'dashboard' ), 'dashicons-store', 56 );
+        add_menu_page( get_bloginfo( 'name' ) . ' Marketplace', get_bloginfo( 'name' ), 'manage_woocommerce', 'tnm-marketplace', array( __CLASS__, 'dashboard' ), 'dashicons-store', 56 );
         add_submenu_page( 'tnm-marketplace', 'Marketplace Dashboard', 'Dashboard', 'manage_woocommerce', 'tnm-marketplace', array( __CLASS__, 'dashboard' ) );
         add_submenu_page( 'tnm-marketplace', 'Payouts', 'Payouts', 'manage_woocommerce', 'tnm-payouts', array( __CLASS__, 'payouts' ) );
         add_submenu_page( 'tnm-marketplace', 'Settings', 'Settings', 'manage_woocommerce', 'tnm-settings', array( __CLASS__, 'settings' ) );

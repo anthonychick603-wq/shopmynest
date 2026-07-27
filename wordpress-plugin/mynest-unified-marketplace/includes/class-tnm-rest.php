@@ -60,7 +60,7 @@ final class TNM_REST {
     public static function config(): WP_REST_Response {
         return rest_ensure_response(
             array(
-                'name'       => 'The Nest',
+                'name'       => get_bloginfo( 'name' ),
                 'version'    => TNM_VERSION,
                 'site_url'   => home_url( '/' ),
                 'rest_url'   => rest_url( self::NS . '/' ),
