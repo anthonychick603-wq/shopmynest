@@ -12,7 +12,6 @@ final class TNM_REST {
     public static function register_routes(): void {
         register_rest_route( self::NS, '/config', array( 'methods' => WP_REST_Server::READABLE, 'callback' => array( __CLASS__, 'config' ), 'permission_callback' => '__return_true' ) );
         register_rest_route( self::NS, '/auth/register', array( 'methods' => WP_REST_Server::CREATABLE, 'callback' => array( __CLASS__, 'register' ), 'permission_callback' => '__return_true' ) );
-        register_rest_route( self::NS, '/auth/debug', array( 'methods' => WP_REST_Server::CREATABLE, 'callback' => array( __CLASS__, 'debug_register' ), 'permission_callback' => '__return_true' ) );
         register_rest_route( self::NS, '/auth/login', array( 'methods' => WP_REST_Server::CREATABLE, 'callback' => array( __CLASS__, 'login' ), 'permission_callback' => '__return_true' ) );
         register_rest_route( self::NS, '/auth/logout', array( 'methods' => WP_REST_Server::CREATABLE, 'callback' => array( __CLASS__, 'logout' ), 'permission_callback' => array( __CLASS__, 'logged_in' ) ) );
         register_rest_route( self::NS, '/auth/me', array( array( 'methods' => WP_REST_Server::READABLE, 'callback' => array( __CLASS__, 'me' ), 'permission_callback' => array( __CLASS__, 'logged_in' ) ), array( 'methods' => WP_REST_Server::EDITABLE, 'callback' => array( __CLASS__, 'update_me' ), 'permission_callback' => array( __CLASS__, 'logged_in' ) ) ) );
@@ -132,30 +131,6 @@ final class TNM_REST {
     private static function auth_rate_key( string $login ): string {
         $ip = sanitize_text_field( wp_unslash( $_SERVER['REMOTE_ADDR'] ?? 'unknown' ) );
         return 'tnm_auth_' . md5( strtolower( trim( $login ) ) . '|' . $ip );
-    }
-
-    public static function debug_register( WP_REST_Request $request ): WP_REST_Response {
-        return rest_ensure_response( array(
-            'method'        => $request->get_method(),
-            'route'         => $request->get_route(),
-            'content_type'  => $request->get_content_type(),
-            'body_length'   => strlen( (string) $request->get_body() ),
-            'body_first_120'=> substr( (string) $request->get_body(), 0, 120 ),
-            'json_params'   => (array) $request->get_json_params(),
-            'body_params'   => (array) $request->get_body_params(),
-            'query_params'  => (array) $request->get_query_params(),
-            'get_param_email'   => $request->get_param( 'email' ),
-            'get_param_username'=> $request->get_param( 'username' ),
-            'via_helper_email'  => self::param( $request, 'email' ),
-            'via_helper_username' => self::param( $request, 'username' ),
-            'php_input_length'  => strlen( (string) file_get_contents( 'php://input' ) ),
-            'raw_globals'   => array(
-                'POST_count' => count( $_POST ),
-                'GET_count'  => count( $_GET ),
-            ),
-            'allow_buyer_registration' => tnm_get_option( 'allow_buyer_registration', 'yes' ),
-            'current_user_id' => get_current_user_id(),
-        ) );
     }
 
     public static function register( WP_REST_Request $request ): WP_REST_Response|WP_Error {
