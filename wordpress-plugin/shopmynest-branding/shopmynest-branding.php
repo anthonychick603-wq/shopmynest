@@ -3,7 +3,7 @@
  * Plugin Name:       ShopMyNest Branding
  * Plugin URI:        https://shopmynest.com
  * Description:       Applies the ShopMyNest logo and brand identity across your WordPress + WooCommerce site: custom logo, favicons, wp-admin login screen, admin bar mark, and WooCommerce transactional email header.
- * Version:           1.0.0
+ * Version:           1.1.0
  * Requires at least: 6.0
  * Requires PHP:      7.4
  * Author:            ShopMyNest
@@ -17,7 +17,7 @@ if ( ! defined( 'ABSPATH' ) ) {
     exit;
 }
 
-define( 'SMN_BRANDING_VERSION', '1.0.0' );
+define( 'SMN_BRANDING_VERSION', '1.1.0' );
 define( 'SMN_BRANDING_DIR', plugin_dir_path( __FILE__ ) );
 define( 'SMN_BRANDING_URL', plugin_dir_url( __FILE__ ) );
 define( 'SMN_BRANDING_ASSETS', SMN_BRANDING_URL . 'assets/' );
@@ -26,12 +26,18 @@ define( 'SMN_BRANDING_ASSETS', SMN_BRANDING_URL . 'assets/' );
  * Brand color palette (from the ShopMyNest logo).
  */
 function smn_branding_palette() {
+    // Aligned with the child theme's theme.json (mynest-marketplace-child v1.0.3).
+    // The peach/brown palette was tried and reverted in favour of teal + cream.
     return array(
-        'primary'    => '#6B3F23', // deep brown (wordmark)
-        'secondary'  => '#D97A5B', // coral bird
-        'accent'     => '#E8C9A5', // warm nest tan
-        'background' => '#FAF4EB', // cream
-        'dark'       => '#3A2A1E',
+        'primary'    => '#01696F', // Brand Teal
+        'dark'       => '#0C4E54', // Brand Teal Dark
+        'accent'     => '#C25B2F', // Terracotta warm accent
+        'background' => '#F4F2EC', // Cream surface
+        'card'       => '#FFFFFF', // Card white
+        'ink'        => '#2B2820', // Warm near-black text
+        'border'     => '#B8B5AC', // Warm muted border
+        // Legacy alias so downstream code keeps working.
+        'secondary'  => '#C25B2F',
     );
 }
 
@@ -198,6 +204,145 @@ add_action( 'after_setup_theme', function() {
 /**
  * Shortcode: [shopmynest_logo size="300"] — insert the logo anywhere.
  */
+/* -----------------------------------------------------------
+ * 9. Front-end storefront polish + layout upgrades
+ * ----------------------------------------------------------- */
+add_action( 'wp_enqueue_scripts', 'smn_branding_enqueue_storefront_css', 20 );
+function smn_branding_enqueue_storefront_css() {
+    wp_enqueue_style(
+        'shopmynest-storefront',
+        SMN_BRANDING_ASSETS . 'storefront.css',
+        array(),
+        SMN_BRANDING_VERSION
+    );
+    // Expose the plugin palette as CSS custom properties so templates and
+    // future stylesheets can reference the exact same tokens.
+    $p = smn_branding_palette();
+    $css = ":root{" .
+        "--sn-teal:"     . $p['primary']    . ";" .
+        "--sn-teal-dk:"  . $p['dark']       . ";" .
+        "--sn-cream:"    . $p['background'] . ";" .
+        "--sn-card:"     . $p['card']       . ";" .
+        "--sn-ink:"      . $p['ink']        . ";" .
+        "--sn-border:"   . $p['border']     . ";" .
+        "--sn-accent:"   . $p['accent']     . ";" .
+        "--sn-shadow:0 6px 24px rgba(1,105,111,0.08);" .
+        "--sn-shadow-lg:0 12px 32px rgba(1,105,111,0.14);" .
+        "--sn-radius:14px;--sn-radius-sm:8px;--sn-radius-lg:24px;" .
+        "}";
+    wp_add_inline_style( 'shopmynest-storefront', $css );
+}
+
+/**
+ * Shortcode: [shopmynest_seller_row] — shows the current product's seller
+ * name and shop link. Renders nothing outside a single-product view.
+ */
+add_shortcode( 'shopmynest_seller_row', function() {
+    if ( ! function_exists( 'is_product' ) || ! is_product() ) {
+        return '';
+    }
+    global $product;
+    if ( ! $product ) {
+        $product = wc_get_product( get_the_ID() );
+    }
+    if ( ! $product ) {
+        return '';
+    }
+    $author_id = (int) get_post_field( 'post_author', $product->get_id() );
+    if ( $author_id <= 0 ) {
+        return '';
+    }
+    $author = get_userdata( $author_id );
+    if ( ! $author ) {
+        return '';
+    }
+    $display   = $author->display_name ?: $author->user_login;
+    $shop_url  = function_exists( 'tnm_seller_shop_url' ) ? tnm_seller_shop_url( $author_id ) : get_author_posts_url( $author_id );
+    $initial   = strtoupper( mb_substr( $display, 0, 1 ) );
+    return sprintf(
+        '<div class="mynest-seller-row">' .
+            '<div class="avatar-placeholder" aria-hidden="true">%s</div>' .
+            '<div class="seller-info">' .
+                '<div class="label">%s</div>' .
+                '<a class="name" href="%s">%s</a>' .
+            '</div>' .
+        '</div>',
+        esc_html( $initial ),
+        esc_html__( 'Sold by', 'shopmynest-branding' ),
+        esc_url( $shop_url ),
+        esc_html( $display )
+    );
+} );
+
+/**
+ * Shortcode: [shopmynest_trust variant="product|cart"] — renders the trust
+ * badges strip (secure payment, buyer protection, easy returns).
+ */
+add_shortcode( 'shopmynest_trust', function( $atts ) {
+    $atts    = shortcode_atts( array( 'variant' => 'product' ), $atts );
+    $badges  = array(
+        array( '🔒', __( 'Secure checkout', 'shopmynest-branding' ), __( 'Stripe-powered payments', 'shopmynest-branding' ) ),
+        array( '🛡️', __( 'Buyer protection', 'shopmynest-branding' ), __( 'Refund if it doesn\'t arrive', 'shopmynest-branding' ) ),
+        array( '↩️', __( 'Easy returns', 'shopmynest-branding' ), __( 'See individual seller policies', 'shopmynest-branding' ) ),
+    );
+    $out = '<div class="mynest-trust-row">';
+    foreach ( $badges as $b ) {
+        $out .= sprintf(
+            '<div class="mynest-trust"><span class="icon" aria-hidden="true">%s</span><span><span class="label">%s</span>%s</span></div>',
+            esc_html( $b[0] ),
+            esc_html( $b[1] ),
+            esc_html( $b[2] )
+        );
+    }
+    return $out . '</div>';
+} );
+
+/**
+ * Shortcode: [shopmynest_category_grid] — renders the six category tiles
+ * with emoji icons. Used on the home page and shop archive.
+ */
+add_shortcode( 'shopmynest_category_grid', function() {
+    $cats = array(
+        array( 'home-decor',        '🏠', __( 'Home Decor', 'shopmynest-branding' ) ),
+        array( 'jewelry',           '💍', __( 'Jewelry', 'shopmynest-branding' ) ),
+        array( 'baby-children',     '🧸', __( 'Baby & Children', 'shopmynest-branding' ) ),
+        array( 'art-prints',        '🎨', __( 'Art & Prints', 'shopmynest-branding' ) ),
+        array( 'crochet-knit',      '🧶', __( 'Crochet & Knit', 'shopmynest-branding' ) ),
+        array( 'pottery-ceramics',  '🏺', __( 'Pottery & Ceramics', 'shopmynest-branding' ) ),
+    );
+    $out = '<div class="mynest-cat-grid">';
+    foreach ( $cats as $c ) {
+        $out .= sprintf(
+            '<a class="mynest-cat-tile" href="/product-category/%s/"><span class="cat-emoji" aria-hidden="true">%s</span><span>%s</span></a>',
+            esc_attr( $c[0] ),
+            esc_html( $c[1] ),
+            esc_html( $c[2] )
+        );
+    }
+    return $out . '</div>';
+} );
+
+/**
+ * Shortcode: [shopmynest_values] — three-tile value-prop strip.
+ */
+add_shortcode( 'shopmynest_values', function() {
+    $vals = array(
+        array( '✨', __( 'Handmade by real people', 'shopmynest-branding' ), __( 'Every item is created by an independent maker or artisan.', 'shopmynest-branding' ) ),
+        array( '💛', __( 'Support small shops', 'shopmynest-branding' ), __( 'Your purchase pays a real person, not an algorithm.', 'shopmynest-branding' ) ),
+        array( '📦', __( 'Ships direct from the maker', 'shopmynest-branding' ), __( 'Get tracked shipping and packing straight from the shop.', 'shopmynest-branding' ) ),
+    );
+    $out = '<div class="mynest-values">';
+    foreach ( $vals as $v ) {
+        $out .= sprintf(
+            '<div class="mynest-value"><span class="icon" aria-hidden="true">%s</span><h3>%s</h3><p>%s</p></div>',
+            esc_html( $v[0] ),
+            esc_html( $v[1] ),
+            esc_html( $v[2] )
+        );
+    }
+    return $out . '</div>';
+} );
+
 add_shortcode( 'shopmynest_logo', function( $atts ) {
     $atts = shortcode_atts( array( 'size' => '300', 'alt' => 'ShopMyNest' ), $atts );
     $size = in_array( (int) $atts['size'], array( 300, 512, 1024 ), true ) ? (int) $atts['size'] : 300;
