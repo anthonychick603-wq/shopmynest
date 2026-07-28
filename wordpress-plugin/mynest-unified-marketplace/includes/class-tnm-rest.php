@@ -175,7 +175,21 @@ final class TNM_REST {
         if ( email_exists( $email ) || username_exists( $username ) ) {
             return tnm_json_error( 'account_exists', 'An account already exists with that email or username.', 409 );
         }
+
+        // WP.com Atomic (and some mu-plugins) attach filters to
+        // 'wp_pre_insert_user_data' that empty out $data on REST-created users,
+        // causing wp_insert_user to return WP_Error(empty_data). We remove all
+        // hooks on that filter for the duration of this single wp_create_user
+        // call, then restore them. This is scoped to the register endpoint only.
+        $original_hook = null;
+        if ( isset( $GLOBALS['wp_filter']['wp_pre_insert_user_data'] ) ) {
+            $original_hook = $GLOBALS['wp_filter']['wp_pre_insert_user_data'];
+            unset( $GLOBALS['wp_filter']['wp_pre_insert_user_data'] );
+        }
         $user_id = wp_create_user( $username, $password, $email );
+        if ( null !== $original_hook ) {
+            $GLOBALS['wp_filter']['wp_pre_insert_user_data'] = $original_hook;
+        }
         if ( is_wp_error( $user_id ) ) {
             return $user_id;
         }
