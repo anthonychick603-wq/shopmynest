@@ -95,6 +95,39 @@ final class TNM_REST {
         );
     }
 
+    /**
+     * Return a request param, falling back to the raw JSON body when the WP REST
+     * pipeline didn't populate params. WordPress.com Atomic strips JSON body
+     * parsing on some completely-anonymous POSTs, so we re-read the body once
+     * and cache the parsed array on the request object.
+     */
+    private static function param( WP_REST_Request $request, string $key ): string {
+        $value = $request->get_param( $key );
+        if ( null !== $value && '' !== $value ) {
+            return is_string( $value ) ? $value : (string) $value;
+        }
+        static $cache = array();
+        $rid = spl_object_id( $request );
+        if ( ! isset( $cache[ $rid ] ) ) {
+            $body = (string) $request->get_body();
+            $data = array();
+            if ( '' !== $body ) {
+                $decoded = json_decode( $body, true );
+                if ( is_array( $decoded ) ) {
+                    $data = $decoded;
+                } else {
+                    parse_str( $body, $parsed );
+                    if ( is_array( $parsed ) ) {
+                        $data = $parsed;
+                    }
+                }
+            }
+            $cache[ $rid ] = $data;
+        }
+        $raw = $cache[ $rid ][ $key ] ?? '';
+        return is_scalar( $raw ) ? (string) $raw : '';
+    }
+
     private static function auth_rate_key( string $login ): string {
         $ip = sanitize_text_field( wp_unslash( $_SERVER['REMOTE_ADDR'] ?? 'unknown' ) );
         return 'tnm_auth_' . md5( strtolower( trim( $login ) ) . '|' . $ip );
@@ -104,10 +137,13 @@ final class TNM_REST {
         if ( 'yes' !== tnm_get_option( 'allow_buyer_registration', 'yes' ) ) {
             return tnm_json_error( 'registration_disabled', 'Registration is currently disabled.', 403 );
         }
-        $email        = sanitize_email( (string) $request->get_param( 'email' ) );
-        $username     = sanitize_user( (string) $request->get_param( 'username' ), true );
-        $password     = (string) $request->get_param( 'password' );
-        $display_name = sanitize_text_field( (string) $request->get_param( 'display_name' ) );
+        $email        = sanitize_email( self::param( $request, 'email' ) );
+        $username     = sanitize_user( self::param( $request, 'username' ), true );
+        $password     = self::param( $request, 'password' );
+        $display_name = sanitize_text_field( self::param( $request, 'display_name' ) );
+        if ( '' === $display_name ) {
+            $display_name = sanitize_text_field( self::param( $request, 'name' ) );
+        }
         if ( ! is_email( $email ) || ! $username || strlen( $password ) < 8 ) {
             return tnm_json_error( 'invalid_registration', 'A valid email, username, and password of at least 8 characters are required.', 422 );
         }
@@ -133,8 +169,14 @@ final class TNM_REST {
     }
 
     public static function login( WP_REST_Request $request ): WP_REST_Response|WP_Error {
-        $login    = sanitize_text_field( (string) $request->get_param( 'login' ) );
-        $password = (string) $request->get_param( 'password' );
+        $login    = sanitize_text_field( self::param( $request, 'login' ) );
+        if ( '' === $login ) {
+            $login = sanitize_text_field( self::param( $request, 'username' ) );
+        }
+        if ( '' === $login ) {
+            $login = sanitize_text_field( self::param( $request, 'email' ) );
+        }
+        $password = self::param( $request, 'password' );
         if ( ! $login || ! $password ) {
             return tnm_json_error( 'missing_credentials', 'Login and password are required.', 422 );
         }

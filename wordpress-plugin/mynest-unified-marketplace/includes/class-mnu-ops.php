@@ -136,13 +136,14 @@ final class MNU_Ops {
 
     /**
      * Return the authenticated WordPress user, with compatibility for old app tokens.
+     *
+     * IMPORTANT: When a bearer token is present on the request we resolve it FIRST,
+     * before falling back to get_current_user_id(). On WP.com Atomic the Jetpack SSO
+     * session can leak the site admin's identity into REST context even for API
+     * calls that came from the mobile app, which caused native-checkout orders to
+     * be recorded with the admin as the customer instead of the actual buyer.
      */
     public static function get_bearer_user_id( ?WP_REST_Request $request = null ): int {
-        $current = get_current_user_id();
-        if ( $current ) {
-            return $current;
-        }
-
         $token = '';
         if ( $request ) {
             $token = sanitize_text_field( (string) $request->get_header( 'x-nest-mobile-token' ) );
@@ -156,15 +157,21 @@ final class MNU_Ops {
         if ( ! $token ) {
             $token = tnm_request_bearer_token();
         }
-        if ( ! $token ) {
-            return 0;
-        }
 
-        if ( class_exists( 'TNM_Auth' ) ) {
+        if ( $token && class_exists( 'TNM_Auth' ) ) {
             $payload = TNM_Auth::decode_token( $token );
-            if ( ! is_wp_error( $payload ) ) {
+            if ( ! is_wp_error( $payload ) && ! empty( $payload['sub'] ) ) {
                 return (int) $payload['sub'];
             }
+        }
+
+        $current = get_current_user_id();
+        if ( $current ) {
+            return $current;
+        }
+
+        if ( ! $token ) {
+            return 0;
         }
 
         $users = get_users(
