@@ -229,6 +229,31 @@ final class MNU_Email_Verify {
 				'callback'            => array( __CLASS__, 'rest_resend' ),
 			)
 		);
+		register_rest_route(
+			'the-nest/v1',
+			'/verify-status',
+			array(
+				'methods'             => WP_REST_Server::READABLE,
+				'permission_callback' => function () { return current_user_can( 'manage_options' ); },
+				'callback'            => array( __CLASS__, 'rest_status' ),
+			)
+		);
+	}
+
+	public static function rest_status( WP_REST_Request $request ): WP_REST_Response {
+		$out = array(
+			'grandfather_flag' => get_option( 'tnm_verify_grandfathered', '(unset)' ),
+			'users'            => array(),
+		);
+		$q = new WP_User_Query( array( 'role__in' => array( 'mynest_seller', 'tnm_seller', 'administrator' ), 'fields' => array( 'ID', 'user_login' ), 'number' => -1 ) );
+		foreach ( (array) $q->get_results() as $u ) {
+			$out['users'][] = array(
+				'id'       => (int) $u->ID,
+				'login'    => $u->user_login,
+				'verified' => (string) get_user_meta( (int) $u->ID, self::META_VERIFIED, true ),
+			);
+		}
+		return new WP_REST_Response( $out, 200 );
 	}
 
 	public static function rest_verify( WP_REST_Request $request ): WP_REST_Response|WP_Error {
