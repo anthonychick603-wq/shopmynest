@@ -3,7 +3,7 @@
  * Plugin Name: ShopMyNest Legal Pages
  * Plugin URI:  https://shopmynest.com/
  * Description: Seeds Terms of Service, Privacy Policy, Return & Refund Policy, and Shipping Policy pages on activation. Provides a settings screen so the legal entity name, business address, contact email, and effective date can be updated without editing page content. Values are substituted at render time via the_content filter.
- * Version:     1.1.0
+ * Version:     1.1.1
  * Author:      MyNest
  * Text Domain: shopmynest-legal-pages
  * Requires at least: 6.5
@@ -14,7 +14,7 @@
 defined( 'ABSPATH' ) || exit;
 
 final class ShopMyNest_Legal_Pages {
-    private const VERSION      = '1.1.0';
+    private const VERSION      = '1.1.1';
     private const OPT          = 'shopmynest_legal_settings';
     private const OPT_PAGE_IDS = 'shopmynest_legal_page_ids';
 
@@ -50,6 +50,11 @@ final class ShopMyNest_Legal_Pages {
     public static function init(): void {
         add_action( 'admin_menu', array( __CLASS__, 'register_settings_page' ) );
         add_action( 'admin_init', array( __CLASS__, 'register_settings' ) );
+
+        // One-time migration in v1.1.1: retire any operator-personal
+        // contact_email in the seeded legal pages and lock it to the
+        // marketplace's buyer-facing address. Runs once on any admin load.
+        add_action( 'admin_init', array( __CLASS__, 'maybe_migrate_contact_email' ) );
 
         // Substitute [LEGAL ENTITY], [BUSINESS ADDRESS], [CONTACT EMAIL],
         // [EFFECTIVE DATE] at render time, on the seeded pages only.
@@ -281,6 +286,31 @@ final class ShopMyNest_Legal_Pages {
             esc_html( 'missing pages: ' . implode( ', ', $missing ) ),
             esc_url( admin_url( 'plugins.php' ) )
         );
+    }
+
+    /**
+     * Retire any personal contact email that was seeded into the option
+     * from a bare WordPress admin_email at activation. Runs once, tracked
+     * via a marker option, and is a no-op after v1.1.1.
+     *
+     * The marketplace-facing default is help@shopmynest.com, which routes
+     * to buyer/seller support. Operators can override in Settings →
+     * ShopMyNest Legal.
+     */
+    public static function maybe_migrate_contact_email(): void {
+        if ( get_option( 'shopmynest_legal_v111_migrated' ) ) {
+            return;
+        }
+        $opts = (array) get_option( self::OPT, array() );
+        $current = isset( $opts['contact_email'] ) ? (string) $opts['contact_email'] : '';
+
+        // Anything ending in @shopmynest.com is fine; leave it alone.
+        $host = strtolower( substr( strrchr( $current, '@' ) ?: '', 1 ) );
+        if ( 'shopmynest.com' !== $host ) {
+            $opts['contact_email'] = 'help@shopmynest.com';
+            update_option( self::OPT, $opts );
+        }
+        update_option( 'shopmynest_legal_v111_migrated', 1 );
     }
 
     /**
