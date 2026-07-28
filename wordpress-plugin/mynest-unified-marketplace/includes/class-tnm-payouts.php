@@ -12,6 +12,16 @@ final class TNM_Payouts {
         if ( ! $automatic && ( ! tnm_current_user_can_manage_seller( $seller_id ) || ( ! tnm_is_seller( $seller_id ) && ! tnm_is_admin_or_manager() ) ) ) {
             return tnm_json_error( 'payout_permission_denied', 'You cannot request this payout.', 403 );
         }
+
+        /**
+         * Filter: allow a plugin (currently MNU_Payout_Gate) to block a payout
+         * request before any ledger work happens. Return a WP_Error to abort.
+         */
+        $pre = apply_filters( 'tnm_payout_pre_request', null, $seller_id, $automatic );
+        if ( is_wp_error( $pre ) ) {
+            return $pre;
+        }
+
         $balances = TNM_Ledger::balances( $seller_id );
         $minimum  = max( 0, (float) tnm_get_option( 'minimum_payout', 25 ) );
         if ( $balances['available'] < $minimum ) {
