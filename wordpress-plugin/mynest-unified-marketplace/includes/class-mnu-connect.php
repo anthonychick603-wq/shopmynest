@@ -172,16 +172,13 @@ final class MNU_Connect {
 				// account processes the charge, it only satisfies the Stripe Connect
 				// account-capability requirement so the connected account can onboard.
 				'type'                                    => 'standard',
-				// ShopMyNest sellers are homemade makers / sole proprietors, not
-				// registered companies. Prefilling `business_type=individual` tells
-				// Stripe Connect Onboarding to skip the "Individual vs Company"
-				// selection step and, crucially, never prompt the seller for an EIN
-				// (which they don't have). Stripe collects personal name/DOB/address
-				// and SSN last-4 instead, which every US individual seller can
-				// provide. Sellers who later cross IRS 1099-K reporting thresholds
-				// will still be asked for their full SSN by Stripe at that point;
-				// that is federal tax-reporting law, not a Connect setting.
-				'business_type'                           => 'individual',
+				// NOTE: `business_type` is NOT accepted at account-creation time for
+				// Standard connected accounts — Stripe rejects with "Received unknown
+				// parameter: business_type". The seller picks Individual vs Company
+				// inside the Stripe-hosted onboarding flow itself. (business_type is
+				// only pre-fillable on Custom/Express accounts, which use a different
+				// compliance model than ShopMyNest.) Do not re-add this parameter
+				// without switching account type.
 				'metadata[wp_user_id]'                    => (string) $user_id,
 				'capabilities[card_payments][requested]'  => 'true',
 				'capabilities[transfers][requested]'      => 'true',
@@ -321,10 +318,41 @@ final class MNU_Connect {
 		}
 		$account = mnu_native_stripe_get( '/accounts/' . rawurlencode( $account_id ) );
 		if ( is_wp_error( $account ) ) {
-			// Keep the cached view rather than reporting a hard failure to the app.
+			// Self-heal a stored id that Stripe no longer recognizes. When the platform
+			// has lost access to a connected account (deleted, never fully onboarded,
+			// mode mismatch between test/live keys) Stripe returns messages like
+			// "does not have access to account" or "No such account". We wipe the
+			// stale id so the seller sees a clean "Not connected" state and can start
+			// a fresh onboarding round instead of being stuck against a dead id.
+			$msg = strtolower( (string) $account->get_error_message() );
+			if ( str_contains( $msg, 'does not have access' )
+				|| str_contains( $msg, 'no such account' )
+				|| str_contains( $msg, 'required permissions for this endpoint' ) ) {
+				self::clear_stale_account( $user_id );
+				return rest_ensure_response( array(
+					'connected'         => false,
+					'charges_enabled'   => false,
+					'payouts_enabled'   => false,
+					'details_submitted' => false,
+				) );
+			}
+			// Any other Stripe error (rate limit, transient network issue): keep the
+			// cached view so the app is not knocked back to "Not connected" spuriously.
 			return rest_ensure_response( self::cached_status( $user_id ) );
 		}
 		return rest_ensure_response( self::refresh_status_cache( $user_id, (array) $account ) );
+	}
+
+	/**
+	 * Wipe a stored Connect account id and the cached capability booleans so a
+	 * seller with a dead/inaccessible id can start onboarding cleanly.
+	 */
+	private static function clear_stale_account( int $user_id ): void {
+		delete_user_meta( $user_id, self::META_ACCOUNT );
+		delete_user_meta( $user_id, self::META_CHARGES );
+		delete_user_meta( $user_id, self::META_PAYOUTS );
+		delete_user_meta( $user_id, self::META_DETAILS );
+		delete_transient( self::IDEMPOTENCY_TRANSIENT . $user_id );
 	}
 
 	public static function dashboard_link( WP_REST_Request $request ): WP_REST_Response|WP_Error {
