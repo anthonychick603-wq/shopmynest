@@ -285,7 +285,54 @@ final class TNM_Ledger {
             return;
         }
         $now = current_time( 'mysql', true );
-        foreach ( $refund->get_items() as $refund_item_id => $refund_item ) {
+
+        // A REST- or amount-only refund has no line items -- \WC_Order_Refund::get_items()
+        // returns []. In that case, apportion the refund amount across the
+        // original order's product line items proportional to each item's total,
+        // so the marketplace ledger always compensates for a refund regardless
+        // of how it was created (REST, wp-admin quick-refund, gateway webhook).
+        $refund_items = $refund->get_items();
+        if ( empty( $refund_items ) ) {
+            $refund_amount = abs( (float) $refund->get_amount() );
+            if ( $refund_amount <= 0 ) {
+                return;
+            }
+            $order_items_total = 0.0;
+            $eligible_items    = array();
+            foreach ( $order->get_items() as $order_item_id => $order_item ) {
+                if ( ! $order_item instanceof WC_Order_Item_Product ) {
+                    continue;
+                }
+                $line_total = (float) $order_item->get_total();
+                if ( $line_total <= 0 ) {
+                    continue;
+                }
+                $eligible_items[ $order_item_id ] = array(
+                    'item'       => $order_item,
+                    'line_total' => $line_total,
+                );
+                $order_items_total += $line_total;
+            }
+            if ( $order_items_total <= 0 || empty( $eligible_items ) ) {
+                return;
+            }
+            foreach ( $eligible_items as $original_item_id => $entry ) {
+                $original_item = $entry['item'];
+                $seller_id     = tnm_get_order_item_seller_id( $original_item );
+                if ( ! $seller_id ) {
+                    continue;
+                }
+                $share          = $entry['line_total'] / $order_items_total;
+                $refunded_gross = round( $refund_amount * $share, wc_get_price_decimals() + 2 );
+                if ( $refunded_gross <= 0 ) {
+                    continue;
+                }
+                self::insert_refund_row( $order, $refund_id, $original_item, $refunded_gross, 0.0, $now );
+            }
+            return;
+        }
+
+        foreach ( $refund_items as $refund_item_id => $refund_item ) {
             $original_item_id = absint( wc_get_order_item_meta( $refund_item_id, '_refunded_item_id', true ) );
             if ( ! $original_item_id ) {
                 continue;
@@ -299,45 +346,61 @@ final class TNM_Ledger {
                 continue;
             }
             $refunded_gross = abs( (float) $refund_item->get_total() );
-            $original_gross = max( 0.000001, (float) $original_item->get_total() );
-            $original_fee_meta = $original_item->get_meta( '_tnm_platform_fee', true );
-            if ( '' === $original_fee_meta ) {
-                $original_fee_meta = $original_item->get_meta( '_mynest_nestkeeper_fee', true );
-            }
-            $original_fee   = '' === $original_fee_meta ? round( $original_gross * ( tnm_fee_percent() / 100 ), wc_get_price_decimals() + 2 ) : (float) $original_fee_meta;
-            $fee_refund     = min( $original_fee, $original_fee * ( $refunded_gross / $original_gross ) );
             $tax_refund     = abs( (float) $refund_item->get_total_tax() );
-            $net_reversal   = -max( 0, $refunded_gross - $fee_refund );
-            $type           = 'refund_' . $refund_id;
-
-            $inserted = $wpdb->query(
-                $wpdb->prepare(
-                    'INSERT IGNORE INTO ' . tnm_table( 'ledger' ) . ' (seller_id,order_id,order_item_id,type,gross,platform_fee,tax,shipping,net,currency,status,available_at,payout_id,note,created_at,updated_at) VALUES (%d,%d,%d,%s,%f,%f,%f,0,%f,%s,%s,%s,0,%s,%s,%s)',
-                    $seller_id,
-                    $order_id,
-                    $original_item_id,
-                    $type,
-                    -$refunded_gross,
-                    -$fee_refund,
-                    -$tax_refund,
-                    $net_reversal,
-                    $order->get_currency(),
-                    'available',
-                    $now,
-                    'Customer refund #' . $refund_id,
-                    $now,
-                    $now
-                )
-            );
-
-            // Only reverse the Stripe transfer once, when this refund row is
-            // first recorded (INSERT IGNORE returns 0 for a duplicate webhook).
-            if ( $inserted > 0 ) {
-                self::reverse_transfer_for_item( $order_id, $original_item_id, abs( $net_reversal ), $refund_id );
-            }
-
-            tnm_notify( $seller_id, 0, 'order_refund', 'Refund on order #' . $order->get_order_number(), 'A seller earnings adjustment of ' . tnm_money( $net_reversal, $order->get_currency() ) . ' was recorded.', $order_id, 'shop_order', tnm_page_url( 'seller_dashboard' ) );
+            self::insert_refund_row( $order, $refund_id, $original_item, $refunded_gross, $tax_refund, $now );
         }
+    }
+
+    /**
+     * Insert one compensating ledger row for a per-item refund share and
+     * (best-effort) reverse the Stripe transfer that funded it. Extracted so
+     * both the item-based and amount-only refund paths write rows consistently.
+     */
+    private static function insert_refund_row( WC_Order $order, int $refund_id, WC_Order_Item_Product $original_item, float $refunded_gross, float $tax_refund, string $now ): void {
+        global $wpdb;
+        $seller_id = tnm_get_order_item_seller_id( $original_item );
+        if ( ! $seller_id || $refunded_gross <= 0 ) {
+            return;
+        }
+        $order_id         = $order->get_id();
+        $original_item_id = $original_item->get_id();
+        $original_gross   = max( 0.000001, (float) $original_item->get_total() );
+        $original_fee_meta = $original_item->get_meta( '_tnm_platform_fee', true );
+        if ( '' === $original_fee_meta ) {
+            $original_fee_meta = $original_item->get_meta( '_mynest_nestkeeper_fee', true );
+        }
+        $original_fee = '' === $original_fee_meta ? round( $original_gross * ( tnm_fee_percent() / 100 ), wc_get_price_decimals() + 2 ) : (float) $original_fee_meta;
+        $fee_refund   = min( $original_fee, $original_fee * ( $refunded_gross / $original_gross ) );
+        $net_reversal = -max( 0, $refunded_gross - $fee_refund );
+        $type         = 'refund_' . $refund_id;
+
+        $inserted = $wpdb->query(
+            $wpdb->prepare(
+                'INSERT IGNORE INTO ' . tnm_table( 'ledger' ) . ' (seller_id,order_id,order_item_id,type,gross,platform_fee,tax,shipping,net,currency,status,available_at,payout_id,note,created_at,updated_at) VALUES (%d,%d,%d,%s,%f,%f,%f,0,%f,%s,%s,%s,0,%s,%s,%s)',
+                $seller_id,
+                $order_id,
+                $original_item_id,
+                $type,
+                -$refunded_gross,
+                -$fee_refund,
+                -$tax_refund,
+                $net_reversal,
+                $order->get_currency(),
+                'available',
+                $now,
+                'Customer refund #' . $refund_id,
+                $now,
+                $now
+            )
+        );
+
+        // Only reverse the Stripe transfer once, when this refund row is
+        // first recorded (INSERT IGNORE returns 0 for a duplicate webhook).
+        if ( $inserted > 0 ) {
+            self::reverse_transfer_for_item( $order_id, $original_item_id, abs( $net_reversal ), $refund_id );
+        }
+
+        tnm_notify( $seller_id, 0, 'order_refund', 'Refund on order #' . $order->get_order_number(), 'A seller earnings adjustment of ' . tnm_money( $net_reversal, $order->get_currency() ) . ' was recorded.', $order_id, 'shop_order', tnm_page_url( 'seller_dashboard' ) );
     }
 
     /**
