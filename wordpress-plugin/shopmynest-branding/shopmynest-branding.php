@@ -3,7 +3,7 @@
  * Plugin Name:       ShopMyNest Branding
  * Plugin URI:        https://shopmynest.com
  * Description:       Applies the ShopMyNest logo and brand identity across your WordPress + WooCommerce site: custom logo, favicons, wp-admin login screen, admin bar mark, and WooCommerce transactional email header.
- * Version:           1.1.0
+ * Version:           1.2.0
  * Requires at least: 6.0
  * Requires PHP:      7.4
  * Author:            ShopMyNest
@@ -17,7 +17,7 @@ if ( ! defined( 'ABSPATH' ) ) {
     exit;
 }
 
-define( 'SMN_BRANDING_VERSION', '1.1.0' );
+define( 'SMN_BRANDING_VERSION', '1.2.0' );
 define( 'SMN_BRANDING_DIR', plugin_dir_path( __FILE__ ) );
 define( 'SMN_BRANDING_URL', plugin_dir_url( __FILE__ ) );
 define( 'SMN_BRANDING_ASSETS', SMN_BRANDING_URL . 'assets/' );
