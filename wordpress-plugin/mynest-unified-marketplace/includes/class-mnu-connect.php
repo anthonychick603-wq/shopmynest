@@ -69,6 +69,52 @@ final class MNU_Connect {
 				'permission_callback' => array( __CLASS__, 'seller' ),
 			)
 		);
+		// TEMPORARY admin-only diagnostic route. Verifies that the platform key
+		// currently configured in WooCommerce Stripe is a valid Connect platform
+		// key by attempting a real POST /v1/accounts and echoing the response.
+		// Remove once seller onboarding is verified working.
+		register_rest_route(
+			self::NS,
+			'/probe-platform',
+			array(
+				'methods'             => WP_REST_Server::CREATABLE,
+				'callback'            => array( __CLASS__, 'probe_platform' ),
+				'permission_callback' => function () { return current_user_can( 'manage_options' ); },
+			)
+		);
+	}
+
+	public static function probe_platform( WP_REST_Request $request ): WP_REST_Response {
+		$settings = function_exists( 'mnu_native_get_settings' ) ? mnu_native_get_settings() : array();
+		$pk = (string) ( $settings['publishable_key'] ?? '' );
+		$sk = (string) ( $settings['secret_key'] ?? '' );
+		$pk_prefix = strlen( $pk ) > 22 ? substr( $pk, 0, 22 ) . '...' : $pk;
+		$sk_prefix = strlen( $sk ) > 22 ? substr( $sk, 0, 22 ) . '...' : ( '' === $sk ? '(empty)' : '(short)' );
+
+		$attempt = mnu_native_stripe_request(
+			'/accounts',
+			array(
+				'type'                                   => 'standard',
+				'email'                                  => 'probe_' . time() . '@shopmynest.example',
+				'metadata[probe]'                        => '1',
+				'capabilities[card_payments][requested]' => 'true',
+				'capabilities[transfers][requested]'     => 'true',
+			),
+			'probe_' . time() . '_' . wp_generate_password( 8, false )
+		);
+
+		return rest_ensure_response( array(
+			'pk_prefix'    => $pk_prefix,
+			'sk_prefix'    => $sk_prefix,
+			'currency'     => $settings['currency'] ?? '',
+			'test_mode'    => $settings['test_mode'] ?? null,
+			'attempt_ok'   => ! is_wp_error( $attempt ),
+			'attempt_type' => is_wp_error( $attempt ) ? 'WP_Error' : ( is_array( $attempt ) ? 'array' : gettype( $attempt ) ),
+			'error_code'   => is_wp_error( $attempt ) ? $attempt->get_error_code() : null,
+			'error_msg'    => is_wp_error( $attempt ) ? $attempt->get_error_message() : null,
+			'error_data'   => is_wp_error( $attempt ) ? $attempt->get_error_data() : null,
+			'created_id'   => ( is_array( $attempt ) && isset( $attempt['id'] ) ) ? $attempt['id'] : null,
+		) );
 	}
 
 	/**
