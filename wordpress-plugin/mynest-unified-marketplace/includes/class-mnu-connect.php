@@ -124,6 +124,35 @@ final class MNU_Connect {
 			'probe_' . time() . '_' . wp_generate_password( 8, false )
 		);
 
+		// ALSO try the v1 controller-properties variant (modern Accounts v1) —
+		// this is what an Accounts v2 platform should still be able to create.
+		$attempt2 = mnu_native_stripe_request(
+			'/accounts',
+			array(
+				'controller[stripe_dashboard][type]'  => 'full',
+				'controller[fees][payer]'             => 'account',
+				'controller[losses][payments]'        => 'stripe',
+				'email'                                => 'probe2_' . time() . '@shopmynest.example',
+				'country'                              => 'US',
+				'capabilities[card_payments][requested]' => 'true',
+				'capabilities[transfers][requested]'   => 'true',
+			),
+			'probe2_' . time() . '_' . wp_generate_password( 8, false )
+		);
+
+		// ALSO try Accounts v2 API (the modern SaaS platform pattern)
+		$attempt3 = mnu_native_stripe_request(
+			'/accounts',
+			array(
+				'controller[type]'  => 'application',
+				'email'             => 'probe3_' . time() . '@shopmynest.example',
+				'country'           => 'US',
+				'capabilities[card_payments][requested]' => 'true',
+				'capabilities[transfers][requested]'     => 'true',
+			),
+			'probe3_' . time() . '_' . wp_generate_password( 8, false )
+		);
+
 		return rest_ensure_response( array(
 			'pk_prefix'    => $pk_prefix,
 			'sk_prefix'    => $sk_prefix,
@@ -136,6 +165,12 @@ final class MNU_Connect {
 			'error_msg'    => is_wp_error( $attempt ) ? $attempt->get_error_message() : null,
 			'error_data'   => is_wp_error( $attempt ) ? $attempt->get_error_data() : null,
 			'created_id'   => ( is_array( $attempt ) && isset( $attempt['id'] ) ) ? $attempt['id'] : null,
+			'attempt2'     => is_wp_error( $attempt2 )
+				? array( 'ok' => false, 'code' => $attempt2->get_error_code(), 'msg' => $attempt2->get_error_message() )
+				: array( 'ok' => true, 'id' => $attempt2['id'] ?? null ),
+			'attempt3'     => is_wp_error( $attempt3 )
+				? array( 'ok' => false, 'code' => $attempt3->get_error_code(), 'msg' => $attempt3->get_error_message() )
+				: array( 'ok' => true, 'id' => $attempt3['id'] ?? null ),
 		) );
 	}
 
