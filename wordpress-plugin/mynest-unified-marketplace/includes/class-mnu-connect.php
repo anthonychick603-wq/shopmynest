@@ -69,59 +69,6 @@ final class MNU_Connect {
 				'permission_callback' => array( __CLASS__, 'seller' ),
 			)
 		);
-
-		// TEMPORARY admin diagnostic: dump a seller's full Stripe Connect account
-		// (requirements, disabled_reason, capabilities) so we can see exactly why
-		// charges/payouts are not yet enabled. Remove once seller onboarding is
-		// stable.
-		register_rest_route(
-			self::NS,
-			'/diag-account',
-			array(
-				'methods'             => WP_REST_Server::READABLE,
-				'callback'            => array( __CLASS__, 'diag_account' ),
-				'permission_callback' => function () { return current_user_can( 'manage_options' ); },
-				'args'                => array(
-					'user_id' => array( 'type' => 'integer', 'required' => true ),
-				),
-			)
-		);
-	}
-
-	public static function diag_account( WP_REST_Request $request ): WP_REST_Response {
-		$user_id = (int) $request->get_param( 'user_id' );
-		$account_id = self::account_id( $user_id );
-		if ( '' === $account_id ) {
-			return rest_ensure_response( array( 'error' => 'no_account_id', 'user_id' => $user_id ) );
-		}
-		if ( ! function_exists( 'mnu_native_stripe_get' ) ) {
-			return rest_ensure_response( array( 'error' => 'stripe_unavailable', 'account_id' => $account_id ) );
-		}
-		$account = mnu_native_stripe_get( '/accounts/' . rawurlencode( $account_id ) );
-		if ( is_wp_error( $account ) ) {
-			return rest_ensure_response( array(
-				'error'      => 'stripe_error',
-				'code'       => $account->get_error_code(),
-				'message'    => $account->get_error_message(),
-				'account_id' => $account_id,
-			) );
-		}
-		$acct = (array) $account;
-		return rest_ensure_response( array(
-			'account_id'         => $account_id,
-			'user_id'            => $user_id,
-			'charges_enabled'    => $acct['charges_enabled'] ?? null,
-			'payouts_enabled'    => $acct['payouts_enabled'] ?? null,
-			'details_submitted'  => $acct['details_submitted'] ?? null,
-			'requirements'       => $acct['requirements'] ?? null,
-			'future_requirements'=> $acct['future_requirements'] ?? null,
-			'capabilities'       => $acct['capabilities'] ?? null,
-			'business_profile'   => $acct['business_profile'] ?? null,
-			'external_accounts'  => $acct['external_accounts']['data'] ?? null,
-			'tos_acceptance'     => $acct['tos_acceptance'] ?? null,
-			'type'               => $acct['type'] ?? null,
-			'controller'         => $acct['controller'] ?? null,
-		) );
 	}
 
 	/**
