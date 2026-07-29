@@ -91,6 +91,27 @@ final class MNU_Connect {
 		$pk_prefix = strlen( $pk ) > 22 ? substr( $pk, 0, 22 ) . '...' : $pk;
 		$sk_prefix = strlen( $sk ) > 22 ? substr( $sk, 0, 22 ) . '...' : ( '' === $sk ? '(empty)' : '(short)' );
 
+		// Fetch the platform account itself to see what Stripe thinks about the key.
+		$whoami = mnu_native_stripe_get( '/account' );
+		$whoami_out = array();
+		if ( is_wp_error( $whoami ) ) {
+			$whoami_out = array( 'error' => $whoami->get_error_message() );
+		} elseif ( is_array( $whoami ) ) {
+			$whoami_out = array(
+				'id'                 => $whoami['id'] ?? null,
+				'type'               => $whoami['type'] ?? null,
+				'business_type'      => $whoami['business_type'] ?? null,
+				'country'            => $whoami['country'] ?? null,
+				'email'              => $whoami['email'] ?? null,
+				'charges_enabled'    => $whoami['charges_enabled'] ?? null,
+				'payouts_enabled'    => $whoami['payouts_enabled'] ?? null,
+				'details_submitted'  => $whoami['details_submitted'] ?? null,
+				'controller'         => $whoami['controller'] ?? null,
+				'settings_dashboard' => isset( $whoami['settings']['dashboard'] ) ? $whoami['settings']['dashboard'] : null,
+				'capabilities'       => $whoami['capabilities'] ?? null,
+			);
+		}
+
 		$attempt = mnu_native_stripe_request(
 			'/accounts',
 			array(
@@ -108,6 +129,7 @@ final class MNU_Connect {
 			'sk_prefix'    => $sk_prefix,
 			'currency'     => $settings['currency'] ?? '',
 			'test_mode'    => $settings['test_mode'] ?? null,
+			'whoami'       => $whoami_out,
 			'attempt_ok'   => ! is_wp_error( $attempt ),
 			'attempt_type' => is_wp_error( $attempt ) ? 'WP_Error' : ( is_array( $attempt ) ? 'array' : gettype( $attempt ) ),
 			'error_code'   => is_wp_error( $attempt ) ? $attempt->get_error_code() : null,
