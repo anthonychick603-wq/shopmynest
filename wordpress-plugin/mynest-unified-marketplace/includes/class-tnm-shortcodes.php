@@ -356,7 +356,7 @@ final class TNM_Shortcodes {
                     <?php if ( ! $connect['connected'] ) : ?>
                         <p class="tnm-connection-status is-disconnected"><strong>Not connected</strong></p>
                         <p>Connect your bank account with Stripe so your sales are paid directly to you. You must finish this before you can list new products.</p>
-                        <p><button type="button" class="tnm-button" data-tnm-connect-onboard>Connect your bank account with Stripe</button></p>
+                        <p><a class="tnm-button" data-tnm-connect-onboard href="<?php echo esc_url( home_url( '/mnu-connect-start/' ) ); ?>">Connect your bank account with Stripe</a></p>
                     <?php elseif ( ! $connect['payouts_enabled'] || ! $connect['charges_enabled'] ) : ?>
                         <p class="tnm-connection-status is-disconnected"><strong>Onboarding incomplete</strong></p>
                         <p>Your Stripe account still needs more information before payouts can be enabled. Finish onboarding to start selling.</p>
@@ -445,7 +445,17 @@ final class TNM_Shortcodes {
             }
             var onboard = card.querySelector('[data-tnm-connect-onboard]');
             if (onboard) {
-                onboard.addEventListener('click', function(){
+                onboard.addEventListener('click', function(ev){
+                    // If this is a plain anchor with an href (e.g. /mnu-connect-start/),
+                    // let the browser do a normal same-tab navigation. The server
+                    // route creates/updates the Stripe account and 302s to Stripe,
+                    // so no XHR is needed and the flow works even if TNMFrontend
+                    // localize didn't land in the footer.
+                    if (onboard.tagName === 'A' && onboard.getAttribute('href')) {
+                        show('Opening Stripe onboarding…');
+                        return; // do not preventDefault; navigate via href
+                    }
+                    if (ev && ev.preventDefault) { ev.preventDefault(); }
                     onboard.disabled = true;
                     show('Opening Stripe onboarding…');
                     post('nest-connect/v1/onboard-link', { return_url: window.location.href, refresh_url: window.location.href })
