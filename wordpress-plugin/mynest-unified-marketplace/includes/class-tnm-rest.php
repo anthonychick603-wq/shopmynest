@@ -466,9 +466,16 @@ final class TNM_REST {
         $balances  = TNM_Ledger::balances( $seller_id );
         $product_ids = tnm_seller_product_ids( $seller_id, array( 'publish', 'pending', 'draft', 'private' ) );
         $orders    = TNM_Marketplace::seller_orders( $seller_id, 1, 5 );
+        // TNM_Social::seller_profile() returns WP_Error for admins. Serializing
+        // a WP_Error into a JSON response leaks an error object into a success
+        // payload — replace it with null so the caller can render "admin view".
+        $profile = TNM_Social::seller_profile( $seller_id, $seller_id );
+        if ( is_wp_error( $profile ) ) {
+            $profile = null;
+        }
         return rest_ensure_response(
             array(
-                'profile'       => TNM_Social::seller_profile( $seller_id, $seller_id ),
+                'profile'       => $profile,
                 'balances'      => $balances,
                 'product_count' => count( $product_ids ),
                 'recent_orders' => $orders['orders'],
@@ -478,8 +485,36 @@ final class TNM_REST {
         );
     }
 
-    public static function seller_profile_me(): WP_REST_Response {
-        return rest_ensure_response( TNM_Social::seller_profile( get_current_user_id(), get_current_user_id() ) );
+    public static function seller_profile_me(): WP_REST_Response|WP_Error {
+        $user_id = get_current_user_id();
+        // Administrators and shop managers have seller-tool permission but are not
+        // vendors themselves — TNM_Social::seller_profile() will return a
+        // WP_Error for them, which used to fatal because of the WP_REST_Response
+        // return type. Return a 200-safe empty profile for admins instead.
+        if ( tnm_is_admin_or_manager( $user_id ) ) {
+            return rest_ensure_response(
+                array(
+                    'id'           => $user_id,
+                    'store_name'   => '',
+                    'display_name' => wp_get_current_user()->display_name,
+                    'about'        => '',
+                    'avatar'       => tnm_user_avatar_url( $user_id, 512 ),
+                    'banner'       => '',
+                    'followers'    => 0,
+                    'is_following' => false,
+                    'rating'       => 0,
+                    'review_count' => 0,
+                    'joined'       => wp_get_current_user()->user_registered,
+                    'posts'        => array(),
+                    'is_admin'     => true,
+                )
+            );
+        }
+        $profile = TNM_Social::seller_profile( $user_id, $user_id );
+        if ( is_wp_error( $profile ) ) {
+            return $profile;
+        }
+        return rest_ensure_response( $profile );
     }
 
     public static function seller_profile_update( WP_REST_Request $request ): WP_REST_Response|WP_Error {
@@ -509,7 +544,14 @@ final class TNM_REST {
             }
             update_user_meta( $seller_id, 'tnm_paypal_email', $email );
         }
-        return rest_ensure_response( TNM_Social::seller_profile( $seller_id, $seller_id ) );
+        // Fetch the refreshed profile. TNM_Social::seller_profile() returns
+        // WP_Error for non-seller callers (e.g. admins); surface that instead
+        // of triggering a return-type fatal.
+        $profile = TNM_Social::seller_profile( $seller_id, $seller_id );
+        if ( is_wp_error( $profile ) ) {
+            return $profile;
+        }
+        return rest_ensure_response( $profile );
     }
 
     public static function seller_products( WP_REST_Request $request ): WP_REST_Response {
