@@ -87,21 +87,7 @@ final class MNU_Social_Frontend {
 	 * ========================================================= */
 
 	public static function sc_directory( $atts = array() ): string {
-		$viewer_id  = get_current_user_id();
-		$is_seller  = $viewer_id && function_exists( 'tnm_is_seller' ) && tnm_is_seller( $viewer_id );
 		ob_start();
-		if ( $is_seller ) :
-			$my_shop_url = add_query_arg( 'seller', $viewer_id, home_url( '/shop-profile/' ) );
-			?>
-			<div class="mnu-directory__self-banner" role="note">
-				<div class="mnu-directory__self-copy">
-					<strong>You have a shop on MyNest.</strong>
-					<span class="mnu-muted">See how buyers view your storefront.</span>
-				</div>
-				<a class="mnu-button mnu-button--primary" href="<?php echo esc_url( $my_shop_url ); ?>">View my shop</a>
-			</div>
-			<?php
-		endif;
 		?>
 		<div class="mnu-directory" data-mnu-directory>
 			<div class="mnu-directory__header">

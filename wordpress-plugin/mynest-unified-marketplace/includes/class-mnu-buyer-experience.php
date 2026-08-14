@@ -358,9 +358,9 @@ final class MNU_Buyer_Experience {
     }
 
     /**
-     * Rewrite block-navigation anchors for role-aware Shop and Sell on MyNest tabs.
+     * Rewrite block-navigation anchors for role-aware tabs.
      *
-     *   Shop link ( href=/shop/ )     -> href=/sellers/, label "Discover shops" (all users)
+     *   Shop link                     -> unchanged: label "Shop", href /shop/
      *   Sell on MyNest link           -> for approved sellers: href=/seller-dashboard/, label "Seller Dashboard"
      */
     private static function rewrite_block_nav_links( string $html ): string {
@@ -369,27 +369,19 @@ final class MNU_Buyer_Experience {
         }
 
         $is_seller = is_user_logged_in() && function_exists( 'tnm_is_marketplace_user' ) && tnm_is_marketplace_user();
+        if ( ! $is_seller ) {
+            return $html;
+        }
 
-        // Replace the Shop link's href and label. Match any block-nav anchor that
-        // points at the WooCommerce /shop/ archive. The label span is the very
-        // next element after the opening <a>.
-        $sellers_url = esc_url( home_url( '/sellers/' ) );
-        $html = preg_replace_callback(
+        return (string) preg_replace_callback(
             '#(<a\b[^>]*wp-block-navigation-item__content[^>]*\bhref=")([^"]*)("[^>]*>\s*<span class="wp-block-navigation-item__label">)([^<]*)(</span>\s*</a>)#i',
-            static function ( $m ) use ( $sellers_url, $is_seller ) {
+            static function ( $m ) {
                 $href  = html_entity_decode( (string) $m[2], ENT_QUOTES | ENT_HTML5, 'UTF-8' );
                 $label = html_entity_decode( (string) $m[4], ENT_QUOTES | ENT_HTML5, 'UTF-8' );
                 $path  = (string) wp_parse_url( $href, PHP_URL_PATH );
                 $trim  = '/' . trim( (string) $path, '/' ) . '/';
 
-                // Shop tab -> Discover shops for everyone.
-                if ( '/shop/' === $trim || strtolower( trim( $label ) ) === 'shop' ) {
-                    return $m[1] . esc_url( $sellers_url ) . $m[3] . 'Discover shops' . $m[5];
-                }
-
-                // Sell on MyNest tab -> Seller Dashboard for approved sellers.
-                $lower_label = strtolower( trim( $label ) );
-                if ( $is_seller && ( '/seller-portal/' === $trim || $lower_label === 'sell on mynest' ) ) {
+                if ( '/seller-portal/' === $trim || strtolower( trim( $label ) ) === 'sell on mynest' ) {
                     return $m[1] . esc_url( home_url( '/seller-dashboard/' ) ) . $m[3] . 'Seller Dashboard' . $m[5];
                 }
 
@@ -397,8 +389,6 @@ final class MNU_Buyer_Experience {
             },
             $html
         );
-
-        return (string) $html;
     }
 
     private static function is_header_template_part( array $block ): bool {

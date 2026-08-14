@@ -22,6 +22,7 @@ final class MNU_Compat {
         }
 
         add_action( 'wp_enqueue_scripts', array( __CLASS__, 'register_assets' ), 20 );
+        add_action( 'woocommerce_before_shop_loop', array( __CLASS__, 'render_shop_directory_buttons' ), 5 );
 
         $shortcodes = array(
             'mynest_home_feed'          => 'home_feed',
@@ -55,6 +56,35 @@ final class MNU_Compat {
     private static function assets(): void {
         wp_enqueue_style( 'tnm-frontend' );
         wp_enqueue_script( 'tnm-frontend' );
+    }
+
+    /**
+     * Render Discover Shops / See My Shop buttons above the WooCommerce shop loop.
+     * Fires on the /shop/ archive and taxonomy archives via woocommerce_before_shop_loop.
+     */
+    public static function render_shop_directory_buttons(): void {
+        $viewer_id = get_current_user_id();
+        $is_seller = $viewer_id && function_exists( 'tnm_is_seller' ) && tnm_is_seller( $viewer_id );
+        $discover  = esc_url( home_url( '/sellers/' ) );
+        $my_shop   = $is_seller
+            ? esc_url( add_query_arg( 'seller', $viewer_id, home_url( '/shop-profile/' ) ) )
+            : '';
+        ?>
+        <div class="mnu-shop-directory-cta" role="navigation" aria-label="Shop directory">
+            <a class="mnu-button mnu-button--primary" href="<?php echo $discover; ?>">Discover Shops</a>
+            <?php if ( $is_seller ) : ?>
+                <a class="mnu-button mnu-button--secondary" href="<?php echo $my_shop; ?>">See My Shop</a>
+            <?php endif; ?>
+        </div>
+        <style>
+            .mnu-shop-directory-cta{display:flex;flex-wrap:wrap;gap:.5rem;margin:0 0 1.25rem}
+            .mnu-shop-directory-cta .mnu-button{display:inline-block;padding:.6rem 1.2rem;border-radius:999px;font-weight:600;font-size:.95rem;text-decoration:none;border:1px solid transparent;line-height:1.2}
+            .mnu-shop-directory-cta .mnu-button--primary{background:#245f4b;color:#fff}
+            .mnu-shop-directory-cta .mnu-button--primary:hover{background:#1c4c3c;color:#fff}
+            .mnu-shop-directory-cta .mnu-button--secondary{background:#fffdf7;color:#245f4b;border-color:#245f4b}
+            .mnu-shop-directory-cta .mnu-button--secondary:hover{background:#f4ecdc;color:#245f4b}
+        </style>
+        <?php
     }
 
     public static function filter_seller_menu_items( array $items, object $args ): array {
