@@ -1,5 +1,5 @@
 /**
- * v3.7.35.12 — MyNest Marketplace block-checkout integration (SERVER-FIRST).
+ * v3.7.36 — MyNest Marketplace block-checkout integration (SERVER-FIRST).
  * Adds on-page visible debug panel (bottom-right) so we can trace exactly
  * where the client-side flow stops when checkout appears to hang.
  *
@@ -33,9 +33,16 @@
 ( function ( wp, wc ) {
 	'use strict';
 
-	// ---- On-page debug panel (v3.7.35.12) ------------------------------------
+	// ---- Debug logger (v3.7.36) -------------------------------------------
+	// On-page panel is disabled in production. To re-enable for
+	// diagnostics, append ?mnu_debug=1 to the checkout URL.
+	var _mnuDebugOn = false;
+	try {
+		_mnuDebugOn = /[?&]mnu_debug=1\b/.test( window.location.search );
+	} catch ( e ) {}
 	var _mnuPanel = null;
 	function _mnuGetPanel() {
+		if ( ! _mnuDebugOn ) return null;
 		if ( _mnuPanel && document.body && document.body.contains( _mnuPanel ) ) return _mnuPanel;
 		var p = document.getElementById( 'mnu-debug-log' );
 		if ( ! p && document.body ) {
@@ -44,7 +51,7 @@
 			p.style.cssText = 'position:fixed;right:8px;bottom:8px;z-index:2147483647;width:380px;max-height:40vh;overflow:auto;background:#111;color:#0f0;font:11px/1.4 ui-monospace,monospace;padding:8px 10px;border-radius:6px;box-shadow:0 4px 20px rgba(0,0,0,.4);opacity:.92';
 			var hdr = document.createElement( 'div' );
 			hdr.style.cssText = 'font-weight:bold;color:#7cf;margin-bottom:4px;border-bottom:1px solid #333;padding-bottom:4px;display:flex;justify-content:space-between';
-			hdr.innerHTML = '<span>MNU debug 3.7.35.12</span><span id="mnu-debug-close" style="cursor:pointer;color:#f66">✕</span>';
+			hdr.innerHTML = '<span>MNU debug 3.7.36</span><span id="mnu-debug-close" style="cursor:pointer;color:#f66">✕</span>';
 			p.appendChild( hdr );
 			var body = document.createElement( 'div' );
 			body.id = 'mnu-debug-body';
@@ -57,24 +64,26 @@
 		return p;
 	}
 	function mnuLog( msg, data ) {
-		try {
-			var p = _mnuGetPanel();
-			if ( p ) {
-				var body = p.querySelector( '#mnu-debug-body' );
-				var t = new Date().toISOString().split( 'T' )[ 1 ].split( '.' )[ 0 ];
-				var line = document.createElement( 'div' );
-				var text = '[' + t + '] ' + msg;
-				if ( typeof data !== 'undefined' ) {
-					try {
-						var d = ( typeof data === 'object' && data !== null ) ? JSON.stringify( data ) : String( data );
-						text += '  ' + ( d.length > 300 ? d.slice( 0, 300 ) + '…' : d );
-					} catch ( e ) {}
+		if ( _mnuDebugOn ) {
+			try {
+				var p = _mnuGetPanel();
+				if ( p ) {
+					var body = p.querySelector( '#mnu-debug-body' );
+					var t = new Date().toISOString().split( 'T' )[ 1 ].split( '.' )[ 0 ];
+					var line = document.createElement( 'div' );
+					var text = '[' + t + '] ' + msg;
+					if ( typeof data !== 'undefined' ) {
+						try {
+							var d = ( typeof data === 'object' && data !== null ) ? JSON.stringify( data ) : String( data );
+							text += '  ' + ( d.length > 300 ? d.slice( 0, 300 ) + '…' : d );
+						} catch ( e ) {}
+					}
+					line.textContent = text;
+					body.appendChild( line );
+					body.scrollTop = body.scrollHeight;
 				}
-				line.textContent = text;
-				body.appendChild( line );
-				body.scrollTop = body.scrollHeight;
-			}
-		} catch ( e ) {}
+			} catch ( e ) {}
+		}
 		try { console.log( '[MNU] ' + msg, data ); } catch ( e ) {}
 	}
 	window.mnuLog = mnuLog;
@@ -106,7 +115,7 @@
 	var restNonce = settings.restNonce || '';
 	var checkoutUrl = settings.checkoutUrl || window.location.pathname;
 
-	mnuLog( 'v3.7.35.12 registering payment method (server-first)', {
+	mnuLog( 'v3.7.36 registering payment method (server-first)', {
 		hasStripe: !! getStripe(),
 		hasKey: !! publishableKey,
 		hasFinalize: !! finalizeUrl,
@@ -122,7 +131,7 @@
 		var stripeRef = useRef( null );
 		var elementsRef = useRef( null );
 		var paymentElementRef = useRef( null );
-		// v3.7.35.12: hold latest event registration + emitResponse in refs so
+		// v3.7.36: hold latest event registration + emitResponse in refs so
 		// the observers can be registered ONCE with an empty deps array. Blocks
 		// passes fresh object identities on every render which caused an
 		// infinite re-register loop that manifested in v3.7.35.7.
@@ -351,7 +360,7 @@
 				var pdSample = pd ? JSON.stringify( pd ).slice( 0, 300 ) : '';
 				mnuLog( 'onCheckoutSuccess FIRED', { redirect: redirect, hasPaymentDetails: !! pd, pdKeys: pd ? Object.keys( pd ) : [], mnuKeys: mnu ? Object.keys( mnu ) : [], pdSample: pdSample } );
 
-				// Preferred path (v3.7.35.12+): Blocks passes payment_details through untouched.
+				// Preferred path (v3.7.36+): Blocks passes payment_details through untouched.
 				if ( mnu && mnu.mnu_confirm === '1' && mnu.mnu_intent_id && mnu.mnu_client_secret && mnu.mnu_order_id && mnu.mnu_nonce ) {
 					mnuLog( 'payment_details channel detected — running handleConfirm from paymentDetails' );
 					return handleConfirm( mnu.mnu_intent_id, mnu.mnu_client_secret, parseInt( mnu.mnu_order_id, 10 ), mnu.mnu_nonce );
