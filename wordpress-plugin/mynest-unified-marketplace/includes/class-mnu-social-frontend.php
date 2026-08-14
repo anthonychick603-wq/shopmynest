@@ -87,7 +87,21 @@ final class MNU_Social_Frontend {
 	 * ========================================================= */
 
 	public static function sc_directory( $atts = array() ): string {
+		$viewer_id  = get_current_user_id();
+		$is_seller  = $viewer_id && function_exists( 'tnm_is_seller' ) && tnm_is_seller( $viewer_id );
 		ob_start();
+		if ( $is_seller ) :
+			$my_shop_url = add_query_arg( 'seller', $viewer_id, home_url( '/shop-profile/' ) );
+			?>
+			<div class="mnu-directory__self-banner" role="note">
+				<div class="mnu-directory__self-copy">
+					<strong>You have a shop on MyNest.</strong>
+					<span class="mnu-muted">See how buyers view your storefront.</span>
+				</div>
+				<a class="mnu-button mnu-button--primary" href="<?php echo esc_url( $my_shop_url ); ?>">View my shop</a>
+			</div>
+			<?php
+		endif;
 		?>
 		<div class="mnu-directory" data-mnu-directory>
 			<div class="mnu-directory__header">
@@ -213,6 +227,12 @@ final class MNU_Social_Frontend {
 		return <<<CSS
 		.mnu-directory,.mnu-shop,.mnu-following,.mnu-messages{max-width:1100px;margin:0 auto;padding:1rem}
 		.mnu-directory__header h1,.mnu-following h1,.mnu-messages h1{margin:0 0 .25rem}
+		.mnu-directory__self-banner{max-width:1100px;margin:1rem auto 0;padding:1rem 1.25rem;background:#fffdf7;border:1px solid #ecdfcd;border-radius:12px;display:flex;flex-wrap:wrap;gap:1rem;align-items:center;justify-content:space-between}
+		.mnu-directory__self-copy{display:flex;flex-direction:column;gap:.15rem}
+		.mnu-directory__self-copy strong{color:#2b2016}
+		.mnu-button{display:inline-block;padding:.55rem 1.1rem;border-radius:999px;font-weight:600;font-size:.9rem;text-decoration:none;border:1px solid transparent;cursor:pointer}
+		.mnu-button--primary{background:#245f4b;color:#fff}
+		.mnu-button--primary:hover{background:#1c4c3c;color:#fff}
 		.mnu-muted{color:#666}
 		.mnu-search input[type=search]{width:100%;max-width:520px;padding:.75rem 1rem;border:1px solid #d4c9b6;border-radius:999px;font-size:1rem}
 		.mnu-directory__grid,.mnu-following__grid,.mnu-shop__grid,.mnu-following__feed{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:1rem;margin-top:1rem}

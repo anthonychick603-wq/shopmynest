@@ -336,18 +336,69 @@ final class MNU_Buyer_Experience {
             return $notice . $block_content;
         }
 
-        if ( 'core/navigation' === $block_name && ! self::$navigation_account_added && ! is_admin() ) {
-            self::$navigation_account_added = true;
-            $account_url = wc_get_page_permalink( 'myaccount' );
-            $label       = is_user_logged_in() ? 'Account' : 'Sign in / Register';
-            $item        = '<li class="wp-block-navigation-item wp-block-navigation-link mnu-header-account"><a class="wp-block-navigation-item__content" href="' . esc_url( $account_url ) . '"><span class="wp-block-navigation-item__label">' . esc_html( $label ) . '</span></a></li>';
-            $position    = strrpos( $block_content, '</ul>' );
-            if ( false !== $position ) {
-                $block_content = substr_replace( $block_content, $item, $position, 0 );
+        if ( 'core/navigation' === $block_name && ! is_admin() ) {
+            // Role-aware rewrites of hard-coded block-navigation links. The
+            // block-editor markup bakes destinations at save time, so the
+            // classic wp_nav_menu_objects filter does not reach them.
+            $block_content = self::rewrite_block_nav_links( $block_content );
+
+            if ( ! self::$navigation_account_added ) {
+                self::$navigation_account_added = true;
+                $account_url = wc_get_page_permalink( 'myaccount' );
+                $label       = is_user_logged_in() ? 'Account' : 'Sign in / Register';
+                $item        = '<li class="wp-block-navigation-item wp-block-navigation-link mnu-header-account"><a class="wp-block-navigation-item__content" href="' . esc_url( $account_url ) . '"><span class="wp-block-navigation-item__label">' . esc_html( $label ) . '</span></a></li>';
+                $position    = strrpos( $block_content, '</ul>' );
+                if ( false !== $position ) {
+                    $block_content = substr_replace( $block_content, $item, $position, 0 );
+                }
             }
         }
 
         return $block_content;
+    }
+
+    /**
+     * Rewrite block-navigation anchors for role-aware Shop and Sell on MyNest tabs.
+     *
+     *   Shop link ( href=/shop/ )     -> href=/sellers/, label "Discover shops" (all users)
+     *   Sell on MyNest link           -> for approved sellers: href=/seller-dashboard/, label "Seller Dashboard"
+     */
+    private static function rewrite_block_nav_links( string $html ): string {
+        if ( '' === $html ) {
+            return $html;
+        }
+
+        $is_seller = is_user_logged_in() && function_exists( 'tnm_is_marketplace_user' ) && tnm_is_marketplace_user();
+
+        // Replace the Shop link's href and label. Match any block-nav anchor that
+        // points at the WooCommerce /shop/ archive. The label span is the very
+        // next element after the opening <a>.
+        $sellers_url = esc_url( home_url( '/sellers/' ) );
+        $html = preg_replace_callback(
+            '#(<a\b[^>]*wp-block-navigation-item__content[^>]*\bhref=")([^"]*)("[^>]*>\s*<span class="wp-block-navigation-item__label">)([^<]*)(</span>\s*</a>)#i',
+            static function ( $m ) use ( $sellers_url, $is_seller ) {
+                $href  = html_entity_decode( (string) $m[2], ENT_QUOTES | ENT_HTML5, 'UTF-8' );
+                $label = html_entity_decode( (string) $m[4], ENT_QUOTES | ENT_HTML5, 'UTF-8' );
+                $path  = (string) wp_parse_url( $href, PHP_URL_PATH );
+                $trim  = '/' . trim( (string) $path, '/' ) . '/';
+
+                // Shop tab -> Discover shops for everyone.
+                if ( '/shop/' === $trim || strtolower( trim( $label ) ) === 'shop' ) {
+                    return $m[1] . esc_url( $sellers_url ) . $m[3] . 'Discover shops' . $m[5];
+                }
+
+                // Sell on MyNest tab -> Seller Dashboard for approved sellers.
+                $lower_label = strtolower( trim( $label ) );
+                if ( $is_seller && ( '/seller-portal/' === $trim || $lower_label === 'sell on mynest' ) ) {
+                    return $m[1] . esc_url( home_url( '/seller-dashboard/' ) ) . $m[3] . 'Seller Dashboard' . $m[5];
+                }
+
+                return $m[0];
+            },
+            $html
+        );
+
+        return (string) $html;
     }
 
     private static function is_header_template_part( array $block ): bool {
