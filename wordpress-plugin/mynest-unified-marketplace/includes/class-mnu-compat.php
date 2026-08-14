@@ -14,6 +14,7 @@ final class MNU_Compat {
     public static function init( bool $full_mode ): void {
         add_action( 'init', array( __CLASS__, 'migrate_legacy_data' ), 40 );
         add_filter( 'wp_nav_menu_objects', array( __CLASS__, 'filter_seller_menu_items' ), 20, 2 );
+        add_action( 'template_redirect', array( __CLASS__, 'maybe_redirect_seller_portal' ), 2 );
         add_filter( 'woocommerce_package_rates', array( __CLASS__, 'remove_local_pickup' ), 100, 2 );
 
         if ( ! $full_mode ) {
@@ -57,7 +58,22 @@ final class MNU_Compat {
     }
 
     public static function filter_seller_menu_items( array $items, object $args ): array {
-        if ( ! is_user_logged_in() || ! tnm_is_marketplace_user() ) {
+        $is_seller = is_user_logged_in() && tnm_is_marketplace_user();
+
+        // The theme's block navigation has a hard-coded "Sell on MyNest" link
+        // pointing at /seller-portal/. Approved sellers should see it as a
+        // "Seller Dashboard" link that goes straight to their dashboard.
+        foreach ( $items as $item ) {
+            $url_l  = strtolower( html_entity_decode( (string) $item->url, ENT_QUOTES | ENT_HTML5, 'UTF-8' ) );
+            $title_l = strtolower( html_entity_decode( (string) $item->title, ENT_QUOTES | ENT_HTML5, 'UTF-8' ) );
+            $is_portal_link = str_contains( $url_l, '/seller-portal' ) || str_contains( $title_l, 'sell on mynest' );
+            if ( $is_portal_link && $is_seller ) {
+                $item->title = 'Seller Dashboard';
+                $item->url   = home_url( '/seller-dashboard/' );
+            }
+        }
+
+        if ( ! $is_seller ) {
             return $items;
         }
         return array_filter(
@@ -67,6 +83,45 @@ final class MNU_Compat {
                 return ! str_contains( $haystack, 'become a seller' ) && ! str_contains( $haystack, 'become-a-seller' ) && ! str_contains( $haystack, 'seller-application' );
             }
         );
+    }
+
+    /**
+     * Route direct visits to /seller-portal/ based on the caller's state:
+     *   - Approved seller (or marketplace admin/manager): -> /seller-dashboard/
+     *   - Everyone else: stay on /seller-portal/ (shows the seller pitch page)
+     *
+     * The page itself remains a real, canonical WP page owning the slug so
+     * that non-sellers get a proper 200 with the [mynest_become_seller]
+     * shortcode content instead of a redirect chain.
+     */
+    public static function maybe_redirect_seller_portal(): void {
+        if ( is_admin() ) {
+            return;
+        }
+        if ( defined( 'DOING_AJAX' ) && DOING_AJAX ) {
+            return;
+        }
+        if ( defined( 'REST_REQUEST' ) && REST_REQUEST ) {
+            return;
+        }
+        $request_uri = isset( $_SERVER['REQUEST_URI'] ) ? (string) wp_unslash( $_SERVER['REQUEST_URI'] ) : '';
+        if ( '' === $request_uri ) {
+            return;
+        }
+        $parsed = wp_parse_url( $request_uri );
+        $path   = (string) ( $parsed['path'] ?? '' );
+        $path   = '/' === substr( $path, -1 ) && strlen( $path ) > 1 ? rtrim( $path, '/' ) : $path;
+        if ( '/seller-portal' !== $path ) {
+            return;
+        }
+        if ( ! is_user_logged_in() ) {
+            return;
+        }
+        if ( ! tnm_is_marketplace_user() ) {
+            return;
+        }
+        wp_safe_redirect( home_url( '/seller-dashboard/' ), 302 );
+        exit;
     }
 
     public static function remove_local_pickup( array $rates, array $package ): array {
