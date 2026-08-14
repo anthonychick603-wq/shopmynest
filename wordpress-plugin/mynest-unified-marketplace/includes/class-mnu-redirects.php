@@ -41,22 +41,64 @@ if ( ! class_exists( 'MNU_Redirects' ) ) {
 			'/returns-refunds'   => '/refund-policy',
 			'/shipping'          => '/shipping-policy',
 
-			// Dashboard duplicates. The-nest seller dashboard is the current one.
-			'/seller-dashboard'       => '/seller-portal',
-			'/seller-orders'          => '/seller-portal',
-			'/seller-order'           => '/seller-portal',
-			'/seller-payouts'         => '/seller-portal',
-			'/seller-earnings'        => '/seller-portal',
-			'/seller-login'           => '/seller-portal',
-			'/seller-order-portal'    => '/seller-portal',
-			'/detailed-order-breakdown' => '/seller-portal',
+			// Legacy dashboard aliases. Canonical seller pages live at their own
+			// slugs (/seller-dashboard/, /seller-orders/, /seller-payouts/,
+			// /seller-login/) — do NOT redirect those away. Only redirect true
+			// legacy duplicates that never had their own canonical page.
+			'/seller-order'           => '/seller-orders',
+			'/seller-earnings'        => '/seller-payouts',
+			'/seller-order-portal'    => '/seller-orders',
+			'/detailed-order-breakdown' => '/seller-orders',
 			'/demo-shops'             => '/shop',
+		);
+
+		/**
+		 * Legacy redirect keys that shipped in v3.7.x and pointed to the
+		 * non-existent /seller-portal/ page. On v3.7.37 upgrade we remove
+		 * these so the canonical /seller-dashboard/, /seller-orders/,
+		 * /seller-payouts/, /seller-login/ pages become reachable.
+		 *
+		 * @var string[]
+		 */
+		private const REMOVED_KEYS = array(
+			'/seller-dashboard',
+			'/seller-orders',
+			'/seller-payouts',
+			'/seller-login',
 		);
 
 		public static function init(): void {
 			self::seed_defaults_once();
+			self::purge_removed_keys_once();
 			self::merge_new_defaults();
 			add_action( 'template_redirect', array( __CLASS__, 'maybe_redirect' ), 1 );
+		}
+
+		/**
+		 * Remove keys in REMOVED_KEYS from the stored option, but only once
+		 * per REMOVED_KEYS revision. Prevents re-adding on every request while
+		 * still allowing admins to intentionally re-add a mapping later.
+		 */
+		public static function purge_removed_keys_once(): void {
+			$sentinel = get_option( 'mnu_redirects_purge_v1', 0 );
+			if ( 1 === (int) $sentinel ) {
+				return;
+			}
+			$current = get_option( self::OPTION, array() );
+			if ( ! is_array( $current ) ) {
+				$current = array();
+			}
+			$changed = false;
+			foreach ( self::REMOVED_KEYS as $rk ) {
+				if ( array_key_exists( $rk, $current ) ) {
+					unset( $current[ $rk ] );
+					$changed = true;
+				}
+			}
+			if ( $changed ) {
+				update_option( self::OPTION, $current, false );
+			}
+			update_option( 'mnu_redirects_purge_v1', 1, false );
 		}
 
 		/**
