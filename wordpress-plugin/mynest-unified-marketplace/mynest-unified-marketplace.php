@@ -3,7 +3,7 @@
  * Plugin Name: MyNest Unified Marketplace
  * Plugin URI:  https://shopmynest.com/
  * Description: One complete WooCommerce marketplace plugin for MyNest sellers, fees, payouts, orders, social features, mobile APIs, checkout, and shipping.
- * Version:     3.7.21
+ * Version:     3.7.35.12
  * Author:      MyNest
  * Text Domain: mynest-unified-marketplace
  * Requires at least: 6.5
@@ -16,8 +16,8 @@
 
 defined( 'ABSPATH' ) || exit;
 
-define( 'MNU_VERSION', '3.7.21' );
-define( 'MNU_DB_VERSION', '3.0.10' );
+define( 'MNU_VERSION', '3.7.35.12' );
+define( 'MNU_DB_VERSION', '3.0.11' );
 define( 'MNU_FILE', __FILE__ );
 define( 'MNU_BASENAME', plugin_basename( __FILE__ ) );
 define( 'MNU_PATH', plugin_dir_path( __FILE__ ) );
@@ -74,6 +74,11 @@ function mnu_load_files(): void {
 		'includes/class-mnu-ops.php',
 		'includes/class-mnu-native-checkout.php',
 		'includes/class-mnu-connect.php',
+		'includes/class-mnu-redirects.php',
+		'includes/class-mnu-catalog-sort.php',
+		'includes/class-mnu-social-frontend.php',
+		'includes/class-mnu-woo-gateway.php',
+		'includes/class-mnu-checkout-finalize.php',
 		'includes/class-mnu-shipping-labels.php',
 		'includes/class-mnu-shipping-profiles.php',
 		'includes/class-mnu-web-shipping.php',
@@ -82,6 +87,8 @@ function mnu_load_files(): void {
 		'includes/class-mnu-payout-gate.php',
 		'includes/class-tnm-admin.php',
 		'includes/class-mnu-system.php',
+		'includes/class-mnu-product-import.php',
+		'includes/class-mnu-multi-roles.php',
 	);
 
 	foreach ( $files as $file ) {
@@ -175,8 +182,15 @@ final class MNU_Plugin {
 		MNU_Buyer_Experience::init();
 		MNU_Ops::init();
 		MNU_Connect::init();
+		MNU_Catalog_Sort::init();
+		MNU_Social_Frontend::init();
+		MNU_Woo_Gateway_Loader::init();
 		TNM_Admin::init();
 		MNU_System::init( true, false );
+		MNU_Product_Import::init();
+		if ( is_admin() ) {
+			MNU_Multi_Roles::init();
+		}
 
 		update_option( 'mnu_last_successful_boot', current_time( 'mysql', true ), false );
 		do_action( 'mnu_marketplace_loaded', MNU_VERSION );

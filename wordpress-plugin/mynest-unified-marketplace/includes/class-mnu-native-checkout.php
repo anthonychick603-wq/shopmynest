@@ -833,6 +833,62 @@ function mnu_native_create_intent( WP_REST_Request $request ): array|WP_Error {
     }
 }
 
+/**
+ * Compute Stripe Connect routing parameters for a marketplace order.
+ *
+ * Returns an array of extra params to merge into /payment_intents. For
+ * single-seller carts we use a destination charge (`transfer_data[destination]`)
+ * plus `application_fee_amount` so the platform keeps its cut and the seller
+ * receives the balance directly. For multi-seller carts we return an empty
+ * array so the charge lands on the platform and payouts are handled later via
+ * Separate Charges & Transfers.
+ *
+ * @return array<string,string>
+ */
+function mnu_native_connect_intent_params( WC_Order $order ): array {
+    if ( ! class_exists( 'MNU_Connect' ) ) {
+        return array();
+    }
+
+    // Group per-item platform fee by seller. `_tnm_platform_fee` is stamped
+    // during stamp_item_snapshot() so it already reflects the 8% marketplace fee.
+    $seller_fees = array();
+    foreach ( $order->get_items() as $item ) {
+        if ( ! $item instanceof WC_Order_Item_Product ) {
+            continue;
+        }
+        $seller_id = (int) $item->get_meta( '_tnm_seller_id', true );
+        if ( $seller_id <= 0 ) {
+            continue;
+        }
+        $fee                        = (float) $item->get_meta( '_tnm_platform_fee', true );
+        $seller_fees[ $seller_id ]  = ( $seller_fees[ $seller_id ] ?? 0 ) + max( 0, $fee );
+    }
+
+    // Multi-seller carts are handled separately (post-capture transfers). For
+    // now the charge stays on the platform, which is safer than routing to
+    // one arbitrary seller.
+    if ( count( $seller_fees ) !== 1 ) {
+        return array();
+    }
+
+    $seller_id      = (int) array_key_first( $seller_fees );
+    $seller_account = MNU_Connect::account_id( $seller_id );
+
+    // Seller has to have finished onboarding for the destination charge to
+    // clear. If they haven't, fall back to a platform charge (still captures
+    // the customer's money; ops can manually pay the seller).
+    if ( '' === $seller_account || ! MNU_Connect::seller_can_sell( $seller_id ) ) {
+        return array();
+    }
+
+    $application_fee_cents = (int) round( $seller_fees[ $seller_id ] * 100 );
+    return array(
+        'transfer_data[destination]' => $seller_account,
+        'application_fee_amount'     => (string) $application_fee_cents,
+    );
+}
+
 function mnu_native_create_intent_locked( int $user_id, array $data, string $checkout_token ): array|WP_Error {
     $order          = mnu_native_find_existing_order( $user_id, $checkout_token );
     $shipping_changed = false;
@@ -931,18 +987,24 @@ function mnu_native_create_intent_locked( int $user_id, array $data, string $che
     if ( $intent_id ) {
         $intent = mnu_native_stripe_get( '/payment_intents/' . rawurlencode( $intent_id ) );
     } else {
+        // Route the charge to the seller's Connect account when we have exactly one
+        // seller in the cart, retaining the platform application fee. This turns
+        // the charge into a proper marketplace destination charge instead of the
+        // money landing in the platform account only.
+        $intent_params = array(
+            'amount'                             => mnu_native_cents( $order->get_total() ),
+            'currency'                           => strtolower( $settings['currency'] ),
+            'customer'                           => $stripe_customer_id,
+            'automatic_payment_methods[enabled]' => 'true',
+            'metadata[wc_order_id]'              => $order->get_id(),
+            'metadata[customer_id]'              => $user_id,
+            'metadata[source]'                   => 'the_nest_native_app',
+            'description'                        => 'MyNest order #' . $order->get_order_number(),
+        );
+        $intent_params = array_merge( $intent_params, mnu_native_connect_intent_params( $order ) );
         $intent = mnu_native_stripe_request(
             '/payment_intents',
-            array(
-                'amount'                             => mnu_native_cents( $order->get_total() ),
-                'currency'                           => strtolower( $settings['currency'] ),
-                'customer'                           => $stripe_customer_id,
-                'automatic_payment_methods[enabled]' => 'true',
-                'metadata[wc_order_id]'              => $order->get_id(),
-                'metadata[customer_id]'              => $user_id,
-                'metadata[source]'                   => 'the_nest_native_app',
-                'description'                        => 'MyNest order #' . $order->get_order_number(),
-            ),
+            $intent_params,
             'mynest_order_' . $order->get_id()
         );
     }
@@ -1012,6 +1074,118 @@ function mnu_native_complete( WP_REST_Request $request ): array|WP_Error {
     return array( 'ok' => false, 'payment_status' => $intent['status'] ?? 'unknown', 'order_status' => $order->get_status() );
 }
 
+/**
+ * v3.7.34 — Compute per-seller subtotals for an order.
+ *
+ * Sums each order item's line_subtotal + line_subtotal_tax by _tnm_seller_id.
+ * Shipping is intentionally excluded here — it belongs to whichever seller
+ * shipped the parcel and is handled elsewhere. Returns array keyed by
+ * seller_id, values in cents:
+ *
+ *   array(
+ *     123 => array( 'gross_cents' => 4500, 'fee_cents' => 360, 'net_cents' => 4140 ),
+ *     456 => array( 'gross_cents' => 1200, 'fee_cents' => 96,  'net_cents' => 1104 ),
+ *   )
+ *
+ * `fee_cents` comes from _tnm_platform_fee stamped by stamp_item_snapshot() at
+ * cart time (the 8% marketplace fee). If a line is missing the fee meta we
+ * fall back to 8% of gross.
+ *
+ * @return array<int, array<string, int>>
+ */
+function mnu_native_seller_splits( WC_Order $order ): array {
+    $splits = array();
+    foreach ( $order->get_items() as $item ) {
+        if ( ! $item instanceof WC_Order_Item_Product ) {
+            continue;
+        }
+        $seller_id = (int) $item->get_meta( '_tnm_seller_id', true );
+        if ( $seller_id <= 0 ) {
+            continue;
+        }
+        $line_gross = (float) $item->get_subtotal() + (float) $item->get_subtotal_tax();
+        $line_fee   = (float) $item->get_meta( '_tnm_platform_fee', true );
+        if ( $line_fee <= 0 ) {
+            // Fallback: 8% of the pre-tax subtotal, matching stamp_item_snapshot().
+            $line_fee = round( (float) $item->get_subtotal() * 0.08, 2 );
+        }
+        if ( ! isset( $splits[ $seller_id ] ) ) {
+            $splits[ $seller_id ] = array( 'gross_cents' => 0, 'fee_cents' => 0, 'net_cents' => 0 );
+        }
+        $splits[ $seller_id ]['gross_cents'] += (int) round( $line_gross * 100 );
+        $splits[ $seller_id ]['fee_cents']   += (int) round( $line_fee * 100 );
+    }
+    foreach ( $splits as $sid => $row ) {
+        $splits[ $sid ]['net_cents'] = max( 0, $row['gross_cents'] - $row['fee_cents'] );
+    }
+    return $splits;
+}
+
+/**
+ * v3.7.34 — After a multi-seller charge captures on the platform, issue one
+ * Stripe Transfer per seller (Separate Charges & Transfers pattern). Records
+ * the transfer ids in _mnu_seller_transfers so a later refund can reverse
+ * them.
+ *
+ * Single-seller carts already use a destination charge in
+ * mnu_native_connect_intent_params(), so this function is a no-op for them.
+ *
+ * @param WC_Order $order
+ * @param string   $charge_id  The Stripe charge id (from intent.latest_charge)
+ */
+function mnu_native_issue_seller_transfers( WC_Order $order, string $charge_id ): void {
+    if ( ! class_exists( 'MNU_Connect' ) ) {
+        return;
+    }
+    $existing = (array) json_decode( (string) $order->get_meta( '_mnu_seller_transfers', true ), true );
+    if ( ! empty( $existing ) ) {
+        return; // Already processed.
+    }
+    $splits = mnu_native_seller_splits( $order );
+    if ( count( $splits ) < 2 ) {
+        return; // Single-seller carts already routed via destination charge.
+    }
+
+    $settings = mnu_native_get_settings();
+    $currency = strtolower( (string) $settings['currency'] );
+    $transfers = array();
+
+    foreach ( $splits as $seller_id => $row ) {
+        $seller_account = MNU_Connect::account_id( $seller_id );
+        if ( '' === $seller_account || ! MNU_Connect::seller_can_sell( $seller_id ) ) {
+            $order->add_order_note( sprintf( 'Skipped Stripe transfer to seller #%d: no connected account or onboarding incomplete. Platform is holding $%.2f owed to this seller.', $seller_id, $row['net_cents'] / 100 ) );
+            $transfers[ (string) $seller_id ] = array( 'status' => 'held', 'net_cents' => $row['net_cents'] );
+            continue;
+        }
+        $result = mnu_native_stripe_request(
+            '/transfers',
+            array(
+                'amount'             => (string) $row['net_cents'],
+                'currency'           => $currency,
+                'destination'        => $seller_account,
+                'source_transaction' => $charge_id,
+                'transfer_group'     => 'mnu_order_' . $order->get_id(),
+                'metadata[wc_order_id]' => (string) $order->get_id(),
+                'metadata[seller_id]'   => (string) $seller_id,
+            ),
+            'mnu_transfer_' . $order->get_id() . '_' . $seller_id
+        );
+        if ( is_wp_error( $result ) ) {
+            $order->add_order_note( sprintf( 'Stripe transfer to seller #%d failed: %s. Retrying later.', $seller_id, $result->get_error_message() ) );
+            $transfers[ (string) $seller_id ] = array( 'status' => 'failed', 'error' => $result->get_error_message(), 'net_cents' => $row['net_cents'] );
+            continue;
+        }
+        $transfers[ (string) $seller_id ] = array(
+            'status'      => 'sent',
+            'transfer_id' => (string) ( $result['id'] ?? '' ),
+            'net_cents'   => $row['net_cents'],
+        );
+    }
+    $order->update_meta_data( '_mnu_seller_transfers', wp_json_encode( $transfers ) );
+    $order->add_order_note( 'Issued Stripe transfers to ' . count( array_filter( $transfers, static function ( $t ) { return 'sent' === ( $t['status'] ?? '' ); } ) ) . ' seller(s).' );
+    $order->save();
+}
+
 function mnu_native_verify_webhook_signature( string $payload, string $signature_header, string $secret ): bool {
     if ( ! $payload || ! $signature_header || ! $secret ) {
         return false;
@@ -1076,6 +1250,14 @@ function mnu_native_webhook( WP_REST_Request $request ): array|WP_Error {
             if ( $expected_amount === $received_amount && $expected_currency === $received_currency ) {
                 $order->payment_complete( sanitize_text_field( (string) $intent['id'] ) );
                 $order->add_order_note( 'Stripe webhook confirmed payment for The Nest native checkout.' );
+                // v3.7.34 — Issue per-seller transfers for multi-seller carts (no-op for single-seller).
+                $charge_id = sanitize_text_field( (string) ( $intent['latest_charge'] ?? '' ) );
+                if ( '' === $charge_id && ! empty( $intent['charges']['data'][0]['id'] ) ) {
+                    $charge_id = sanitize_text_field( (string) $intent['charges']['data'][0]['id'] );
+                }
+                if ( '' !== $charge_id ) {
+                    mnu_native_issue_seller_transfers( $order, $charge_id );
+                }
             } else {
                 $order->add_order_note( 'Stripe webhook payment was not applied because the amount or currency did not match the order.' );
                 $order->save();

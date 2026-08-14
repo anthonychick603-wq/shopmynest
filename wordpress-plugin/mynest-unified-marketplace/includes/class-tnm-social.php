@@ -305,7 +305,7 @@ final class TNM_Social {
         return (int) $wpdb->update( tnm_table( 'notifications' ), array( 'is_read' => 1 ), array( 'user_id' => $user_id, 'is_read' => 0 ), array( '%d' ), array( '%d', '%d' ) );
     }
 
-    public static function send_message( int $sender_id, int $recipient_id, string $message ): int|WP_Error {
+    public static function send_message( int $sender_id, int $recipient_id, string $message, int $product_id = 0 ): int|WP_Error {
         global $wpdb;
         $message = sanitize_textarea_field( $message );
         if ( ! $sender_id ) {
@@ -319,6 +319,37 @@ final class TNM_Social {
         }
         if ( strlen( $message ) > 5000 ) {
             return tnm_json_error( 'message_too_long', 'Message cannot exceed 5,000 characters.', 422 );
+        }
+        // Rate limit: max 20 messages per hour per sender (skipped for admins).
+        if ( ! tnm_is_admin_or_manager( $sender_id ) ) {
+            $recent = (int) $wpdb->get_var(
+                $wpdb->prepare(
+                    'SELECT COUNT(*) FROM ' . tnm_table( 'messages' ) . ' WHERE sender_id=%d AND created_at >= %s',
+                    $sender_id,
+                    gmdate( 'Y-m-d H:i:s', time() - HOUR_IN_SECONDS )
+                )
+            );
+            if ( $recent >= 20 ) {
+                return tnm_json_error( 'rate_limited', 'You have sent too many messages in the last hour. Try again later.', 429 );
+            }
+        }
+        // If the first message references a product, prepend a small context line.
+        if ( $product_id > 0 ) {
+            $product = wc_get_product( $product_id );
+            if ( $product ) {
+                $existing = (int) $wpdb->get_var(
+                    $wpdb->prepare(
+                        'SELECT COUNT(*) FROM ' . tnm_table( 'messages' ) . ' WHERE (sender_id=%d AND recipient_id=%d) OR (sender_id=%d AND recipient_id=%d)',
+                        $sender_id,
+                        $recipient_id,
+                        $recipient_id,
+                        $sender_id
+                    )
+                );
+                if ( 0 === $existing ) {
+                    $message = 'Re: ' . $product->get_name() . ' — ' . get_permalink( $product_id ) . "\n\n" . $message;
+                }
+            }
         }
         $wpdb->insert(
             tnm_table( 'messages' ),
@@ -493,6 +524,160 @@ final class TNM_Social {
             'page'        => max( 1, $page ),
             'total_pages' => (int) ceil( (int) ( $summary['total'] ?? 0 ) / $per_page ),
         );
+    }
+
+    /**
+     * List approved sellers with optional search + pagination.
+     * Used by the /sellers/ directory page and header search.
+     */
+    public static function sellers_list( string $search = '', int $page = 1, int $per_page = 24, int $viewer_id = 0 ): array {
+        $page     = max( 1, $page );
+        $per_page = max( 1, min( 100, $per_page ) );
+        $args     = array(
+            'role__in' => array( 'tnm_seller', 'mynest_seller', 'seller', 'vendor', 'wcv_vendor', 'dokan_vendor', 'shop_vendor', 'wc_product_vendors_vendor' ),
+            'fields'   => 'ID',
+            'number'   => $per_page,
+            'offset'   => ( $page - 1 ) * $per_page,
+            'orderby'  => 'registered',
+            'order'    => 'DESC',
+        );
+        if ( '' !== $search ) {
+            // Search across display_name, user_login, and store-name meta.
+            $args['search']         = '*' . esc_attr( $search ) . '*';
+            $args['search_columns'] = array( 'user_login', 'user_nicename', 'display_name' );
+            $args['meta_query']     = array(
+                'relation' => 'OR',
+                array(
+                    'key'     => 'tnm_store_name',
+                    'value'   => $search,
+                    'compare' => 'LIKE',
+                ),
+            );
+        }
+        $q       = new WP_User_Query( $args );
+        $ids     = array_map( 'intval', (array) $q->get_results() );
+        $total   = (int) $q->get_total();
+
+        // Merge-in a second query that searches meta only (store name), so a
+        // shop with no matching login/display-name still surfaces. WP_User_Query
+        // treats `search` and `meta_query` as AND, so we need the union.
+        if ( '' !== $search ) {
+            $q2 = new WP_User_Query(
+                array(
+                    'role__in'   => $args['role__in'],
+                    'fields'     => 'ID',
+                    'number'     => $per_page,
+                    'meta_query' => array( array( 'key' => 'tnm_store_name', 'value' => $search, 'compare' => 'LIKE' ) ),
+                )
+            );
+            $extra_ids = array_map( 'intval', (array) $q2->get_results() );
+            $ids       = array_values( array_unique( array_merge( $ids, $extra_ids ) ) );
+            $total     = max( $total, count( $ids ) );
+        }
+
+        $items = array();
+        foreach ( $ids as $sid ) {
+            if ( ! tnm_is_seller( $sid ) ) {
+                continue;
+            }
+            $user = get_userdata( $sid );
+            if ( ! $user ) {
+                continue;
+            }
+            $items[] = array(
+                'id'             => $sid,
+                'store_name'     => tnm_seller_display_name( $sid ),
+                'display_name'   => $user->display_name,
+                'avatar'         => tnm_user_avatar_url( $sid, 256 ),
+                'about_snippet'  => wp_trim_words( (string) get_user_meta( $sid, 'tnm_store_about', true ), 20 ),
+                'follower_count' => self::follower_count( $sid ),
+                'is_following'   => $viewer_id ? self::is_following( $viewer_id, $sid ) : false,
+                'product_count'  => count_user_posts( $sid, 'product', true ),
+                'shop_url'       => home_url( '/shop-profile/?seller=' . $sid ),
+            );
+        }
+
+        return array(
+            'items'    => $items,
+            'page'     => $page,
+            'per_page' => $per_page,
+            'total'    => $total,
+        );
+    }
+
+    /**
+     * Return the list of sellers the given user is following, with light profile data.
+     */
+    public static function following_list( int $user_id ): array {
+        if ( ! $user_id ) {
+            return array();
+        }
+        $ids   = self::following_ids( $user_id );
+        $items = array();
+        foreach ( $ids as $sid ) {
+            if ( ! tnm_is_seller( $sid ) ) {
+                continue;
+            }
+            $user = get_userdata( $sid );
+            if ( ! $user ) {
+                continue;
+            }
+            $items[] = array(
+                'id'             => $sid,
+                'store_name'     => tnm_seller_display_name( $sid ),
+                'avatar'         => tnm_user_avatar_url( $sid, 256 ),
+                'follower_count' => self::follower_count( $sid ),
+                'product_count'  => count_user_posts( $sid, 'product', true ),
+                'shop_url'       => home_url( '/shop-profile/?seller=' . $sid ),
+            );
+        }
+        return $items;
+    }
+
+    /**
+     * Recent product listings from shops the user follows (activity feed).
+     */
+    public static function following_feed( int $user_id, int $limit = 20 ): array {
+        if ( ! $user_id ) {
+            return array();
+        }
+        $ids = self::following_ids( $user_id );
+        if ( ! $ids ) {
+            return array();
+        }
+        $products = get_posts(
+            array(
+                'post_type'      => 'product',
+                'post_status'    => 'publish',
+                'author__in'     => $ids,
+                'posts_per_page' => max( 1, min( 50, $limit ) ),
+                'orderby'        => 'date',
+                'order'          => 'DESC',
+            )
+        );
+        $out = array();
+        foreach ( $products as $p ) {
+            $wc = wc_get_product( $p );
+            if ( ! $wc ) {
+                continue;
+            }
+            $sid = (int) $p->post_author;
+            $out[] = array(
+                'id'         => $p->ID,
+                'title'      => $p->post_title,
+                'permalink'  => get_permalink( $p->ID ),
+                'price_html' => $wc->get_price_html(),
+                'image'      => wp_get_attachment_image_url( $wc->get_image_id(), 'medium' ) ?: wc_placeholder_img_src( 'medium' ),
+                'date'       => $p->post_date_gmt,
+                'seller'     => array(
+                    'id'         => $sid,
+                    'store_name' => tnm_seller_display_name( $sid ),
+                    'avatar'     => tnm_user_avatar_url( $sid, 128 ),
+                    'shop_url'   => home_url( '/shop-profile/?seller=' . $sid ),
+                ),
+            );
+        }
+        return $out;
     }
 
     public static function seller_profile( int $seller_id, int $viewer_id = 0 ): array|WP_Error {

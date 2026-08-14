@@ -267,6 +267,25 @@ final class MNU_Install {
             KEY seller_status (seller_id,status)
         ) $charset;";
 
+        global $wpdb;
+        $queries[] = 'CREATE TABLE ' . $wpdb->prefix . "mnu_import_jobs (
+            id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+            seller_id bigint(20) unsigned NOT NULL,
+            status varchar(20) NOT NULL DEFAULT 'ready',
+            total_rows int(11) unsigned NOT NULL DEFAULT 0,
+            processed int(11) unsigned NOT NULL DEFAULT 0,
+            created int(11) unsigned NOT NULL DEFAULT 0,
+            updated int(11) unsigned NOT NULL DEFAULT 0,
+            failed int(11) unsigned NOT NULL DEFAULT 0,
+            columns_json longtext NULL,
+            rows_json longtext NULL,
+            errors_json longtext NULL,
+            created_at datetime NOT NULL,
+            updated_at datetime NOT NULL,
+            PRIMARY KEY  (id),
+            KEY seller_status (seller_id,status)
+        ) $charset;";
+
         foreach ( $queries as $query ) {
             dbDelta( $query );
         }

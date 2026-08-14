@@ -24,6 +24,9 @@ final class TNM_REST {
         register_rest_route( self::NS, '/posts', array( 'methods' => WP_REST_Server::CREATABLE, 'callback' => array( __CLASS__, 'create_post' ), 'permission_callback' => array( __CLASS__, 'seller' ) ) );
         register_rest_route( self::NS, '/posts/(?P<id>\d+)/comments', array( array( 'methods' => WP_REST_Server::READABLE, 'callback' => array( __CLASS__, 'post_comments' ), 'permission_callback' => '__return_true' ), array( 'methods' => WP_REST_Server::CREATABLE, 'callback' => array( __CLASS__, 'create_comment' ), 'permission_callback' => array( __CLASS__, 'logged_in' ) ) ) );
 
+        register_rest_route( self::NS, '/sellers', array( 'methods' => WP_REST_Server::READABLE, 'callback' => array( __CLASS__, 'sellers_list' ), 'permission_callback' => '__return_true' ) );
+        register_rest_route( self::NS, '/following', array( 'methods' => WP_REST_Server::READABLE, 'callback' => array( __CLASS__, 'following_list' ), 'permission_callback' => array( __CLASS__, 'logged_in' ) ) );
+        register_rest_route( self::NS, '/following/feed', array( 'methods' => WP_REST_Server::READABLE, 'callback' => array( __CLASS__, 'following_feed' ), 'permission_callback' => array( __CLASS__, 'logged_in' ) ) );
         register_rest_route( self::NS, '/sellers/(?P<id>\d+)', array( 'methods' => WP_REST_Server::READABLE, 'callback' => array( __CLASS__, 'seller_profile' ), 'permission_callback' => '__return_true' ) );
         register_rest_route( self::NS, '/sellers/(?P<id>\d+)/products', array( 'methods' => WP_REST_Server::READABLE, 'callback' => array( __CLASS__, 'seller_products_public' ), 'permission_callback' => '__return_true' ) );
         register_rest_route( self::NS, '/sellers/(?P<id>\d+)/posts', array( 'methods' => WP_REST_Server::READABLE, 'callback' => array( __CLASS__, 'seller_posts_public' ), 'permission_callback' => '__return_true' ) );
@@ -429,8 +432,27 @@ final class TNM_REST {
         return rest_ensure_response( TNM_Social::conversation( get_current_user_id(), absint( $request['user_id'] ), max( 1, (int) ( $request->get_param( 'limit' ) ?: 100 ) ) ) );
     }
 
+    public static function sellers_list( WP_REST_Request $request ): WP_REST_Response {
+        return rest_ensure_response(
+            TNM_Social::sellers_list(
+                (string) $request->get_param( 'search' ),
+                max( 1, (int) ( $request->get_param( 'page' ) ?: 1 ) ),
+                max( 1, (int) ( $request->get_param( 'per_page' ) ?: 24 ) ),
+                get_current_user_id()
+            )
+        );
+    }
+
+    public static function following_list(): WP_REST_Response {
+        return rest_ensure_response( TNM_Social::following_list( get_current_user_id() ) );
+    }
+
+    public static function following_feed( WP_REST_Request $request ): WP_REST_Response {
+        return rest_ensure_response( TNM_Social::following_feed( get_current_user_id(), max( 1, (int) ( $request->get_param( 'limit' ) ?: 20 ) ) ) );
+    }
+
     public static function send_message( WP_REST_Request $request ): WP_REST_Response|WP_Error {
-        $message_id = TNM_Social::send_message( get_current_user_id(), absint( $request->get_param( 'recipient_id' ) ), (string) $request->get_param( 'message' ) );
+        $message_id = TNM_Social::send_message( get_current_user_id(), absint( $request->get_param( 'recipient_id' ) ), (string) $request->get_param( 'message' ), absint( $request->get_param( 'product_id' ) ) );
         return is_wp_error( $message_id ) ? $message_id : rest_ensure_response( array( 'success' => true, 'message_id' => $message_id ) );
     }
 

@@ -154,6 +154,7 @@ final class TNM_Shortcodes {
             <nav class="tnm-tabs" aria-label="Seller dashboard sections">
                 <button type="button" data-tnm-tab="overview" class="is-active">Overview</button>
                 <button type="button" data-tnm-tab="products">Products</button>
+                <button type="button" data-tnm-tab="import">Import CSV</button>
                 <button type="button" data-tnm-tab="shipping">Shipping</button>
                 <button type="button" data-tnm-tab="orders">Orders</button>
                 <button type="button" data-tnm-tab="earnings">Earnings</button>
@@ -222,6 +223,60 @@ final class TNM_Shortcodes {
                         </div>
                     </div>
                     <div class="tnm-card"><h2>Your products</h2><?php self::render_products_table( $products ); ?></div>
+                </div>
+            </section>
+
+            <section class="tnm-tab-panel" data-tnm-panel="import">
+                <script>
+                    // Guarantee the importer has REST config even if wp_localize_script
+                    // didn't run on this page (some caching/rendering paths skip it).
+                    window.TNMFrontend = window.TNMFrontend || {};
+                    if (!window.TNMFrontend.restRoot)  { window.TNMFrontend.restRoot  = <?php echo wp_json_encode( trailingslashit( rest_url() ) ); ?>; }
+                    if (!window.TNMFrontend.restNonce) { window.TNMFrontend.restNonce = <?php echo wp_json_encode( wp_create_nonce( 'wp_rest' ) ); ?>; }
+                </script>
+                <div class="tnm-card">
+                    <h2>Bulk product import</h2>
+                    <p class="tnm-muted">Upload a WooCommerce product export (.csv). Each row becomes a product in your shop. If a row's SKU matches a product you already own, that product is updated instead of duplicated. Max 500 rows, 10&nbsp;MB.</p>
+
+                    <div data-tnm-import-step="pick">
+                        <form data-tnm-import-form enctype="multipart/form-data" onsubmit="return false;">
+                            <label style="display:block;margin:12px 0;">
+                                <span>CSV file</span>
+                                <input type="file" name="file" accept=".csv,text/csv" data-tnm-import-file required>
+                            </label>
+                            <button type="button" class="tnm-button" data-tnm-import-upload>Upload &amp; preview</button>
+                        </form>
+                    </div>
+
+                    <div data-tnm-import-step="preview" hidden>
+                        <h3 style="margin-top:16px;">Preview</h3>
+                        <p data-tnm-import-summary></p>
+                        <div data-tnm-import-unrecognized></div>
+                        <div data-tnm-import-errors></div>
+                        <div data-tnm-import-preview></div>
+                        <p style="margin-top:16px;">
+                            <button type="button" class="tnm-button" data-tnm-import-run>Start import</button>
+                            <button type="button" class="tnm-button tnm-button-secondary" data-tnm-import-reset>Pick a different file</button>
+                        </p>
+                    </div>
+
+                    <div data-tnm-import-step="progress" hidden>
+                        <h3 style="margin-top:16px;">Importing…</h3>
+                        <div style="background:#e5e7eb;border-radius:6px;height:10px;overflow:hidden;margin:12px 0;">
+                            <div data-tnm-import-bar style="background:#7C5A3A;height:100%;width:0%;transition:width .4s;"></div>
+                        </div>
+                        <p data-tnm-import-progress></p>
+                        <p class="tnm-muted" style="font-size:13px;">You can leave this tab open — the import continues on the server.</p>
+                    </div>
+
+                    <div data-tnm-import-step="done" hidden>
+                        <h3 style="margin-top:16px;">Import complete</h3>
+                        <p data-tnm-import-final></p>
+                        <div data-tnm-import-final-errors></div>
+                        <p><button type="button" class="tnm-button" data-tnm-import-reset>Import another file</button></p>
+                    </div>
+
+                    <div data-tnm-import-error class="tnm-notice tnm-error" hidden style="margin-top:12px;"></div>
                 </div>
             </section>
 
@@ -306,7 +361,7 @@ final class TNM_Shortcodes {
                         <p class="tnm-connection-status is-disconnected"><strong>Onboarding incomplete</strong></p>
                         <p>Your Stripe account still needs more information before payouts can be enabled. Finish onboarding to start selling.</p>
                         <p>
-                            <button type="button" class="tnm-button" data-tnm-connect-onboard>Finish Stripe onboarding</button>
+                            <a class="tnm-button" data-tnm-connect-onboard href="<?php echo esc_url( home_url( '/mnu-connect-start/' ) ); ?>">Finish Stripe onboarding</a>
                             <button type="button" class="tnm-button tnm-button-secondary" data-tnm-connect-dashboard>View Stripe balance &amp; payout history</button>
                         </p>
                     <?php else : ?>

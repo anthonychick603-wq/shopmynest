@@ -39,6 +39,7 @@ final class MNU_Connect {
 		// (matching the plugin's REQUEST_URI convention in MNU_Compat) so it
 		// needs no rewrite rule and therefore no rewrite-rule flush.
 		add_action( 'init', array( __CLASS__, 'maybe_render_bridge' ) );
+			add_action( 'init', array( __CLASS__, 'maybe_start_onboarding' ) );
 	}
 
 	public static function register_routes(): void {
@@ -238,6 +239,40 @@ final class MNU_Connect {
 	 * any permalink setting. Requires no auth, session, nonce, or REST token —
 	 * the visitor is a fresh browser returning from Stripe onboarding.
 	 */
+	public static function maybe_start_onboarding(): void {
+		if ( ! isset( $_SERVER['REQUEST_URI'] ) ) {
+			return;
+		}
+		$req  = (string) wp_unslash( $_SERVER['REQUEST_URI'] );
+		$path = (string) wp_parse_url( $req, PHP_URL_PATH );
+		$path = '/' . trim( (string) $path, '/' );
+		if ( '/mnu-connect-start' !== $path ) {
+			return;
+		}
+		if ( ! is_user_logged_in() ) {
+			wp_safe_redirect( wp_login_url( home_url( '/seller-portal/' ) ) );
+			exit;
+		}
+		if ( ! tnm_is_seller() && ! tnm_is_admin_or_manager() ) {
+			wp_safe_redirect( home_url( '/' ) );
+			exit;
+		}
+		$return_url = home_url( '/seller-portal/' );
+		$request = new WP_REST_Request( 'POST', '/' . self::NS . '/onboard-link' );
+		$request->set_param( 'return_url', $return_url );
+		$request->set_param( 'refresh_url', $return_url );
+		$response = self::onboard_link( $request );
+		if ( $response instanceof WP_REST_Response ) {
+			$data = $response->get_data();
+			if ( is_array( $data ) && ! empty( $data['url'] ) ) {
+				wp_redirect( (string) $data['url'] );
+				exit;
+			}
+		}
+		wp_safe_redirect( add_query_arg( 'stripe_error', '1', $return_url ) );
+		exit;
+	}
+
 	public static function maybe_render_bridge(): void {
 		$uri = isset( $_SERVER['REQUEST_URI'] ) ? (string) wp_parse_url( wp_unslash( $_SERVER['REQUEST_URI'] ), PHP_URL_PATH ) : '';
 		if ( '' === $uri ) {

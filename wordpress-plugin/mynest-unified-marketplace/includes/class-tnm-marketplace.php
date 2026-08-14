@@ -438,7 +438,11 @@ final class TNM_Marketplace {
         if ( ! tnm_current_user_can_manage_seller( $seller_id ) || ( ! tnm_is_seller( $seller_id ) && ! tnm_is_admin_or_manager() ) ) {
             return tnm_json_error( 'seller_permission_denied', 'You cannot create products for this seller.', 403 );
         }
-        if ( ! tnm_is_admin_or_manager() && class_exists( 'MNU_Connect' ) && ! MNU_Connect::seller_can_sell( $seller_id ) ) {
+        // Allow other code (e.g. bulk CSV importer) to bypass the Stripe onboarding gate.
+        // Products still get created as pending/draft; the seller must connect Stripe before
+        // they can actually be published for sale.
+        $skip_stripe_gate = (bool) apply_filters( 'mnu_skip_stripe_onboarding_gate', false, $seller_id, $data );
+        if ( ! $skip_stripe_gate && ! tnm_is_admin_or_manager() && class_exists( 'MNU_Connect' ) && ! MNU_Connect::seller_can_sell( $seller_id ) ) {
             return tnm_json_error( 'stripe_onboarding_required', 'You must finish connecting your bank account with Stripe before you can list new products. Open your seller dashboard to complete Stripe onboarding.', 403 );
         }
 

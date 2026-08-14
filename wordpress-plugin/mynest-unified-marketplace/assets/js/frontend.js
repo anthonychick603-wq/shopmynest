@@ -489,3 +489,201 @@
     document.querySelectorAll('[data-tnm-product-form]').forEach(togglePackageDimensions);
   });
 })();
+
+/* ============================================================================
+ * Bulk product CSV importer (Seller Dashboard -> Import CSV tab)
+ * Hits the-nest/v1/seller/import/{upload,{id}/run,{id}} endpoints.
+ * ============================================================================ */
+(function () {
+  'use strict';
+
+  function root() {
+    return document.querySelector('[data-tnm-panel="import"]');
+  }
+  function api() {
+    var cfg = (typeof TNMFrontend !== 'undefined' && TNMFrontend) ? TNMFrontend : null;
+    // Also allow the shortcode's inline fallback (which sets window.TNMFrontend).
+    if (!cfg || !cfg.restRoot) {
+      cfg = window.TNMFrontend && window.TNMFrontend.restRoot ? window.TNMFrontend : null;
+    }
+    if (!cfg || !cfg.restRoot) {
+      // Absolute last resort: build from window.location origin.
+      cfg = { restRoot: window.location.origin + '/wp-json/', restNonce: '' };
+    }
+    return { base: cfg.restRoot + 'the-nest/v1', nonce: cfg.restNonce || '' };
+  }
+  function show(step) {
+    var r = root(); if (!r) return;
+    r.querySelectorAll('[data-tnm-import-step]').forEach(function (el) {
+      el.hidden = (el.getAttribute('data-tnm-import-step') !== step);
+    });
+    var err = r.querySelector('[data-tnm-import-error]');
+    if (err) { err.hidden = true; err.textContent = ''; }
+  }
+  function fail(msg) {
+    var r = root(); if (!r) return;
+    var err = r.querySelector('[data-tnm-import-error]');
+    if (err) { err.hidden = false; err.textContent = msg; }
+  }
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+
+  var state = { jobId: null, poll: null, total: 0 };
+
+  async function doUpload() {
+    var r = root(); if (!r) return;
+    var ep = api();
+    var input = r.querySelector('[data-tnm-import-file]');
+    if (!input || !input.files || !input.files[0]) return fail('Please choose a CSV file first.');
+    var file = input.files[0];
+    if (file.size > 10 * 1024 * 1024) return fail('CSV is larger than 10 MB.');
+
+    var fd = new FormData(); fd.append('file', file);
+    var btn = r.querySelector('[data-tnm-import-upload]');
+    if (btn) { btn.disabled = true; btn.textContent = 'Uploading…'; }
+
+    try {
+      var res = await fetch(ep.base + '/seller/import/upload', {
+        method: 'POST', body: fd, credentials: 'same-origin',
+        headers: ep.nonce ? { 'X-WP-Nonce': ep.nonce } : {},
+      });
+      var data = await res.json();
+      if (!res.ok) throw new Error((data && data.message) || ('HTTP ' + res.status));
+      renderPreview(data);
+      state.jobId = data.job_id;
+      state.total = data.total_rows;
+      show('preview');
+    } catch (e) {
+      fail('Upload failed: ' + (e.message || e));
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = 'Upload & preview'; }
+    }
+  }
+
+  function renderPreview(d) {
+    var r = root(); if (!r) return;
+    r.querySelector('[data-tnm-import-summary]').textContent =
+      d.total_rows + ' row(s) found. ' +
+      d.columns.length + ' recognized columns' +
+      (d.unrecognized_columns.length ? ', ' + d.unrecognized_columns.length + ' ignored.' : '.');
+
+    var un = r.querySelector('[data-tnm-import-unrecognized]');
+    un.innerHTML = '';
+    if (d.unrecognized_columns.length) {
+      un.innerHTML = '<div class="tnm-notice">Ignored columns: <code>' +
+        esc(d.unrecognized_columns.slice(0, 15).join(', ')) +
+        (d.unrecognized_columns.length > 15 ? ' … +' + (d.unrecognized_columns.length - 15) + ' more' : '') +
+        '</code></div>';
+    }
+
+    var errs = r.querySelector('[data-tnm-import-errors]');
+    errs.innerHTML = '';
+    if (d.validation_errors && d.validation_errors.length) {
+      var html = '<div class="tnm-notice tnm-error"><strong>' + d.validation_errors.length +
+        ' row(s) need attention (will be skipped):</strong><ul style="margin:6px 0 0 18px;">';
+      d.validation_errors.slice(0, 8).forEach(function (v) {
+        html += '<li>Row ' + esc(v.row) + ' (' + esc(v.name || '?') + '): ' + esc((v.problems || []).join(' ')) + '</li>';
+      });
+      if (d.validation_errors.length > 8) html += '<li>… +' + (d.validation_errors.length - 8) + ' more</li>';
+      html += '</ul></div>';
+      errs.innerHTML = html;
+    }
+
+    var prev = r.querySelector('[data-tnm-import-preview]');
+    var rows = (d.preview || []).map(function (p) {
+      return '<tr><td>' + esc(p.row) + '</td><td>' + esc(p.name) + '</td><td>' + esc(p.sku) +
+             '</td><td>$' + esc(p.price) + '</td><td>' + esc(p.stock) + '</td><td>' + esc(p.images_count) + '</td></tr>';
+    }).join('');
+    prev.innerHTML = rows
+      ? '<table class="tnm-table" style="margin-top:8px;"><thead><tr><th>Row</th><th>Name</th><th>SKU</th><th>Price</th><th>Stock</th><th>Images</th></tr></thead><tbody>' + rows + '</tbody></table>'
+      : '';
+
+    var runBtn = r.querySelector('[data-tnm-import-run]');
+    if (runBtn) {
+      runBtn.disabled = !d.ready_to_run || d.total_rows === 0;
+      runBtn.textContent = 'Start import (' + d.total_rows + ' row' + (d.total_rows === 1 ? '' : 's') + ')';
+    }
+  }
+
+  async function doRun() {
+    var ep = api(); if (!ep || !state.jobId) return;
+    var r = root(); if (!r) return;
+    show('progress');
+    r.querySelector('[data-tnm-import-progress]').textContent = 'Starting…';
+    r.querySelector('[data-tnm-import-bar]').style.width = '0%';
+    try {
+      var res = await fetch(ep.base + '/seller/import/' + state.jobId + '/run', {
+        method: 'POST', credentials: 'same-origin',
+        headers: ep.nonce ? { 'X-WP-Nonce': ep.nonce } : {},
+      });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      startPolling();
+    } catch (e) {
+      fail('Could not start import: ' + (e.message || e));
+      show('preview');
+    }
+  }
+
+  function startPolling() {
+    if (state.poll) clearInterval(state.poll);
+    state.poll = setInterval(pollOnce, 2000);
+    pollOnce();
+  }
+
+  async function pollOnce() {
+    var ep = api(); if (!ep || !state.jobId) return;
+    var r = root(); if (!r) return;
+    try {
+      var res = await fetch(ep.base + '/seller/import/' + state.jobId, {
+        credentials: 'same-origin',
+        headers: ep.nonce ? { 'X-WP-Nonce': ep.nonce } : {},
+      });
+      if (!res.ok) return;
+      var d = await res.json();
+      var total = d.total || state.total || 1;
+      var pct = Math.round((d.processed / total) * 100);
+      r.querySelector('[data-tnm-import-bar]').style.width = pct + '%';
+      r.querySelector('[data-tnm-import-progress]').textContent =
+        d.processed + ' of ' + total + ' processed · ' + d.created + ' created · ' + d.updated + ' updated · ' + d.failed + ' failed';
+      if (d.status === 'complete') {
+        clearInterval(state.poll); state.poll = null;
+        r.querySelector('[data-tnm-import-final]').textContent =
+          d.created + ' created · ' + d.updated + ' updated · ' + d.failed + ' failed out of ' + total + '.';
+        var errBox = r.querySelector('[data-tnm-import-final-errors]');
+        errBox.innerHTML = '';
+        if (d.errors && d.errors.length) {
+          var html = '<details style="margin-top:8px;"><summary>' + d.errors.length + ' error(s)</summary><ul style="margin:6px 0 0 18px;">';
+          d.errors.slice(0, 25).forEach(function (e) {
+            html += '<li>Row ' + esc(e.row) + ' (' + esc(e.name || '?') + '): ' + esc(e.error) + '</li>';
+          });
+          if (d.errors.length > 25) html += '<li>… +' + (d.errors.length - 25) + ' more</li>';
+          html += '</ul></details>';
+          errBox.innerHTML = html;
+        }
+        show('done');
+      }
+    } catch (e) { /* transient poll error, keep trying */ }
+  }
+
+  function reset() {
+    if (state.poll) { clearInterval(state.poll); state.poll = null; }
+    state.jobId = null; state.total = 0;
+    var r = root(); if (!r) return;
+    var input = r.querySelector('[data-tnm-import-file]');
+    if (input) input.value = '';
+    show('pick');
+  }
+
+  document.addEventListener('DOMContentLoaded', function () {
+    var r = root(); if (!r) return;
+    r.addEventListener('click', function (e) {
+      var t = e.target;
+      if (t.matches('[data-tnm-import-upload]')) { e.preventDefault(); doUpload(); }
+      else if (t.matches('[data-tnm-import-run]')) { e.preventDefault(); doRun(); }
+      else if (t.matches('[data-tnm-import-reset]')) { e.preventDefault(); reset(); }
+    });
+  });
+})();
