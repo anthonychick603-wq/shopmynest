@@ -3,7 +3,7 @@
  * Plugin Name:       ShopMyNest Branding
  * Plugin URI:        https://shopmynest.com
  * Description:       Applies the ShopMyNest logo and brand identity across your WordPress + WooCommerce site: custom logo, favicons, wp-admin login screen, admin bar mark, and WooCommerce transactional email header.
- * Version:           1.2.2
+ * Version:           1.3.0
  * Requires at least: 6.0
  * Requires PHP:      7.4
  * Author:            ShopMyNest
@@ -17,7 +17,7 @@ if ( ! defined( 'ABSPATH' ) ) {
     exit;
 }
 
-define( 'SMN_BRANDING_VERSION', '1.2.2' );
+define( 'SMN_BRANDING_VERSION', '1.3.0' );
 define( 'SMN_BRANDING_DIR', plugin_dir_path( __FILE__ ) );
 define( 'SMN_BRANDING_URL', plugin_dir_url( __FILE__ ) );
 define( 'SMN_BRANDING_ASSETS', SMN_BRANDING_URL . 'assets/' );
@@ -26,18 +26,18 @@ define( 'SMN_BRANDING_ASSETS', SMN_BRANDING_URL . 'assets/' );
  * Brand color palette (from the ShopMyNest logo).
  */
 function smn_branding_palette() {
-    // Aligned with the child theme's theme.json (mynest-marketplace-child v1.0.3).
-    // The peach/brown palette was tried and reverted in favour of teal + cream.
+    // Studio Clay palette — deep forest primary + clay accent on parchment.
+    // History: teal+cream (v<=1.2.2) → Studio Clay (v1.3.0).
     return array(
-        'primary'    => '#01696F', // Brand Teal
-        'dark'       => '#0C4E54', // Brand Teal Dark
-        'accent'     => '#E2856E', // Terracotta warm accent (matches app brand token)
-        'background' => '#F4F2EC', // Cream surface
-        'card'       => '#FFFFFF', // Card white
-        'ink'        => '#2B2820', // Warm near-black text
-        'border'     => '#B8B5AC', // Warm muted border
+        'primary'    => '#3C4B33', // Deep Forest
+        'dark'       => '#2A3624', // Forest Dark
+        'accent'     => '#B0553A', // Clay warm accent
+        'background' => '#F5EFE4', // Parchment surface
+        'card'       => '#FFFBF3', // Warm paper card
+        'ink'        => '#26221C', // Bark near-black text
+        'border'     => '#DFD3BE', // Sand border
         // Legacy alias so downstream code keeps working.
-        'secondary'  => '#E2856E',
+        'secondary'  => '#B0553A',
     );
 }
 
@@ -226,8 +226,8 @@ function smn_branding_enqueue_storefront_css() {
         "--sn-ink:"      . $p['ink']        . ";" .
         "--sn-border:"   . $p['border']     . ";" .
         "--sn-accent:"   . $p['accent']     . ";" .
-        "--sn-shadow:0 6px 24px rgba(1,105,111,0.08);" .
-        "--sn-shadow-lg:0 12px 32px rgba(1,105,111,0.14);" .
+        "--sn-shadow:0 6px 24px rgba(60,75,51,0.10);" .
+        "--sn-shadow-lg:0 12px 32px rgba(60,75,51,0.16);" .
         "--sn-radius:14px;--sn-radius-sm:8px;--sn-radius-lg:24px;" .
         "}";
     wp_add_inline_style( 'shopmynest-storefront', $css );

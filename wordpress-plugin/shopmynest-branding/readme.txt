@@ -28,6 +28,9 @@ Drops in the ShopMyNest nest-and-bird logo across your site with zero configurat
 
 == Changelog ==
 
+= 1.3.0 =
+* Palette: switched from teal + cream to **Studio Clay** — deep forest primary (#3C4B33), clay accent (#B0553A), parchment surface (#F5EFE4), warm paper cards (#FFFBF3), bark ink (#26221C), sand borders (#DFD3BE). Legacy `secondary` alias now points to the clay accent. Shadow tint recalibrated to forest.
+
 = 1.2.2 =
 * Category grid: removed emoji icons from the six Shop category tiles; labels now render as centered text only. Adjusted tile height/typography accordingly.
 
