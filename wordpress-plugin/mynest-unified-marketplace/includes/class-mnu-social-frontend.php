@@ -340,11 +340,14 @@ final class MNU_Social_Frontend {
 		.mnu-msg-cta:hover{background:#E2856E;color:#fff;transform:translateY(-1px)}
 		.mnu-msg-cta svg{flex-shrink:0}
 		.mnu-msg-cta--product{display:flex;justify-content:center;margin:.75rem 0 0;width:100%}
-		/* --- Shop hero: actions + inline bio --- */
-		.mnu-shop__actions-row{display:flex;flex-wrap:wrap;align-items:center;gap:.75rem 1rem;margin-top:.85rem}
-		.mnu-shop__actions{display:flex;flex-wrap:wrap;gap:.5rem;flex-shrink:0}
-		.mnu-shop__bio{margin:0;flex:1;min-width:260px;color:#3E2723;font-size:.95rem;line-height:1.45;white-space:pre-wrap;overflow-wrap:anywhere;padding-left:1rem;border-left:2px solid #EEDDCC}
-		@media(max-width:640px){.mnu-shop__bio{flex-basis:100%;padding-left:0;border-left:0;padding-top:.5rem;border-top:1px solid #EEDDCC;margin-top:.25rem}}
+		/* --- Shop hero: tagline, actions, About-the-shop card --- */
+		.mnu-shop__tagline{margin:.15rem 0 .25rem;color:#3E2723;font-size:1rem;font-weight:500;font-style:italic;line-height:1.35;overflow-wrap:anywhere}
+		.mnu-shop__actions{display:flex;flex-wrap:wrap;gap:.5rem;margin-top:.85rem}
+		.mnu-shop__about{margin:1.25rem 0 0;padding:1.1rem 1.25rem;background:#FFF8EF;border:1px solid #EEDDCC;border-radius:12px}
+		.mnu-shop__about-title{margin:0 0 .5rem;font-size:1.05rem;font-weight:600;color:#3E2723;letter-spacing:.01em}
+		.mnu-shop__about-body{margin:0;color:#3E2723;font-size:.98rem;line-height:1.55;white-space:pre-wrap;overflow-wrap:anywhere}
+		/* --- Directory card tagline --- */
+		.mnu-shop-card__tagline{color:#3E2723;font-size:.9rem;font-style:italic;line-height:1.35;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 		.mnu-pill{display:inline-block;padding:.15rem .55rem;background:#245f4b;color:#fff;border-radius:999px;font-size:.75rem;font-weight:600;margin-left:.25rem}
 CSS;
 	}
@@ -407,7 +410,7 @@ CSS;
 								'<div style="flex:1;min-width:0"><a class="mnu-shop-card__name" href="' + esc(s.shop_url) + '">' + esc(s.store_name) + '</a>' +
 								'<div class="mnu-shop-card__meta">' + s.product_count + ' products · ' + s.follower_count + ' followers</div></div>' +
 							'</div>' +
-							(s.about_snippet ? '<div class="mnu-muted" style="font-size:.85rem">' + esc(s.about_snippet) + '</div>' : '') +
+							(s.tagline ? '<div class="mnu-shop-card__tagline">' + esc(s.tagline) + '</div>' : '') +
 							'<div class="mnu-shop-card__actions"></div>';
 						card.querySelector('.mnu-shop-card__actions').appendChild(followBtn(s.id, !!s.is_following));
 						grid.appendChild(card);
@@ -437,13 +440,12 @@ CSS;
 						'<img class="mnu-shop__avatar" src="' + esc(s.avatar) + '" alt="" />' +
 						'<div class="mnu-shop__head-body">' +
 							'<h1>' + esc(s.store_name) + '</h1>' +
+							(s.tagline ? '<div class="mnu-shop__tagline">' + esc(s.tagline) + '</div>' : '') +
 							'<div class="mnu-muted">' + s.followers + ' followers' + (s.review_count ? ' · ' + s.rating.toFixed(1) + '★ (' + s.review_count + ')' : '') + '</div>' +
-							'<div class="mnu-shop__actions-row">' +
-								'<div class="mnu-shop__actions"></div>' +
-								(s.about ? '<p class="mnu-shop__bio">' + esc(s.about) + '</p>' : '') +
-							'</div>' +
+							'<div class="mnu-shop__actions"></div>' +
 						'</div>' +
-					'</div>';
+					'</div>' +
+					(s.about ? '<section class="mnu-shop__about"><h2 class="mnu-shop__about-title">About the shop</h2><p class="mnu-shop__about-body">' + esc(s.about) + '</p></section>' : '');
 				var actions = hero.querySelector('.mnu-shop__actions');
 				actions.appendChild(followBtn(s.id, !!s.is_following));
 				if (TNMFrontend.currentUid && TNMFrontend.currentUid !== s.id) {

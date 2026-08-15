@@ -530,6 +530,10 @@ final class TNM_REST {
         if ( array_key_exists( 'about', $params ) ) {
             update_user_meta( $seller_id, 'tnm_store_about', sanitize_textarea_field( (string) $params['about'] ) );
         }
+        if ( array_key_exists( 'tagline', $params ) ) {
+            $tagline = mb_substr( sanitize_text_field( (string) $params['tagline'] ), 0, 140 );
+            update_user_meta( $seller_id, 'tnm_store_tagline', $tagline );
+        }
         if ( array_key_exists( 'banner_id', $params ) ) {
             $banner_id = absint( $params['banner_id'] );
             if ( $banner_id && ! tnm_user_can_use_attachment( $seller_id, $banner_id ) ) {

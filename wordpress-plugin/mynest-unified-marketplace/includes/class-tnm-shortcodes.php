@@ -404,6 +404,7 @@ final class TNM_Shortcodes {
                     <?php wp_nonce_field( 'tnm_dashboard', 'tnm_nonce' ); ?>
                     <input type="hidden" name="tnm_action" value="save_profile">
                     <label>Store name<input type="text" name="store_name" value="<?php echo esc_attr( tnm_seller_display_name( $seller_id ) ); ?>" required></label>
+                    <label>Shop tagline <span style="color:#7a6b57;font-weight:400;font-size:.85em">(one short line, shown on the Discover Shops page)</span><input type="text" name="tagline" maxlength="140" value="<?php echo esc_attr( (string) get_user_meta( $seller_id, 'tnm_store_tagline', true ) ); ?>"></label>
                     <label>About your shop<textarea name="about" rows="7"><?php echo esc_textarea( (string) get_user_meta( $seller_id, 'tnm_store_about', true ) ); ?></textarea></label>
                     <label>PayPal payout email<input type="email" name="paypal_email" value="<?php echo esc_attr( (string) get_user_meta( $seller_id, 'tnm_paypal_email', true ) ); ?>"></label>
                     <button class="tnm-button" type="submit">Save profile</button>
@@ -620,6 +621,8 @@ final class TNM_Shortcodes {
                 $result = new WP_Error( 'invalid_profile', 'Enter a store name and a valid payout email.' );
             } else {
                 update_user_meta( $seller_id, 'tnm_store_name', $store_name );
+                $tagline = mb_substr( sanitize_text_field( wp_unslash( $_POST['tagline'] ?? '' ) ), 0, 140 );
+                update_user_meta( $seller_id, 'tnm_store_tagline', $tagline );
                 update_user_meta( $seller_id, 'tnm_store_about', sanitize_textarea_field( wp_unslash( $_POST['about'] ?? '' ) ) );
                 update_user_meta( $seller_id, 'tnm_paypal_email', $paypal );
             }
