@@ -3,7 +3,7 @@
  * Plugin Name: MyNest Unified Marketplace
  * Plugin URI:  https://shopmynest.com/
  * Description: One complete WooCommerce marketplace plugin for MyNest sellers, fees, payouts, orders, social features, mobile APIs, checkout, and shipping.
- * Version:     3.7.49
+ * Version:     3.7.50
  * Author:      MyNest
  * Text Domain: mynest-unified-marketplace
  * Requires at least: 6.5
@@ -16,7 +16,7 @@
 
 defined( 'ABSPATH' ) || exit;
 
-define( 'MNU_VERSION', '3.7.49' );
+define( 'MNU_VERSION', '3.7.50' );
 define( 'MNU_DB_VERSION', '3.0.11' );
 define( 'MNU_FILE', __FILE__ );
 define( 'MNU_BASENAME', plugin_basename( __FILE__ ) );
@@ -70,6 +70,7 @@ function mnu_load_files(): void {
 		'includes/class-tnm-shortcodes.php',
 		'includes/class-tnm-rest.php',
 		'includes/class-mnu-compat.php',
+		'includes/class-mnu-lifecycle.php',
 		'includes/class-mnu-buyer-experience.php',
 		'includes/class-mnu-ops.php',
 		'includes/class-mnu-native-checkout.php',
@@ -179,6 +180,7 @@ final class MNU_Plugin {
 		TNM_Shortcodes::init();
 		TNM_REST::init();
 		MNU_Compat::init( true );
+		MNU_Lifecycle::init();
 		MNU_Buyer_Experience::init();
 		MNU_Ops::init();
 		MNU_Connect::init();
