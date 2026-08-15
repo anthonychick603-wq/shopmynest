@@ -3,7 +3,7 @@
  * Plugin Name:       ShopMyNest Branding
  * Plugin URI:        https://shopmynest.com
  * Description:       Applies the ShopMyNest logo and brand identity across your WordPress + WooCommerce site: custom logo, favicons, wp-admin login screen, admin bar mark, and WooCommerce transactional email header.
- * Version:           1.2.1
+ * Version:           1.2.2
  * Requires at least: 6.0
  * Requires PHP:      7.4
  * Author:            ShopMyNest
@@ -17,7 +17,7 @@ if ( ! defined( 'ABSPATH' ) ) {
     exit;
 }
 
-define( 'SMN_BRANDING_VERSION', '1.2.0' );
+define( 'SMN_BRANDING_VERSION', '1.2.2' );
 define( 'SMN_BRANDING_DIR', plugin_dir_path( __FILE__ ) );
 define( 'SMN_BRANDING_URL', plugin_dir_url( __FILE__ ) );
 define( 'SMN_BRANDING_ASSETS', SMN_BRANDING_URL . 'assets/' );
@@ -299,24 +299,23 @@ add_shortcode( 'shopmynest_trust', function( $atts ) {
 
 /**
  * Shortcode: [shopmynest_category_grid] — renders the six category tiles
- * with emoji icons. Used on the home page and shop archive.
+ * as text-only labels. Used on the home page and shop archive.
  */
 add_shortcode( 'shopmynest_category_grid', function() {
     $cats = array(
-        array( 'home-decor',        '🏠', __( 'Home Decor', 'shopmynest-branding' ) ),
-        array( 'jewelry',           '💍', __( 'Jewelry', 'shopmynest-branding' ) ),
-        array( 'baby-children',     '🧸', __( 'Baby & Children', 'shopmynest-branding' ) ),
-        array( 'art-prints',        '🎨', __( 'Art & Prints', 'shopmynest-branding' ) ),
-        array( 'crochet-knit',      '🧶', __( 'Crochet & Knit', 'shopmynest-branding' ) ),
-        array( 'pottery-ceramics',  '🏺', __( 'Pottery & Ceramics', 'shopmynest-branding' ) ),
+        array( 'home-decor',        __( 'Home Decor', 'shopmynest-branding' ) ),
+        array( 'jewelry',           __( 'Jewelry', 'shopmynest-branding' ) ),
+        array( 'baby-children',     __( 'Baby & Children', 'shopmynest-branding' ) ),
+        array( 'art-prints',        __( 'Art & Prints', 'shopmynest-branding' ) ),
+        array( 'crochet-knit',      __( 'Crochet & Knit', 'shopmynest-branding' ) ),
+        array( 'pottery-ceramics',  __( 'Pottery & Ceramics', 'shopmynest-branding' ) ),
     );
     $out = '<div class="mynest-cat-grid">';
     foreach ( $cats as $c ) {
         $out .= sprintf(
-            '<a class="mynest-cat-tile" href="/product-category/%s/"><span class="cat-emoji" aria-hidden="true">%s</span><span>%s</span></a>',
+            '<a class="mynest-cat-tile" href="/product-category/%s/"><span>%s</span></a>',
             esc_attr( $c[0] ),
-            esc_html( $c[1] ),
-            esc_html( $c[2] )
+            esc_html( $c[1] )
         );
     }
     return $out . '</div>';
