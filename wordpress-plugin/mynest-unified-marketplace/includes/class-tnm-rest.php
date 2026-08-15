@@ -21,6 +21,7 @@ final class TNM_REST {
         register_rest_route( self::NS, '/products', array( 'methods' => WP_REST_Server::READABLE, 'callback' => array( __CLASS__, 'products' ), 'permission_callback' => '__return_true' ) );
         register_rest_route( self::NS, '/products/(?P<id>\d+)', array( 'methods' => WP_REST_Server::READABLE, 'callback' => array( __CLASS__, 'product' ), 'permission_callback' => '__return_true' ) );
         register_rest_route( self::NS, '/feed', array( 'methods' => WP_REST_Server::READABLE, 'callback' => array( __CLASS__, 'feed' ), 'permission_callback' => '__return_true' ) );
+        register_rest_route( self::NS, '/home', array( 'methods' => WP_REST_Server::READABLE, 'callback' => array( __CLASS__, 'home_feed' ), 'permission_callback' => '__return_true' ) );
         register_rest_route( self::NS, '/posts', array( 'methods' => WP_REST_Server::CREATABLE, 'callback' => array( __CLASS__, 'create_post' ), 'permission_callback' => array( __CLASS__, 'seller' ) ) );
         register_rest_route( self::NS, '/posts/(?P<id>\d+)/comments', array( array( 'methods' => WP_REST_Server::READABLE, 'callback' => array( __CLASS__, 'post_comments' ), 'permission_callback' => '__return_true' ), array( 'methods' => WP_REST_Server::CREATABLE, 'callback' => array( __CLASS__, 'create_comment' ), 'permission_callback' => array( __CLASS__, 'logged_in' ) ) ) );
 
@@ -335,6 +336,92 @@ final class TNM_REST {
 
     public static function feed( WP_REST_Request $request ): WP_REST_Response {
         return rest_ensure_response( TNM_Social::feed( get_current_user_id(), max( 1, (int) $request->get_param( 'page' ) ), max( 1, (int) ( $request->get_param( 'per_page' ) ?: 20 ) ) ) );
+    }
+
+    /**
+     * Home feed for the native app. Returns recent listings from shops the
+     * viewer follows (marked with from_followed=true), then pads with recent
+     * listings from all shops so a brand-new user who follows no one still
+     * sees a full page. Always public: for anon viewers we skip the followed
+     * section entirely and just return the recent listings.
+     */
+    public static function home_feed( WP_REST_Request $request ): WP_REST_Response {
+        $per_page = max( 1, min( 50, (int) ( $request->get_param( 'per_page' ) ?: 20 ) ) );
+        $viewer   = get_current_user_id();
+        $followed_ids = array();
+        if ( $viewer && class_exists( 'TNM_Social' ) ) {
+            $followed_ids = array_map( 'intval', TNM_Social::following_ids( $viewer ) );
+        }
+        $followed_product_ids = array();
+        if ( $followed_ids ) {
+            foreach ( $followed_ids as $seller_id ) {
+                foreach ( tnm_seller_product_ids( $seller_id, array( 'publish' ) ) as $pid ) {
+                    $followed_product_ids[] = (int) $pid;
+                }
+            }
+            $followed_product_ids = array_values( array_unique( $followed_product_ids ) );
+        }
+
+        $items = array();
+        $seen  = array();
+
+        // 1. Followed-shop products (most recent first)
+        if ( $followed_product_ids ) {
+            $q = new WP_Query( array(
+                'post_type'      => 'product',
+                'post_status'    => 'publish',
+                'posts_per_page' => $per_page,
+                'post__in'       => $followed_product_ids,
+                'orderby'        => 'date',
+                'order'          => 'DESC',
+                'tax_query'      => array(
+                    array( 'taxonomy' => 'product_visibility', 'field' => 'name', 'terms' => array( 'exclude-from-catalog' ), 'operator' => 'NOT IN' ),
+                ),
+            ) );
+            foreach ( $q->posts as $post ) {
+                $product = wc_get_product( $post->ID );
+                if ( $product && $product->is_visible() ) {
+                    $row = TNM_Marketplace::product_to_array( $product );
+                    $row['from_followed'] = true;
+                    $items[] = $row;
+                    $seen[ (int) $post->ID ] = true;
+                }
+            }
+        }
+
+        // 2. Fallback pad: recent products from anywhere, excluding what's already shown
+        $need = $per_page - count( $items );
+        if ( $need > 0 ) {
+            $args = array(
+                'post_type'      => 'product',
+                'post_status'    => 'publish',
+                'posts_per_page' => $need,
+                'orderby'        => 'date',
+                'order'          => 'DESC',
+                'tax_query'      => array(
+                    array( 'taxonomy' => 'product_visibility', 'field' => 'name', 'terms' => array( 'exclude-from-catalog' ), 'operator' => 'NOT IN' ),
+                ),
+            );
+            if ( ! empty( $seen ) ) {
+                $args['post__not_in'] = array_keys( $seen );
+            }
+            $q2 = new WP_Query( $args );
+            foreach ( $q2->posts as $post ) {
+                $product = wc_get_product( $post->ID );
+                if ( $product && $product->is_visible() ) {
+                    $row = TNM_Marketplace::product_to_array( $product );
+                    $row['from_followed'] = false;
+                    $items[] = $row;
+                }
+            }
+        }
+
+        return rest_ensure_response( array(
+            'items'           => $items,
+            'followed_count'  => count( $followed_ids ),
+            'has_followed'    => (bool) $followed_ids,
+            'is_authenticated' => (bool) $viewer,
+        ) );
     }
 
     public static function create_post( WP_REST_Request $request ): WP_REST_Response|WP_Error {

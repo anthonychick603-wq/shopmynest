@@ -364,7 +364,48 @@ final class TNM_Social {
         );
         $message_id = (int) $wpdb->insert_id;
         tnm_notify( $recipient_id, $sender_id, 'new_message', 'New message from ' . get_the_author_meta( 'display_name', $sender_id ), wp_trim_words( $message, 15 ), $message_id, 'message' );
+        // Fire the email notification for the recipient (throttled to at most
+        // one email per 15 minutes per sender/recipient pair so a rapid flurry
+        // collapses into a single alert).
+        self::maybe_email_new_message( $sender_id, $recipient_id, $message );
         return $message_id;
+    }
+
+    /**
+     * Send an email to the recipient of a new message unless they opted out
+     * or we already emailed them about this same sender within the last 15
+     * minutes.
+     */
+    private static function maybe_email_new_message( int $sender_id, int $recipient_id, string $message ): void {
+        $optout = get_user_meta( $recipient_id, 'tnm_email_optout_messages', true );
+        if ( '1' === (string) $optout ) {
+            return;
+        }
+        $throttle_key = 'tnm_msg_email_' . $recipient_id . '_' . $sender_id;
+        if ( get_transient( $throttle_key ) ) {
+            return;
+        }
+        $recipient = get_userdata( $recipient_id );
+        if ( ! $recipient || empty( $recipient->user_email ) ) {
+            return;
+        }
+        $sender_name    = get_the_author_meta( 'display_name', $sender_id );
+        $recipient_name = $recipient->display_name ?: $recipient->user_login;
+        $site_name      = wp_specialchars_decode( (string) get_bloginfo( 'name' ), ENT_QUOTES );
+        $inbox_url      = home_url( '/messages/' );
+        $thread_url     = add_query_arg( array( 'to' => $sender_id ), $inbox_url );
+        $unsub_url      = add_query_arg( array( 'tnm_email_optout' => 'messages', 'uid' => $recipient_id, 'k' => wp_hash( 'optout|messages|' . $recipient_id ) ), home_url( '/' ) );
+        $preview        = wp_trim_words( wp_strip_all_tags( $message ), 40 );
+        $subject        = sprintf( '[%s] New message from %s', $site_name, $sender_name );
+        $body           = 'Hi ' . $recipient_name . ",\n\n";
+        $body          .= $sender_name . " just sent you a new message on " . $site_name . ":\n\n";
+        $body          .= '“' . $preview . "”\n\n";
+        $body          .= "Reply here: " . $thread_url . "\n";
+        $body          .= "Open your inbox: " . $inbox_url . "\n\n";
+        $body          .= "— The " . $site_name . " team\n\n";
+        $body          .= "You're receiving this because someone messaged you on " . $site_name . ". To stop these emails, click: " . $unsub_url . "\n";
+        wp_mail( $recipient->user_email, $subject, $body );
+        set_transient( $throttle_key, 1, 15 * MINUTE_IN_SECONDS );
     }
 
     public static function conversations( int $user_id ): array {
@@ -732,6 +773,30 @@ final class TNM_Social {
             'review_count' => $reviews['total'],
             'joined'       => $user->user_registered,
             'posts'        => $posts,
+            'email_optout_messages' => (string) get_user_meta( $seller_id, 'tnm_email_optout_messages', true ) === '1',
+        );
+    }
+
+    /**
+     * One-click unsubscribe endpoint. Hits home_url('/?tnm_email_optout=messages&uid=<id>&k=<hash>').
+     * Sets the tnm_email_optout_messages user meta and prints a small confirmation page.
+     */
+    public static function handle_email_optout(): void {
+        if ( empty( $_GET['tnm_email_optout'] ) ) {
+            return;
+        }
+        $topic = sanitize_key( wp_unslash( (string) $_GET['tnm_email_optout'] ) );
+        $uid   = isset( $_GET['uid'] ) ? (int) $_GET['uid'] : 0;
+        $k     = isset( $_GET['k'] ) ? sanitize_text_field( wp_unslash( (string) $_GET['k'] ) ) : '';
+        if ( 'messages' !== $topic || $uid <= 0 || ! hash_equals( wp_hash( 'optout|messages|' . $uid ), $k ) ) {
+            wp_die( 'Invalid unsubscribe link.', 'Unsubscribe', array( 'response' => 400 ) );
+        }
+        update_user_meta( $uid, 'tnm_email_optout_messages', '1' );
+        wp_die(
+            "<h1 style='font-family:sans-serif'>You're unsubscribed.</h1><p style='font-family:sans-serif'>You won't get emails for new messages anymore. You can re-enable them in your account settings on the site.</p>",
+            'Unsubscribed',
+            array( 'response' => 200 )
         );
     }
 }
+add_action( 'init', array( 'TNM_Social', 'handle_email_optout' ) );

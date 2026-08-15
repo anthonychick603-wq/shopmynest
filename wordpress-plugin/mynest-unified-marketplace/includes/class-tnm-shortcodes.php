@@ -428,6 +428,7 @@ final class TNM_Shortcodes {
                     <label>Shop tagline <span style="color:#7a6b57;font-weight:400;font-size:.85em">(one short line, shown on the Discover Shops page)</span><input type="text" name="tagline" maxlength="140" value="<?php echo esc_attr( (string) get_user_meta( $seller_id, 'tnm_store_tagline', true ) ); ?>"></label>
                     <label>About your shop<textarea name="about" rows="7"><?php echo esc_textarea( (string) get_user_meta( $seller_id, 'tnm_store_about', true ) ); ?></textarea></label>
                     <label>PayPal payout email<input type="email" name="paypal_email" value="<?php echo esc_attr( (string) get_user_meta( $seller_id, 'tnm_paypal_email', true ) ); ?>"></label>
+                    <label class="tnm-form-check"><input type="checkbox" name="email_optout_messages" value="1" <?php checked( '1', (string) get_user_meta( $seller_id, 'tnm_email_optout_messages', true ) ); ?>> Don't email me when I get a new buyer message. (You'll still see unread messages on the dashboard and in the app.)</label>
                     <button class="tnm-button" type="submit">Save profile</button>
                 </form>
             </div></section>
@@ -645,6 +646,7 @@ final class TNM_Shortcodes {
                 $tagline = mb_substr( sanitize_text_field( wp_unslash( $_POST['tagline'] ?? '' ) ), 0, 140 );
                 update_user_meta( $seller_id, 'tnm_store_tagline', $tagline );
                 update_user_meta( $seller_id, 'tnm_store_about', sanitize_textarea_field( wp_unslash( $_POST['about'] ?? '' ) ) );
+                update_user_meta( $seller_id, 'tnm_email_optout_messages', empty( $_POST['email_optout_messages'] ) ? '' : '1' );
                 update_user_meta( $seller_id, 'tnm_paypal_email', $paypal );
             }
         } elseif ( 'create_post' === $action ) {
