@@ -19,6 +19,7 @@ final class TNM_Shortcodes {
         static $localized = false;
 
         wp_enqueue_style( 'tnm-frontend' );
+        wp_enqueue_style( 'dashicons' );
         wp_enqueue_script( 'tnm-frontend' );
 
         if ( ! $localized ) {
@@ -138,10 +139,22 @@ final class TNM_Shortcodes {
         ob_start();
         echo $notice; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
         ?>
+        <?php
+            $unread_msgs    = TNM_Social::unread_message_count( $seller_id );
+            $unread_threads = TNM_Social::unread_thread_count( $seller_id );
+            $messages_url   = home_url( '/messages/' );
+        ?>
         <div class="tnm-dashboard">
             <header class="tnm-dashboard-header">
                 <div><h1><?php echo esc_html( tnm_seller_display_name( $seller_id ) ); ?></h1><p>Seller Dashboard</p></div>
-                <a class="tnm-button tnm-button-secondary" href="<?php echo esc_url( wc_get_page_permalink( 'shop' ) ); ?>">View shop</a>
+                <div class="tnm-dashboard-header__actions">
+                    <a class="tnm-button tnm-inbox-btn<?php echo $unread_msgs ? ' has-unread' : ''; ?>" href="<?php echo esc_url( $messages_url ); ?>">
+                        <span class="dashicons dashicons-email-alt" aria-hidden="true"></span>
+                        <span>Messages</span>
+                        <?php if ( $unread_msgs ) : ?><span class="tnm-inbox-badge" aria-label="<?php echo esc_attr( $unread_msgs . ' unread' ); ?>"><?php echo esc_html( $unread_msgs > 99 ? '99+' : (string) $unread_msgs ); ?></span><?php endif; ?>
+                    </a>
+                    <a class="tnm-button tnm-button-secondary" href="<?php echo esc_url( wc_get_page_permalink( 'shop' ) ); ?>">View shop</a>
+                </div>
             </header>
 
             <div class="tnm-stats">
@@ -166,7 +179,15 @@ final class TNM_Shortcodes {
             <section class="tnm-tab-panel is-active" data-tnm-panel="overview">
                 <div class="tnm-grid-2">
                     <div class="tnm-card"><h2>Marketplace fee</h2><p><strong><?php echo esc_html( tnm_fee_percent() ); ?>%</strong> <?php echo esc_html( tnm_fee_label() ); ?> is deducted from each item sale. Tax is tracked separately and shipping is allocated to seller earnings.</p></div>
-                    <div class="tnm-card"><h2>Quick actions</h2><p><button type="button" class="tnm-button" data-tnm-open-tab="products">Add a product</button> <button type="button" class="tnm-button tnm-button-secondary" data-tnm-open-tab="post">Share an update</button></p></div>
+                    <div class="tnm-card"><h2>Quick actions</h2><p><button type="button" class="tnm-button" data-tnm-open-tab="products">Add a product</button> <button type="button" class="tnm-button tnm-button-secondary" data-tnm-open-tab="post">Share an update</button> <a class="tnm-button tnm-button-secondary" href="<?php echo esc_url( $messages_url ); ?>">Open inbox<?php echo $unread_threads ? ' (' . esc_html( (string) $unread_threads ) . ')' : ''; ?></a></p></div>
+                </div>
+                <div class="tnm-card tnm-inbox-card">
+                    <h2>Buyer messages<?php echo $unread_threads ? ' <span class="tnm-pill tnm-pill--brand">' . esc_html( (string) $unread_threads ) . ' new</span>' : ''; ?></h2>
+                    <?php if ( $unread_msgs ) : ?>
+                        <p>You have <strong><?php echo esc_html( (string) $unread_msgs ); ?></strong> unread <?php echo $unread_msgs === 1 ? 'message' : 'messages'; ?> across <strong><?php echo esc_html( (string) $unread_threads ); ?></strong> <?php echo $unread_threads === 1 ? 'conversation' : 'conversations'; ?>. <a href="<?php echo esc_url( $messages_url ); ?>">Open inbox &rarr;</a></p>
+                    <?php else : ?>
+                        <p>No unread messages. Buyers can reach out from any product page or your shop profile — all replies land here. <a href="<?php echo esc_url( $messages_url ); ?>">Open inbox</a>.</p>
+                    <?php endif; ?>
                 </div>
                 <div class="tnm-card"><h2>Recent orders</h2><?php self::render_orders_table( array_slice( $orders['orders'], 0, 5 ) ); ?></div>
             </section>

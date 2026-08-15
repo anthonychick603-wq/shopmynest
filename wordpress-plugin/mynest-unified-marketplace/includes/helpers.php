@@ -346,5 +346,9 @@ function tnm_rest_user_data( WP_User $user ): array {
         // real seller id and would fetch store "0".
         'seller_id'    => $is_seller ? $user->ID : null,
         'seller_status' => tnm_seller_application_status( $user->ID ),
+        // Convenience counters so mobile / web can badge the Messages icon
+        // without a separate request.
+        'unread_messages' => class_exists( 'TNM_Social' ) ? TNM_Social::unread_message_count( $user->ID ) : 0,
+        'unread_threads'  => class_exists( 'TNM_Social' ) ? TNM_Social::unread_thread_count( $user->ID ) : 0,
     );
 }

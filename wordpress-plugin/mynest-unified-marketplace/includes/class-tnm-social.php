@@ -395,6 +395,20 @@ final class TNM_Social {
         );
     }
 
+    /** Count of message threads with at least one unread message for this user. */
+    public static function unread_thread_count( int $user_id ): int {
+        global $wpdb;
+        if ( $user_id <= 0 ) { return 0; }
+        return (int) $wpdb->get_var( $wpdb->prepare( 'SELECT COUNT(DISTINCT sender_id) FROM ' . tnm_table( 'messages' ) . ' WHERE recipient_id=%d AND is_read=0', $user_id ) );
+    }
+
+    /** Count of individual unread messages for this user. */
+    public static function unread_message_count( int $user_id ): int {
+        global $wpdb;
+        if ( $user_id <= 0 ) { return 0; }
+        return (int) $wpdb->get_var( $wpdb->prepare( 'SELECT COUNT(*) FROM ' . tnm_table( 'messages' ) . ' WHERE recipient_id=%d AND is_read=0', $user_id ) );
+    }
+
     public static function conversation( int $user_id, int $other_id, int $limit = 100 ): array {
         global $wpdb;
         $rows = $wpdb->get_results(

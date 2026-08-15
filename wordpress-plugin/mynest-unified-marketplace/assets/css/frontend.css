@@ -62,6 +62,61 @@ a { text-underline-offset: 3px; }
   margin-bottom: 24px;
 }
 
+.tnm-dashboard-header__actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.tnm-inbox-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  position: relative;
+}
+
+.tnm-inbox-btn .dashicons {
+  font-size: 18px;
+  line-height: 1;
+  width: 18px;
+  height: 18px;
+}
+
+.tnm-inbox-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 10px;
+  background: #E2856E;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  margin-left: 4px;
+}
+
+.tnm-inbox-btn.has-unread {
+  border-color: #E2856E;
+  color: #fff;
+  background: #245f4b;
+}
+
+.tnm-inbox-card { border-left: 4px solid #E2856E; }
+.tnm-inbox-card h2 { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
+.tnm-pill.tnm-pill--brand {
+  background: #E2856E;
+  color: #fff;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 2px 10px;
+}
+
 .tnm-dashboard-header h1,
 .tnm-feed-header h1,
 .mnu-auth-gateway h1,
