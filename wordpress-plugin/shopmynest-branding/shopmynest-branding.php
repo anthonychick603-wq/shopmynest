@@ -3,7 +3,7 @@
  * Plugin Name:       ShopMyNest Branding
  * Plugin URI:        https://shopmynest.com
  * Description:       Applies the ShopMyNest logo and brand identity across your WordPress + WooCommerce site: custom logo, favicons, wp-admin login screen, admin bar mark, and WooCommerce transactional email header.
- * Version:           1.2.0
+ * Version:           1.2.1
  * Requires at least: 6.0
  * Requires PHP:      7.4
  * Author:            ShopMyNest
@@ -31,13 +31,13 @@ function smn_branding_palette() {
     return array(
         'primary'    => '#01696F', // Brand Teal
         'dark'       => '#0C4E54', // Brand Teal Dark
-        'accent'     => '#C25B2F', // Terracotta warm accent
+        'accent'     => '#E2856E', // Terracotta warm accent (matches app brand token)
         'background' => '#F4F2EC', // Cream surface
         'card'       => '#FFFFFF', // Card white
         'ink'        => '#2B2820', // Warm near-black text
         'border'     => '#B8B5AC', // Warm muted border
         // Legacy alias so downstream code keeps working.
-        'secondary'  => '#C25B2F',
+        'secondary'  => '#E2856E',
     );
 }
 

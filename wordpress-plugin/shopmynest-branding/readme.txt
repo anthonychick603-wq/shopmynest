@@ -28,5 +28,8 @@ Drops in the ShopMyNest nest-and-bird logo across your site with zero configurat
 
 == Changelog ==
 
+= 1.2.1 =
+* Palette: accent and secondary tokens updated to #E2856E to match the mobile app's brand color.
+
 = 1.0.0 =
 * Initial release.
