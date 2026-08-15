@@ -340,6 +340,11 @@ final class MNU_Social_Frontend {
 		.mnu-msg-cta:hover{background:#E2856E;color:#fff;transform:translateY(-1px)}
 		.mnu-msg-cta svg{flex-shrink:0}
 		.mnu-msg-cta--product{display:flex;justify-content:center;margin:.75rem 0 0;width:100%}
+		/* --- Shop hero: actions + inline bio --- */
+		.mnu-shop__actions-row{display:flex;flex-wrap:wrap;align-items:center;gap:.75rem 1rem;margin-top:.85rem}
+		.mnu-shop__actions{display:flex;flex-wrap:wrap;gap:.5rem;flex-shrink:0}
+		.mnu-shop__bio{margin:0;flex:1;min-width:260px;color:#3E2723;font-size:.95rem;line-height:1.45;white-space:pre-wrap;overflow-wrap:anywhere;padding-left:1rem;border-left:2px solid #EEDDCC}
+		@media(max-width:640px){.mnu-shop__bio{flex-basis:100%;padding-left:0;border-left:0;padding-top:.5rem;border-top:1px solid #EEDDCC;margin-top:.25rem}}
 		.mnu-pill{display:inline-block;padding:.15rem .55rem;background:#245f4b;color:#fff;border-radius:999px;font-size:.75rem;font-weight:600;margin-left:.25rem}
 CSS;
 	}
@@ -433,8 +438,10 @@ CSS;
 						'<div class="mnu-shop__head-body">' +
 							'<h1>' + esc(s.store_name) + '</h1>' +
 							'<div class="mnu-muted">' + s.followers + ' followers' + (s.review_count ? ' · ' + s.rating.toFixed(1) + '★ (' + s.review_count + ')' : '') + '</div>' +
-							(s.about ? '<p style="margin:.5rem 0 0">' + esc(s.about) + '</p>' : '') +
-							'<div class="mnu-shop__actions"></div>' +
+							'<div class="mnu-shop__actions-row">' +
+								'<div class="mnu-shop__actions"></div>' +
+								(s.about ? '<p class="mnu-shop__bio">' + esc(s.about) + '</p>' : '') +
+							'</div>' +
 						'</div>' +
 					'</div>';
 				var actions = hero.querySelector('.mnu-shop__actions');
