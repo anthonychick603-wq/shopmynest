@@ -108,10 +108,17 @@ final class TNM_Applications {
             return tnm_json_error( 'invalid_application_user', 'Application user not found.', 404 );
         }
 
-        $newly_promoted = ! in_array( 'tnm_seller', (array) $user->roles, true );
+        // A user counts as "already a seller" when they carry either the legacy
+        // (tnm_seller) or the unified (mynest_seller) role. Everything downstream
+        // treats these as equivalent, so we mirror them on promotion and use OR
+        // logic to decide whether this is a first-time approval.
+        $roles          = (array) $user->roles;
+        $newly_promoted = ! in_array( 'tnm_seller', $roles, true ) && ! in_array( 'mynest_seller', $roles, true );
 
-        // Add the seller role without replacing any existing role (e.g. customer).
+        // Add BOTH seller roles without replacing any existing role (e.g. customer).
+        // Keeping them in sync means capability checks against either role succeed.
         $user->add_role( 'tnm_seller' );
+        $user->add_role( 'mynest_seller' );
         update_user_meta( $user->ID, 'tnm_store_name', sanitize_text_field( (string) get_post_meta( $application_id, '_tnm_store_name', true ) ) );
         update_user_meta( $user->ID, 'tnm_store_about', sanitize_textarea_field( $application->post_content ) );
         if ( ! get_user_meta( $user->ID, 'tnm_seller_approved_at', true ) ) {

@@ -9,7 +9,7 @@ defined( 'ABSPATH' ) || exit;
  * while using the unified TNM services as the single source of truth.
  */
 final class MNU_Compat {
-    private const MIGRATION_VERSION = 4;
+    private const MIGRATION_VERSION = 5;
 
     public static function init( bool $full_mode ): void {
         add_action( 'init', array( __CLASS__, 'migrate_legacy_data' ), 40 );
@@ -538,11 +538,24 @@ final class MNU_Compat {
         update_option( 'tnm_settings', $settings, false );
     }
 
+    /**
+     * Ensure every seller carries BOTH `tnm_seller` (legacy) and `mynest_seller`
+     * (unified) roles. Historically some users were promoted with only one of the
+     * two; capability checks that queried the missing role would then reject an
+     * otherwise valid seller. Mirroring the roles here fixes the mismatch
+     * everywhere in a single sweep and is idempotent on subsequent activations.
+     */
     private static function migrate_seller_roles(): void {
-        $users = get_users( array( 'role' => 'mynest_seller', 'fields' => 'all' ) );
-        foreach ( $users as $user ) {
+        // Users with mynest_seller only -> add tnm_seller
+        foreach ( get_users( array( 'role' => 'mynest_seller', 'fields' => 'all' ) ) as $user ) {
             if ( ! in_array( 'tnm_seller', (array) $user->roles, true ) ) {
                 $user->add_role( 'tnm_seller' );
+            }
+        }
+        // Users with tnm_seller only -> add mynest_seller
+        foreach ( get_users( array( 'role' => 'tnm_seller', 'fields' => 'all' ) ) as $user ) {
+            if ( ! in_array( 'mynest_seller', (array) $user->roles, true ) ) {
+                $user->add_role( 'mynest_seller' );
             }
         }
     }
