@@ -97,3 +97,117 @@ if ( ! function_exists( 'mynest_marketplace_enqueue_block_assets' ) ) :
 endif;
 
 add_action( 'enqueue_block_editor_assets', 'mynest_marketplace_enqueue_block_assets' );
+
+/* -----------------------------------------------------------------------------
+ * Palette handoff: shopmynest-branding is the single source of truth.
+ *
+ * The branding plugin (shopmynest-branding.php) exposes smn_branding_palette().
+ * We use that palette to override this theme's color presets at runtime, so
+ * editing the plugin's palette re-colors:
+ *   - WordPress Global Styles ( theme.json color slots reference presets )
+ *   - marketplace.css and any other CSS reading --wp--preset--color--*
+ *   - Block editor previews
+ *   - Anywhere blocks / patterns use theme colors by slug
+ *
+ * If the branding plugin is inactive, the theme's baked-in placeholder palette
+ * (Studio Clay defaults, matching plugin v1.3.0) remains in effect.
+ * ---------------------------------------------------------------------------*/
+
+if ( ! function_exists( 'mynest_marketplace_palette_from_plugin' ) ) :
+	/**
+	 * Fetch the palette hash from the branding plugin, or a safe default.
+	 *
+	 * @return array<string,string> primary/dark/accent/background/card/ink/border keys.
+	 */
+	function mynest_marketplace_palette_from_plugin(): array {
+		if ( function_exists( 'smn_branding_palette' ) ) {
+			$p = smn_branding_palette();
+			if ( is_array( $p ) && ! empty( $p['primary'] ) ) {
+				return $p;
+			}
+		}
+		// Fallback: Studio Clay defaults (mirrors plugin v1.3.0).
+		return array(
+			'primary'    => '#3C4B33',
+			'dark'       => '#2A3624',
+			'accent'     => '#B0553A',
+			'background' => '#F5EFE4',
+			'card'       => '#FFFBF3',
+			'ink'        => '#26221C',
+			'border'     => '#DFD3BE',
+			'secondary'  => '#B0553A',
+		);
+	}
+endif;
+
+if ( ! function_exists( 'mynest_marketplace_theme_json_palette' ) ) :
+	/**
+	 * Map the plugin palette onto the child theme's theme.json color slugs.
+	 *
+	 * @return array<int,array<string,string>>
+	 */
+	function mynest_marketplace_theme_json_palette(): array {
+		$p = mynest_marketplace_palette_from_plugin();
+		return array(
+			array( 'slug' => 'theme-1',     'color' => $p['card'],       'name' => 'Card surface' ),
+			array( 'slug' => 'theme-2',     'color' => $p['background'], 'name' => 'Alt surface' ),
+			array( 'slug' => 'theme-3',     'color' => $p['border'],     'name' => 'Border' ),
+			array( 'slug' => 'theme-4',     'color' => $p['ink'],        'name' => 'Body text' ),
+			array( 'slug' => 'theme-5',     'color' => '#131210',        'name' => 'Dark sections' ),
+			array( 'slug' => 'brand',       'color' => $p['primary'],    'name' => 'Brand' ),
+			array( 'slug' => 'brand-dark',  'color' => $p['dark'],       'name' => 'Brand dark' ),
+			array( 'slug' => 'accent-warm', 'color' => $p['accent'],     'name' => 'Accent warm' ),
+		);
+	}
+endif;
+
+/**
+ * Filter theme.json data at load time so the color palette comes from the
+ * branding plugin. This runs BEFORE Global Styles are compiled, meaning the
+ * change flows through core's --wp--preset--color--* variables site-wide.
+ */
+add_filter(
+	'wp_theme_json_data_theme',
+	function ( $theme_json ) {
+		if ( ! is_object( $theme_json ) || ! method_exists( $theme_json, 'update_with' ) ) {
+			return $theme_json;
+		}
+		$theme_json->update_with(
+			array(
+				'version'  => 3,
+				'settings' => array(
+					'color' => array(
+						'palette' => mynest_marketplace_theme_json_palette(),
+					),
+				),
+			)
+		);
+		return $theme_json;
+	}
+);
+
+/**
+ * Emit an inline stylesheet that redefines --wp--preset--color--* on :root
+ * with priority 1000. WordPress core writes these variables in its own inline
+ * <style> earlier in the head; our declaration wins the cascade and covers
+ * the edge case where a customized wp_global_styles CPT overrides theme.json.
+ */
+add_action(
+	'wp_enqueue_scripts',
+	function () {
+		$p = mynest_marketplace_palette_from_plugin();
+		$css = ':root{'
+			. '--wp--preset--color--theme-1:'     . $p['card']       . ';'
+			. '--wp--preset--color--theme-2:'     . $p['background'] . ';'
+			. '--wp--preset--color--theme-3:'     . $p['border']     . ';'
+			. '--wp--preset--color--theme-4:'     . $p['ink']        . ';'
+			. '--wp--preset--color--brand:'       . $p['primary']    . ';'
+			. '--wp--preset--color--brand-dark:'  . $p['dark']       . ';'
+			. '--wp--preset--color--accent-warm:' . $p['accent']     . ';'
+			. '}';
+		wp_register_style( 'mynest-palette-runtime', false, array(), '1.0.4' );
+		wp_enqueue_style( 'mynest-palette-runtime' );
+		wp_add_inline_style( 'mynest-palette-runtime', $css );
+	},
+	100 // late so it comes after core's global-styles handle.
+);

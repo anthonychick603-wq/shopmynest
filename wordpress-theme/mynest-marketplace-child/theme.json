@@ -29,42 +29,42 @@
         {
           "slug": "theme-1",
           "color": "#FFFBF3",
-          "name": "Color 1 (Warm paper / card surface)"
+          "name": "Card surface"
         },
         {
           "slug": "theme-2",
           "color": "#F5EFE4",
-          "name": "Color 2 (Parchment alt surface)"
+          "name": "Alt surface"
         },
         {
           "slug": "theme-3",
           "color": "#DFD3BE",
-          "name": "Color 3 (Sand border)"
+          "name": "Border"
         },
         {
           "slug": "theme-4",
           "color": "#26221C",
-          "name": "Color 4 (Bark body text)"
+          "name": "Body text"
         },
         {
           "slug": "theme-5",
           "color": "#131210",
-          "name": "Color 5 (Near-black dark sections)"
+          "name": "Dark sections"
         },
         {
           "slug": "brand",
           "color": "#3C4B33",
-          "name": "Brand Forest"
+          "name": "Brand"
         },
         {
           "slug": "brand-dark",
           "color": "#2A3624",
-          "name": "Brand Forest Dark"
+          "name": "Brand dark"
         },
         {
           "slug": "accent-warm",
           "color": "#B0553A",
-          "name": "Accent Warm (Clay)"
+          "name": "Accent warm"
         }
       ]
     },
@@ -199,8 +199,8 @@
   },
   "styles": {
     "color": {
-      "background": "#F7F6F2",
-      "text": "#2B2820"
+      "background": "var(--wp--preset--color--theme-2)",
+      "text": "var(--wp--preset--color--theme-4)"
     },
     "elements": {
       "button": {
@@ -208,8 +208,8 @@
           "radius": "10px"
         },
         "color": {
-          "background": "#01696F",
-          "text": "#FFFFFF"
+          "background": "var(--wp--preset--color--brand)",
+          "text": "var(--wp--preset--color--theme-1)"
         },
         "spacing": {
           "padding": {
@@ -224,18 +224,18 @@
         },
         ":hover": {
           "color": {
-            "background": "#0C4E54",
-            "text": "#FFFFFF"
+            "background": "var(--wp--preset--color--brand-dark)",
+            "text": "var(--wp--preset--color--theme-1)"
           }
         }
       },
       "link": {
         "color": {
-          "text": "#01696F"
+          "text": "var(--wp--preset--color--brand)"
         },
         ":hover": {
           "color": {
-            "text": "#0C4E54"
+            "text": "var(--wp--preset--color--brand-dark)"
           }
         }
       },
