@@ -340,11 +340,15 @@ final class MNU_Social_Frontend {
 		.mnu-msg-cta:hover{background:#E2856E;color:#fff;transform:translateY(-1px)}
 		.mnu-msg-cta svg{flex-shrink:0}
 		.mnu-msg-cta--product{display:flex;justify-content:center;margin:.75rem 0 0;width:100%}
-		/* --- Shop hero: tagline, actions, About-the-shop card --- */
+		/* --- Shop hero: layout, tagline, actions, About toggle --- */
+		.mnu-shop__head{display:flex;gap:1.5rem;align-items:flex-start;width:100%}
+		.mnu-shop__head-body{flex:1 1 auto;min-width:0}
 		.mnu-shop__tagline{margin:.15rem 0 .25rem;color:#3E2723;font-size:1rem;font-weight:500;font-style:italic;line-height:1.35;overflow-wrap:anywhere}
-		.mnu-shop__actions{display:flex;flex-wrap:wrap;gap:.5rem;margin-top:.85rem}
-		.mnu-shop__about{margin:1.25rem 0 0;padding:1.1rem 1.25rem;background:#FFF8EF;border:1px solid #EEDDCC;border-radius:12px}
-		.mnu-shop__about-title{margin:0 0 .5rem;font-size:1.05rem;font-weight:600;color:#3E2723;letter-spacing:.01em}
+		.mnu-shop__actions{display:flex;flex-wrap:wrap;gap:.5rem;margin-top:.85rem;align-items:center}
+		.mnu-shop__about-btn.is-open{background:#245f4b;color:#fff;border-color:#245f4b}
+		.mnu-shop__about-btn.is-open svg{stroke:#fff}
+		.mnu-shop__about-panel{margin:.85rem 0 0;padding:1rem 1.15rem;background:#FFF8EF;border:1px solid #EEDDCC;border-radius:12px;max-width:640px}
+		.mnu-shop__about-panel[hidden]{display:none}
 		.mnu-shop__about-body{margin:0;color:#3E2723;font-size:.98rem;line-height:1.55;white-space:pre-wrap;overflow-wrap:anywhere}
 		/* --- Directory card tagline --- */
 		.mnu-shop-card__tagline{color:#3E2723;font-size:.9rem;font-style:italic;line-height:1.35;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
@@ -436,18 +440,32 @@ CSS;
 				var banner = s.banner ? '<img class="mnu-shop__banner" src="' + esc(s.banner) + '" alt="" />' : '';
 				hero.innerHTML =
 					banner +
-					'<div style="display:flex;gap:1.5rem;align-items:flex-start;width:100%">' +
+					'<div class="mnu-shop__head">' +
 						'<img class="mnu-shop__avatar" src="' + esc(s.avatar) + '" alt="" />' +
 						'<div class="mnu-shop__head-body">' +
 							'<h1>' + esc(s.store_name) + '</h1>' +
 							(s.tagline ? '<div class="mnu-shop__tagline">' + esc(s.tagline) + '</div>' : '') +
 							'<div class="mnu-muted">' + s.followers + ' followers' + (s.review_count ? ' · ' + s.rating.toFixed(1) + '★ (' + s.review_count + ')' : '') + '</div>' +
 							'<div class="mnu-shop__actions"></div>' +
+							(s.about ? '<div class="mnu-shop__about-panel" data-mnu-about-panel hidden><p class="mnu-shop__about-body">' + esc(s.about) + '</p></div>' : '') +
 						'</div>' +
-					'</div>' +
-					(s.about ? '<section class="mnu-shop__about"><h2 class="mnu-shop__about-title">About the shop</h2><p class="mnu-shop__about-body">' + esc(s.about) + '</p></section>' : '');
+					'</div>';
 				var actions = hero.querySelector('.mnu-shop__actions');
 				actions.appendChild(followBtn(s.id, !!s.is_following));
+				if (s.about) {
+					var aboutBtn = document.createElement('button');
+					aboutBtn.type = 'button';
+					aboutBtn.className = 'mnu-msg-cta mnu-shop__about-btn';
+					aboutBtn.setAttribute('aria-expanded', 'false');
+					aboutBtn.innerHTML = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg><span>About</span>';
+					aboutBtn.addEventListener('click', function(){
+						var panel = hero.querySelector('[data-mnu-about-panel]');
+						if (!panel) return;
+						if (panel.hasAttribute('hidden')) { panel.removeAttribute('hidden'); aboutBtn.setAttribute('aria-expanded','true'); aboutBtn.classList.add('is-open'); }
+						else { panel.setAttribute('hidden',''); aboutBtn.setAttribute('aria-expanded','false'); aboutBtn.classList.remove('is-open'); }
+					});
+					actions.appendChild(aboutBtn);
+				}
 				if (TNMFrontend.currentUid && TNMFrontend.currentUid !== s.id) {
 					var msg = document.createElement('a');
 					msg.className = 'mnu-msg-cta';
