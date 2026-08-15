@@ -126,16 +126,16 @@ if ( ! function_exists( 'mynest_marketplace_palette_from_plugin' ) ) :
 				return $p;
 			}
 		}
-		// Fallback: Studio Clay defaults (mirrors plugin v1.3.0).
+		// Fallback: Modern Marketplace defaults (mirrors plugin v1.4.0).
 		return array(
-			'primary'    => '#3C4B33',
-			'dark'       => '#2A3624',
-			'accent'     => '#B0553A',
-			'background' => '#F5EFE4',
-			'card'       => '#FFFBF3',
-			'ink'        => '#26221C',
-			'border'     => '#DFD3BE',
-			'secondary'  => '#B0553A',
+			'primary'    => '#3A3D8A',
+			'dark'       => '#26295F',
+			'accent'     => '#E27055',
+			'background' => '#F8F5F0',
+			'card'       => '#FFFFFF',
+			'ink'        => '#1B1A21',
+			'border'     => '#E4DED4',
+			'secondary'  => '#E27055',
 		);
 	}
 endif;

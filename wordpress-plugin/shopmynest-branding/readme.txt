@@ -28,6 +28,9 @@ Drops in the ShopMyNest nest-and-bird logo across your site with zero configurat
 
 == Changelog ==
 
+= 1.4.0 =
+* Palette: switched to **Modern Marketplace** — brand indigo primary (#3A3D8A), coral accent (#E27055), warm ivory surface (#F8F5F0), clean white card (#FFFFFF), ink text (#1B1A21), ivory border (#E4DED4). Legacy `secondary` alias points to coral. Shadow tint recalibrated to indigo.
+
 = 1.3.0 =
 * Palette: switched from teal + cream to **Studio Clay** — deep forest primary (#3C4B33), clay accent (#B0553A), parchment surface (#F5EFE4), warm paper cards (#FFFBF3), bark ink (#26221C), sand borders (#DFD3BE). Legacy `secondary` alias now points to the clay accent. Shadow tint recalibrated to forest.
 
