@@ -89,6 +89,27 @@ final class TNM_Ledger {
             }
         }
         $shipping_total = max( 0, (float) $order->get_shipping_total() );
+
+        // Prefer a truthful per-seller shipping breakdown captured at order
+        // creation (see mnu_native_create_order in class-mnu-native-checkout.php
+        // and mnu_native_shipping_breakdown_by_seller). Falls back to the
+        // legacy proportional-by-subtotal allocation for legacy orders and
+        // orders whose breakdown snapshot wasn't captured.
+        $shipping_by_seller = array();
+        $ship_meta          = (string) $order->get_meta( '_mnu_shipping_by_seller', true );
+        if ( '' !== $ship_meta ) {
+            $decoded = json_decode( $ship_meta, true );
+            if ( is_array( $decoded ) ) {
+                foreach ( $decoded as $sid => $amt ) {
+                    $sid = (int) $sid;
+                    if ( $sid > 0 ) {
+                        $shipping_by_seller[ $sid ] = (float) $amt;
+                    }
+                }
+            }
+        }
+        $shipping_seller_allocated = array();
+
         $holding_days   = max( 0, (int) tnm_get_option( 'holding_days', 7 ) );
         $paid_date      = $order->get_date_paid() ?: $order->get_date_created();
         $available_at   = $paid_date ? gmdate( 'Y-m-d H:i:s', $paid_date->getTimestamp() + ( $holding_days * DAY_IN_SECONDS ) ) : gmdate( 'Y-m-d H:i:s', time() + ( $holding_days * DAY_IN_SECONDS ) );
@@ -109,7 +130,18 @@ final class TNM_Ledger {
             if ( $fee <= 0 && $gross > 0 ) {
                 $fee = round( $gross * ( tnm_fee_percent() / 100 ), wc_get_price_decimals() + 2 );
             }
-            if ( $line_total > 0 ) {
+            if ( isset( $shipping_by_seller[ $seller_id ] ) ) {
+                // Allocate the seller's full shipping amount to their FIRST
+                // ledger row; subsequent rows for the same seller get $0 so
+                // per-seller shipping isn't multiplied across a seller with
+                // multiple line items.
+                if ( empty( $shipping_seller_allocated[ $seller_id ] ) ) {
+                    $shipping                                = (float) $shipping_by_seller[ $seller_id ];
+                    $shipping_seller_allocated[ $seller_id ] = true;
+                } else {
+                    $shipping = 0.0;
+                }
+            } elseif ( $line_total > 0 ) {
                 $shipping = $shipping_total * ( $gross / $line_total );
             } else {
                 $shipping = $qty_total > 0 ? $shipping_total * ( max( 1, (int) $item->get_quantity() ) / $qty_total ) : 0;
@@ -297,8 +329,27 @@ final class TNM_Ledger {
             if ( $refund_amount <= 0 ) {
                 return;
             }
-            $order_items_total = 0.0;
-            $eligible_items    = array();
+
+            // Read the per-seller shipping breakdown captured at order-create
+            // time (see mnu_native_create_order). Falls back to proportional
+            // allocation when unavailable so legacy orders still refund.
+            $shipping_by_seller = array();
+            $ship_meta          = (string) $order->get_meta( '_mnu_shipping_by_seller', true );
+            if ( '' !== $ship_meta ) {
+                $decoded = json_decode( $ship_meta, true );
+                if ( is_array( $decoded ) ) {
+                    foreach ( $decoded as $sid => $amt ) {
+                        $sid = (int) $sid;
+                        if ( $sid > 0 ) {
+                            $shipping_by_seller[ $sid ] = (float) $amt;
+                        }
+                    }
+                }
+            }
+
+            $order_items_total  = 0.0;
+            $eligible_items     = array();
+            $seller_first_item  = array();
             foreach ( $order->get_items() as $order_item_id => $order_item ) {
                 if ( ! $order_item instanceof WC_Order_Item_Product ) {
                     continue;
@@ -307,27 +358,69 @@ final class TNM_Ledger {
                 if ( $line_total <= 0 ) {
                     continue;
                 }
+                $seller_id = (int) tnm_get_order_item_seller_id( $order_item );
                 $eligible_items[ $order_item_id ] = array(
                     'item'       => $order_item,
                     'line_total' => $line_total,
+                    'seller_id'  => $seller_id,
                 );
                 $order_items_total += $line_total;
+                if ( $seller_id > 0 && ! isset( $seller_first_item[ $seller_id ] ) ) {
+                    // The first item we see for each seller carries that
+                    // seller's shipping-share refund. Later items for the
+                    // same seller only carry their product-share refund.
+                    $seller_first_item[ $seller_id ] = $order_item_id;
+                }
             }
             if ( $order_items_total <= 0 || empty( $eligible_items ) ) {
                 return;
             }
+
+            // Split the refund into a product portion and a shipping portion so
+            // each seller gets compensated for the product AND shipping they
+            // actually lose. Without this, a $36.18 full refund on a $25.01
+            // cart with $11.17 shipping was allocating almost the entire
+            // amount to the seller with the higher line total — the $0.01
+            // seller got $0.014 while the $25.00 seller ate $36.17.
+            $order_ship_total = 0.0;
+            foreach ( $shipping_by_seller as $sid => $amt ) {
+                if ( isset( $seller_first_item[ $sid ] ) ) {
+                    $order_ship_total += (float) $amt;
+                }
+            }
+            $order_grand_total = $order_items_total + $order_ship_total;
+            if ( $order_grand_total <= 0 ) {
+                $order_grand_total = $order_items_total;
+            }
+            // Refund share proportion is capped at 1.0 (never over-refund) and
+            // handles partial amount-only refunds correctly.
+            $refund_share = min( 1.0, $refund_amount / $order_grand_total );
+
             foreach ( $eligible_items as $original_item_id => $entry ) {
                 $original_item = $entry['item'];
-                $seller_id     = tnm_get_order_item_seller_id( $original_item );
+                $seller_id     = $entry['seller_id'];
                 if ( ! $seller_id ) {
                     continue;
                 }
-                $share          = $entry['line_total'] / $order_items_total;
-                $refunded_gross = round( $refund_amount * $share, wc_get_price_decimals() + 2 );
-                if ( $refunded_gross <= 0 ) {
+                // Product share of the refund is the same shape as before:
+                // this line item's price scaled by the refund proportion.
+                $refunded_gross = round( $entry['line_total'] * $refund_share, wc_get_price_decimals() + 2 );
+
+                // Shipping share of the refund goes to the seller's FIRST
+                // eligible item only, so per-seller shipping isn't double-
+                // counted across multiple items for the same seller.
+                $refunded_shipping = 0.0;
+                if (
+                    isset( $seller_first_item[ $seller_id ], $shipping_by_seller[ $seller_id ] )
+                    && $seller_first_item[ $seller_id ] === $original_item_id
+                ) {
+                    $refunded_shipping = round( (float) $shipping_by_seller[ $seller_id ] * $refund_share, wc_get_price_decimals() + 2 );
+                }
+
+                if ( $refunded_gross <= 0 && $refunded_shipping <= 0 ) {
                     continue;
                 }
-                self::insert_refund_row( $order, $refund_id, $original_item, $refunded_gross, 0.0, $now );
+                self::insert_refund_row( $order, $refund_id, $original_item, $refunded_gross, 0.0, $now, $refunded_shipping );
             }
             return;
         }
@@ -356,10 +449,12 @@ final class TNM_Ledger {
      * (best-effort) reverse the Stripe transfer that funded it. Extracted so
      * both the item-based and amount-only refund paths write rows consistently.
      */
-    private static function insert_refund_row( WC_Order $order, int $refund_id, WC_Order_Item_Product $original_item, float $refunded_gross, float $tax_refund, string $now ): void {
+    private static function insert_refund_row( WC_Order $order, int $refund_id, WC_Order_Item_Product $original_item, float $refunded_gross, float $tax_refund, string $now, float $refunded_shipping = 0.0 ): void {
         global $wpdb;
         $seller_id = tnm_get_order_item_seller_id( $original_item );
-        if ( ! $seller_id || $refunded_gross <= 0 ) {
+        // Allow rows with only a shipping refund (shipping-only compensation for
+        // a full refund where product share is $0.
+        if ( ! $seller_id || ( $refunded_gross <= 0 && $refunded_shipping <= 0 ) ) {
             return;
         }
         $order_id         = $order->get_id();
@@ -370,13 +465,15 @@ final class TNM_Ledger {
             $original_fee_meta = $original_item->get_meta( '_mynest_nestkeeper_fee', true );
         }
         $original_fee = '' === $original_fee_meta ? round( $original_gross * ( tnm_fee_percent() / 100 ), wc_get_price_decimals() + 2 ) : (float) $original_fee_meta;
-        $fee_refund   = min( $original_fee, $original_fee * ( $refunded_gross / $original_gross ) );
-        $net_reversal = -max( 0, $refunded_gross - $fee_refund );
+        $fee_refund   = $refunded_gross > 0 ? min( $original_fee, $original_fee * ( $refunded_gross / $original_gross ) ) : 0.0;
+        // Seller loses: product gross minus refunded platform fee, plus the
+        // shipping they were credited for (labels are non-refundable).
+        $net_reversal = -max( 0, ( $refunded_gross - $fee_refund ) + $refunded_shipping );
         $type         = 'refund_' . $refund_id;
 
         $inserted = $wpdb->query(
             $wpdb->prepare(
-                'INSERT IGNORE INTO ' . tnm_table( 'ledger' ) . ' (seller_id,order_id,order_item_id,type,gross,platform_fee,tax,shipping,net,currency,status,available_at,payout_id,note,created_at,updated_at) VALUES (%d,%d,%d,%s,%f,%f,%f,0,%f,%s,%s,%s,0,%s,%s,%s)',
+                'INSERT IGNORE INTO ' . tnm_table( 'ledger' ) . ' (seller_id,order_id,order_item_id,type,gross,platform_fee,tax,shipping,net,currency,status,available_at,payout_id,note,created_at,updated_at) VALUES (%d,%d,%d,%s,%f,%f,%f,%f,%f,%s,%s,%s,0,%s,%s,%s)',
                 $seller_id,
                 $order_id,
                 $original_item_id,
@@ -384,6 +481,7 @@ final class TNM_Ledger {
                 -$refunded_gross,
                 -$fee_refund,
                 -$tax_refund,
+                -$refunded_shipping,
                 $net_reversal,
                 $order->get_currency(),
                 'available',

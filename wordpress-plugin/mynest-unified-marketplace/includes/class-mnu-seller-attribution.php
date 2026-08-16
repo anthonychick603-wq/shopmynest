@@ -50,6 +50,21 @@ final class MNU_Seller_Attribution {
 
 		register_rest_route(
 			'mnu/v1',
+			'/admin/ledger_rebuild',
+			array(
+				'methods'             => 'POST',
+				'callback'            => array( __CLASS__, 'rest_ledger_rebuild' ),
+				'permission_callback' => static function () {
+					return current_user_can( self::CAP );
+				},
+				'args'                => array(
+					'order_id' => array( 'required' => true, 'type' => 'integer' ),
+				),
+			)
+		);
+
+		register_rest_route(
+			'mnu/v1',
 			'/admin/shippo_state',
 			array(
 				'methods'             => 'GET',
@@ -86,6 +101,78 @@ final class MNU_Seller_Attribution {
 				'labels_settings_fn'    => function_exists( 'mnu_labels_settings' ),
 			)
 		);
+	}
+
+	public static function rest_ledger_rebuild( WP_REST_Request $req ): WP_REST_Response {
+		global $wpdb;
+		$order_id = (int) $req->get_param( 'order_id' );
+		$order    = function_exists( 'wc_get_order' ) ? wc_get_order( $order_id ) : null;
+		if ( ! $order ) {
+			return rest_ensure_response( array( 'ok' => false, 'error' => 'order_not_found', 'order_id' => $order_id ) );
+		}
+
+		$out = array( 'ok' => true, 'order_id' => $order_id, 'steps' => array() );
+
+		$ship_addr = $order->get_address( 'shipping' );
+		if ( empty( $ship_addr['address_1'] ) ) {
+			$ship_addr = $order->get_address( 'billing' );
+		}
+		$lines = array();
+		foreach ( $order->get_items() as $item ) {
+			if ( ! $item instanceof \WC_Order_Item_Product ) {
+				continue;
+			}
+			$product = $item->get_product();
+			if ( ! $product ) {
+				continue;
+			}
+			$lines[] = array(
+				'product'    => $product,
+				'product_id' => $product->get_id(),
+				'quantity'   => (int) $item->get_quantity(),
+				'line_total' => (float) $item->get_total(),
+				'name'       => $product->get_name(),
+			);
+		}
+
+		if ( function_exists( 'mnu_native_shipping_breakdown_by_seller' ) ) {
+			$breakdown = mnu_native_shipping_breakdown_by_seller( $lines, $ship_addr );
+			if ( is_wp_error( $breakdown ) ) {
+				$out['steps'][] = array( 'shipping_breakdown' => 'error', 'error' => $breakdown->get_error_message() );
+			} elseif ( ! empty( $breakdown ) ) {
+				$shipping_total = (float) $order->get_shipping_total();
+				$sum            = array_sum( $breakdown );
+				if ( $sum > 0 && $shipping_total > 0 && abs( $sum - $shipping_total ) > 0.001 ) {
+					$scale = $shipping_total / $sum;
+					foreach ( $breakdown as $sid => $amt ) {
+						$breakdown[ $sid ] = round( (float) $amt * $scale, wc_get_price_decimals() + 2 );
+					}
+				}
+				$order->update_meta_data( '_mnu_shipping_by_seller', wp_json_encode( $breakdown ) );
+				$order->save();
+				$out['steps'][] = array( 'shipping_breakdown' => $breakdown );
+			}
+		} else {
+			$out['steps'][] = array( 'shipping_breakdown' => 'helper_missing' );
+		}
+
+		$table   = function_exists( 'tnm_table' ) ? tnm_table( 'ledger' ) : $wpdb->prefix . 'tnm_ledger';
+		$deleted = $wpdb->query( $wpdb->prepare( 'DELETE FROM ' . $table . ' WHERE order_id = %d', $order_id ) );
+		$out['steps'][] = array( 'rows_deleted' => (int) $deleted );
+
+		if ( class_exists( 'TNM_Ledger' ) ) {
+			\TNM_Ledger::create_order_rows( $order_id );
+			$out['steps'][] = array( 'earnings_rebuilt' => true );
+
+			$refunds = $order->get_refunds();
+			foreach ( $refunds as $refund ) {
+				\TNM_Ledger::record_refund( $order_id, (int) $refund->get_id() );
+			}
+			$out['steps'][] = array( 'refunds_replayed' => count( $refunds ) );
+		}
+
+		$out['ledger_rows'] = $wpdb->get_results( $wpdb->prepare( 'SELECT * FROM ' . $table . ' WHERE order_id = %d ORDER BY id ASC', $order_id ), ARRAY_A );
+		return rest_ensure_response( $out );
 	}
 
 	public static function rest_ledger( WP_REST_Request $req ): WP_REST_Response {

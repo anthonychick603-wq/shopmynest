@@ -316,6 +316,83 @@ function mnu_native_parcel_for_lines( array $lines, array $profile ): array|WP_E
  * @param array<string, string>            $address Sanitized destination address.
  * @return array<int, array<string, mixed>>|WP_Error List of {id,label,amount,method_id} or error.
  */
+/**
+ * Compute a per-seller shipping breakdown for the given cart lines and
+ * destination. Reuses the same Shippo path that mnu_native_get_live_shipping_rates()
+ * uses and returns [seller_id => cheapest_amount_in_currency] on success.
+ *
+ * Used at order-create time to persist a truthful shipping-by-seller map on
+ * order meta so the ledger can allocate shipping to the seller who actually
+ * incurred the label cost (instead of splitting proportional to product
+ * subtotal, which under-credits sellers who ship a low-value item in a heavy
+ * parcel and over-credits sellers who ship a high-value item in a small one).
+ *
+ * @param array<int, array<string, mixed>> $lines   Standard checkout lines.
+ * @param array<string, string>            $address Destination address.
+ * @return array<int, float>|WP_Error               Map of seller_id => cheapest rate amount.
+ */
+function mnu_native_shipping_breakdown_by_seller( array $lines, array $address ) {
+    if ( ! function_exists( 'mnu_labels_shippo_request' ) || ! function_exists( 'mnu_ship_get_profile' ) ) {
+        return new WP_Error( 'shipping_unavailable', 'Live shipping calculation is unavailable.' );
+    }
+    if ( '' === mnu_native_map_destination( $address )['country'] ) {
+        return new WP_Error( 'invalid_shipping_address', 'A valid destination country is required to calculate shipping.' );
+    }
+    $to = mnu_native_shippo_destination( $address );
+    if ( '' === $to['street1'] || '' === $to['city'] || '' === $to['zip'] ) {
+        return new WP_Error( 'incomplete_shipping_address', 'A complete destination address is required for live rates.' );
+    }
+
+    $by_seller = array();
+    foreach ( $lines as $line ) {
+        $product = $line['product'] ?? null;
+        if ( ! $product instanceof WC_Product ) {
+            continue;
+        }
+        $seller_id = (int) tnm_get_product_seller_id( $product );
+        if ( $seller_id <= 0 ) {
+            continue;
+        }
+        $by_seller[ $seller_id ][] = $line;
+    }
+    if ( ! $by_seller ) {
+        return new WP_Error( 'empty_cart', 'No shippable products found.' );
+    }
+
+    $breakdown = array();
+    foreach ( $by_seller as $seller_id => $seller_lines ) {
+        $profile = mnu_ship_get_profile( $seller_id );
+        $from    = mnu_native_seller_ship_from( $seller_id );
+        if ( '' === $from['street1'] || '' === $from['city'] || '' === $from['zip'] ) {
+            return new WP_Error( 'incomplete_ship_from', 'The seller ship-from address is incomplete.' );
+        }
+        $parcel = mnu_native_parcel_for_lines( $seller_lines, $profile );
+        if ( is_wp_error( $parcel ) ) {
+            return $parcel;
+        }
+        $shipment = mnu_labels_shippo_request(
+            '/shipments/',
+            array(
+                'address_from' => $from,
+                'address_to'   => $to,
+                'parcels'      => array( $parcel ),
+                'async'        => false,
+            )
+        );
+        if ( is_wp_error( $shipment ) ) {
+            return $shipment;
+        }
+        $rates = function_exists( 'mnu_labels_sort_rates' )
+            ? mnu_labels_sort_rates( isset( $shipment['rates'] ) && is_array( $shipment['rates'] ) ? $shipment['rates'] : array() )
+            : array();
+        if ( ! $rates ) {
+            return new WP_Error( 'no_live_rates', 'No live shipping rates were returned.' );
+        }
+        $breakdown[ $seller_id ] = round( (float) ( $rates[0]['amount'] ?? 0 ), wc_get_price_decimals() );
+    }
+    return $breakdown;
+}
+
 function mnu_native_get_live_shipping_rates( array $lines, array $address ): array|WP_Error {
     if ( ! function_exists( 'mnu_labels_shippo_request' ) || ! function_exists( 'mnu_ship_get_profile' ) ) {
         return new WP_Error( 'shipping_unavailable', 'Live shipping calculation is unavailable.' );
@@ -655,6 +732,31 @@ function mnu_native_create_order( int $user_id, array $lines, array $billing, ar
     $order->set_payment_method_title( 'Card — ' . get_bloginfo( 'name' ) . ' app' );
     if ( $checkout_token ) {
         $order->update_meta_data( '_thenest_checkout_token', $checkout_token );
+    }
+    // Persist a per-seller shipping breakdown so the ledger can allocate the
+    // shipping line to the seller who actually incurred the label cost. Best
+    // effort: any failure falls back to proportional allocation in
+    // TNM_Ledger::create_order_rows(), which is fine for happy path (single
+    // seller carries the entire shipping_total anyway).
+    if ( $shipping_total > 0 ) {
+        $ship_addr  = $shipping ?: $billing;
+        $breakdown  = function_exists( 'mnu_native_shipping_breakdown_by_seller' )
+            ? mnu_native_shipping_breakdown_by_seller( $lines, $ship_addr )
+            : new WP_Error( 'unavailable', 'no helper' );
+        if ( ! is_wp_error( $breakdown ) && ! empty( $breakdown ) ) {
+            // If our per-seller sum differs from the chosen shipping_total
+            // (buyer picked a non-cheapest rate on a single-seller cart, or
+            // rounding), scale so the seller totals reconcile to what the
+            // buyer actually paid.
+            $sum = array_sum( $breakdown );
+            if ( $sum > 0 && abs( $sum - $shipping_total ) > 0.001 ) {
+                $scale = $shipping_total / $sum;
+                foreach ( $breakdown as $sid => $amt ) {
+                    $breakdown[ $sid ] = round( (float) $amt * $scale, wc_get_price_decimals() + 2 );
+                }
+            }
+            $order->update_meta_data( '_mnu_shipping_by_seller', wp_json_encode( $breakdown ) );
+        }
     }
     $order->calculate_taxes();
     $order->calculate_totals();
