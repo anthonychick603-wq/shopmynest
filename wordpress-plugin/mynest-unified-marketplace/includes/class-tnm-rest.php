@@ -565,9 +565,10 @@ final class TNM_REST {
         // to only return `product_count`, which meant the seller’s own
         // dashboard always showed "No products yet" even when the public
         // marketplace happily listed 100+ products for the same account.
-        // Return a page-1 slice so the dashboard renders inline; the full
-        // /seller/products endpoint still owns pagination.
-        $recent_ids = array_slice( $product_ids, 0, 30 );
+        // v3.7.69 — bump the slice so sellers with big catalogs (Johanna has
+        // 137) see the real count on the dashboard. The full
+        // /seller/products endpoint still owns pagination for larger stores.
+        $recent_ids = array_slice( $product_ids, 0, 500 );
         $products   = array();
         if ( $recent_ids ) {
             $query = new WP_Query( array(
@@ -592,10 +593,15 @@ final class TNM_REST {
                 'balances'      => $balances,
                 'product_count' => count( $product_ids ),
                 'products'      => $products,
+                // v3.7.69 — the dashboard showed "$-29" earnings because we were
+                // handing the ledger's net (fees already deducted) as the sole
+                // signal even when the seller had no gross yet. Clamp to ≥ 0 so
+                // negative bootstrap balances don't scare new sellers; the
+                // Earnings screen still shows the exact ledger figures.
                 'totals'        => array(
                     'orders'   => (int) $orders['total'],
-                    'revenue'  => (float) ( $balances['lifetime_gross'] ?? 0 ),
-                    'earnings' => (float) ( $balances['lifetime_net'] ?? $balances['available'] ?? 0 ),
+                    'revenue'  => max( 0.0, (float) ( $balances['lifetime_gross'] ?? 0 ) ),
+                    'earnings' => max( 0.0, (float) ( $balances['lifetime_net'] ?? $balances['available'] ?? 0 ) ),
                 ),
                 'recent_orders' => $orders['orders'],
                 'fee'           => array( 'percent' => tnm_fee_percent(), 'label' => tnm_fee_label() ),

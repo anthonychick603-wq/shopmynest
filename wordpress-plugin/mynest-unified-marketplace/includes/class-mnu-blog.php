@@ -278,7 +278,10 @@ final class MNU_Blog {
             'thumbnail'  => $attachment_id ? (string) wp_get_attachment_image_url( $attachment_id, 'medium' ) : '',
             'author'     => array(
                 'id'     => $author_id,
-                'name'   => (string) get_the_author_meta( 'display_name', $author_id ),
+                // v3.7.69 — surface the store label (nickname / tnm_store_name)
+                // instead of the raw WP display_name, so blog posts read
+                // "That Jo Chick" not "Johanna Chick".
+                'name'   => tnm_seller_display_name( $author_id ),
                 'avatar' => tnm_user_avatar_url( $author_id, 256 ),
             ),
             'created_at' => mysql_to_rfc3339( $post->post_date_gmt ),

@@ -237,6 +237,14 @@ function tnm_seller_display_name( int $seller_id ): string {
             return sanitize_text_field( html_entity_decode( (string) $store_name, ENT_QUOTES | ENT_HTML5, 'UTF-8' ) );
         }
     }
+    // v3.7.69 — admin/shop-manager accounts are used as the marketplace
+    // house-seller for admin-owned test products. Show "ShopMyNest" instead
+    // of the WP nickname ("Admin") or display_name ("shopmynestadmin") so
+    // the storefront never leaks internal wording. Set tnm_store_name on
+    // the user to override.
+    if ( tnm_is_admin_or_manager( $seller_id ) ) {
+        return (string) apply_filters( 'tnm_admin_store_label', get_bloginfo( 'name' ) ?: 'ShopMyNest', $seller_id );
+    }
     // v3.7.67 — fall back to nickname before display_name so sellers whose
     // WP display_name is their real name still surface as their store name
     // (nickname is the WP-native "public label" that predates our meta keys).
