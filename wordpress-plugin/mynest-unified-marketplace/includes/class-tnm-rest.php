@@ -560,11 +560,43 @@ final class TNM_REST {
         if ( is_wp_error( $profile ) ) {
             $profile = null;
         }
+
+        // v3.7.68 — the mobile dashboard renders `dashboard.products`. We used
+        // to only return `product_count`, which meant the seller’s own
+        // dashboard always showed "No products yet" even when the public
+        // marketplace happily listed 100+ products for the same account.
+        // Return a page-1 slice so the dashboard renders inline; the full
+        // /seller/products endpoint still owns pagination.
+        $recent_ids = array_slice( $product_ids, 0, 30 );
+        $products   = array();
+        if ( $recent_ids ) {
+            $query = new WP_Query( array(
+                'post_type'      => 'product',
+                'post_status'    => array( 'publish', 'pending', 'draft', 'private' ),
+                'post__in'       => $recent_ids,
+                'orderby'        => 'post__in',
+                'posts_per_page' => count( $recent_ids ),
+                'no_found_rows'  => true,
+            ) );
+            foreach ( $query->posts as $post ) {
+                $product = wc_get_product( $post->ID );
+                if ( $product ) {
+                    $products[] = TNM_Marketplace::product_to_array( $product, true );
+                }
+            }
+        }
+
         return rest_ensure_response(
             array(
                 'profile'       => $profile,
                 'balances'      => $balances,
                 'product_count' => count( $product_ids ),
+                'products'      => $products,
+                'totals'        => array(
+                    'orders'   => (int) $orders['total'],
+                    'revenue'  => (float) ( $balances['lifetime_gross'] ?? 0 ),
+                    'earnings' => (float) ( $balances['lifetime_net'] ?? $balances['available'] ?? 0 ),
+                ),
                 'recent_orders' => $orders['orders'],
                 'fee'           => array( 'percent' => tnm_fee_percent(), 'label' => tnm_fee_label() ),
                 'minimum_payout'=> (float) tnm_get_option( 'minimum_payout', 25 ),
