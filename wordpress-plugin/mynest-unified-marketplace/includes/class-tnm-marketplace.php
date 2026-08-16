@@ -33,24 +33,78 @@ final class TNM_Marketplace {
 
     public static function stamp_order_item( WC_Order_Item_Product $item, string $cart_item_key, array $values, WC_Order $order ): void {
         $product = $values['data'] ?? null;
-        self::stamp_item_snapshot( $item, $product );
+        self::stamp_item_snapshot( $item, $product, $order );
     }
 
     /**
      * Store the seller and fee snapshot directly on an order item.
      * This is used by both WooCommerce checkout and the native app checkout.
      *
-     * @param mixed $item    Expected WC_Order_Item_Product.
-     * @param mixed $product Expected WC_Product.
+     * v3.7.53 hardens seller resolution against WooCommerce cart-cache
+     * staleness. The cart snapshots the WC_Product object at add-to-cart
+     * time, so if `_tnm_seller_id` was added or changed between add-to-cart
+     * and checkout, the cached product's meta would be stale and the item
+     * would be stamped with the wrong seller. We now:
+     *   1. Re-resolve seller from `wp_postmeta` directly by product id,
+     *      bypassing WC_Product's meta cache.
+     *   2. Compare against the cart-cached product's seller and record a
+     *      `_tnm_seller_resolution_diag` note on the item when they differ.
+     *   3. Record when the resolution fell through to `post_author` so
+     *      migrations / mis-imported catalog entries are visible.
+     *
+     * @param mixed         $item    Expected WC_Order_Item_Product.
+     * @param mixed         $product Expected WC_Product (may have stale meta).
+     * @param WC_Order|null $order   Order for diagnostic notes; optional.
      */
-    public static function stamp_item_snapshot( $item, $product ): void {
+    public static function stamp_item_snapshot( $item, $product, $order = null ): void {
         if ( ! $item instanceof WC_Order_Item_Product || ! $product instanceof WC_Product ) {
             return;
         }
-        $seller_id = tnm_get_product_seller_id( $product );
+
+        $product_id = (int) $item->get_product_id();
+        if ( $product_id <= 0 ) {
+            $product_id = (int) $product->get_id();
+        }
+
+        list( $seller_id, $source ) = self::resolve_product_seller_fresh( $product_id, $product );
         if ( $seller_id <= 0 ) {
             return;
         }
+
+        // Diagnostic: compare the fresh resolution to what the cart-cached
+        // product object would have returned. If they differ, the cart had
+        // stale meta and we just corrected it — record so ops can see it.
+        $cached_seller = tnm_get_product_seller_id( $product );
+        if ( $cached_seller > 0 && $cached_seller !== $seller_id ) {
+            $item->update_meta_data(
+                '_tnm_seller_resolution_diag',
+                sprintf( 'stale cart snapshot corrected: cached=%d fresh=%d source=%s', $cached_seller, $seller_id, $source )
+            );
+            if ( $order instanceof WC_Order ) {
+                $order->add_order_note(
+                    sprintf(
+                        'v3.7.53 diagnostic: product #%d cart-cached seller was %d but fresh DB meta says %d (source: %s). Line item was stamped with the fresh value.',
+                        $product_id,
+                        $cached_seller,
+                        $seller_id,
+                        $source
+                    )
+                );
+            }
+        }
+
+        // Diagnostic: fell through to post_author fallback — no meta was
+        // ever set. This should never happen once catalog is fully migrated.
+        if ( 'post_author' === $source && $order instanceof WC_Order ) {
+            $order->add_order_note(
+                sprintf(
+                    'v3.7.53 diagnostic: product #%d has no _tnm_seller_id meta; resolved seller %d via post_author fallback. Consider stamping meta on this product.',
+                    $product_id,
+                    $seller_id
+                )
+            );
+        }
+
         $gross = max( 0, (float) $item->get_total() );
         $fee   = round( $gross * ( tnm_fee_percent() / 100 ), wc_get_price_decimals() + 2 );
         $item->update_meta_data( '_tnm_seller_id', $seller_id );
@@ -62,14 +116,75 @@ final class TNM_Marketplace {
         $item->update_meta_data( '_tnm_seller_net_before_shipping', max( 0, $gross - $fee ) );
     }
 
+    /**
+     * Resolve a product's seller by reading `wp_postmeta` directly, so we
+     * bypass any stale WC_Product / cart / persistent object-cache layer.
+     *
+     * Returns [ seller_id, source ] where source is one of:
+     *   '_tnm_seller_id', '_mynest_seller_id', '_wcv_vendor_id',
+     *   '_dokan_vendor_id', 'post_author', or '' when nothing resolves.
+     *
+     * @return array{0:int,1:string}
+     */
+    public static function resolve_product_seller_fresh( int $product_id, $product = null ): array {
+        if ( $product_id <= 0 ) {
+            return array( 0, '' );
+        }
+        foreach ( array( '_tnm_seller_id', '_mynest_seller_id', '_wcv_vendor_id', '_dokan_vendor_id' ) as $meta_key ) {
+            $seller_id = (int) get_post_meta( $product_id, $meta_key, true );
+            if ( $seller_id > 0 ) {
+                return array( $seller_id, $meta_key );
+            }
+        }
+        $author_id = (int) get_post_field( 'post_author', $product_id );
+        if ( $author_id > 0 ) {
+            return array( $author_id, 'post_author' );
+        }
+        return array( 0, '' );
+    }
+
     public static function stamp_order_sellers( WC_Order $order ): void {
-        $seller_ids = array();
+        $seller_ids   = array();
+        $product_ids  = array();
         foreach ( $order->get_items() as $item ) {
-            $seller_id = $item instanceof WC_Order_Item_Product ? tnm_get_order_item_seller_id( $item ) : 0;
+            if ( ! $item instanceof WC_Order_Item_Product ) {
+                continue;
+            }
+            $seller_id = tnm_get_order_item_seller_id( $item );
             if ( $seller_id ) {
                 $seller_ids[ $seller_id ] = true;
             }
+            $pid = (int) $item->get_product_id();
+            if ( $pid > 0 ) {
+                $product_ids[] = $pid;
+            }
         }
+
+        // v3.7.53 diagnostic: recompute distinct sellers directly from DB
+        // meta for every product in the order. If the DB says the order
+        // spans more sellers than the stamped items indicate, seller
+        // resolution collapsed somewhere upstream (cart cache, wrong meta,
+        // etc.) — flag it so the multi-seller transfer path can be audited.
+        $fresh_sellers = array();
+        foreach ( $product_ids as $pid ) {
+            list( $fresh_id ) = self::resolve_product_seller_fresh( $pid );
+            if ( $fresh_id > 0 ) {
+                $fresh_sellers[ $fresh_id ] = true;
+            }
+        }
+        if ( count( $fresh_sellers ) > count( $seller_ids ) ) {
+            $order->add_order_note(
+                sprintf(
+                    'v3.7.53 diagnostic: order stamped with %d seller(s) [%s] but products actually span %d seller(s) [%s]. Multi-seller transfer path may not have fired.',
+                    count( $seller_ids ),
+                    implode( ',', array_keys( $seller_ids ) ),
+                    count( $fresh_sellers ),
+                    implode( ',', array_keys( $fresh_sellers ) )
+                )
+            );
+            $order->update_meta_data( '_tnm_seller_resolution_collapsed', 1 );
+        }
+
         if ( $seller_ids ) {
             $order->update_meta_data( '_tnm_seller_ids', ',' . implode( ',', array_map( 'absint', array_keys( $seller_ids ) ) ) . ',' );
             $order->save();

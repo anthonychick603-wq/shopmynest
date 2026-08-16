@@ -624,7 +624,7 @@ function mnu_native_create_order( int $user_id, array $lines, array $billing, ar
         $item_id = $order->add_product( $line['product'], $line['quantity'] );
         $item    = $item_id ? $order->get_item( $item_id ) : false;
         if ( $item instanceof WC_Order_Item_Product ) {
-            TNM_Marketplace::stamp_item_snapshot( $item, $line['product'] );
+            TNM_Marketplace::stamp_item_snapshot( $item, $line['product'], $order );
             $item->save();
         }
     }
