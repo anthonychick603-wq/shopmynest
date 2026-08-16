@@ -338,7 +338,13 @@
       return;
     }
 
-    if (!config.shippoConfigured) {
+    // Only short-circuit if the server explicitly told us Shippo is not
+    // configured. When TNMFrontend is missing (config === {}), fall through
+    // and let the REST endpoint be authoritative — a real 503 with
+    // `shippo_not_configured` will surface the same message via the catch
+    // block below. This avoids a false banner on any page where the localized
+    // config didn't land.
+    if (config.shippoConfigured === false) {
       setShippingMessage(container, 'Shippo is not configured. An administrator must add the API token first.', 'error');
       return;
     }

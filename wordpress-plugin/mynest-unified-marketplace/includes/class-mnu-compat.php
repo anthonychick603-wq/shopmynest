@@ -51,11 +51,47 @@ final class MNU_Compat {
     public static function register_assets(): void {
         wp_enqueue_style( 'tnm-frontend' );
         wp_enqueue_script( 'tnm-frontend' );
+        self::localize_frontend();
     }
 
     private static function assets(): void {
         wp_enqueue_style( 'tnm-frontend' );
         wp_enqueue_script( 'tnm-frontend' );
+        self::localize_frontend();
+    }
+
+    /**
+     * Emit the TNMFrontend config that assets/js/frontend.js expects. The
+     * canonical path is TNM_Shortcodes::assets(); this mirror exists because
+     * MyNest’s compat shortcodes (mynest_seller_orders, etc.) can render on
+     * pages that don’t route through TNM_Shortcodes::dashboard() — e.g. block
+     * editor renders where wp_localize_script would race the enqueued script.
+     * Without this the JS sees an undefined config.shippoConfigured and the
+     * “Shippo is not configured” banner fires even when the token IS present
+     * (v3.7.60 diagnostic proved the token resolves correctly server-side).
+     */
+    private static function localize_frontend(): void {
+        static $localized = false;
+        if ( $localized ) {
+            return;
+        }
+        $settings = function_exists( 'mnu_labels_settings' )
+            ? mnu_labels_settings()
+            : array( 'shippo_token' => '', 'test_mode' => 1 );
+        wp_localize_script(
+            'tnm-frontend',
+            'TNMFrontend',
+            array(
+                'restRoot'         => trailingslashit( rest_url() ),
+                'restNonce'        => is_user_logged_in() ? wp_create_nonce( 'wp_rest' ) : '',
+                'shippoConfigured' => ! empty( $settings['shippo_token'] ),
+                'shippoTestMode'   => ! empty( $settings['test_mode'] ),
+                'currencySymbol'   => function_exists( 'get_woocommerce_currency_symbol' )
+                    ? html_entity_decode( get_woocommerce_currency_symbol(), ENT_QUOTES, get_bloginfo( 'charset' ) )
+                    : '$',
+            )
+        );
+        $localized = true;
     }
 
     /**
