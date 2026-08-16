@@ -73,7 +73,7 @@ final class TNM_Ledger {
         $order->save();
     }
 
-    private static function create_order_rows( WC_Order $order ): void {
+    public static function create_order_rows( WC_Order $order ): void {
         global $wpdb;
         $items = $order->get_items();
         if ( ! $items ) {

@@ -177,7 +177,7 @@ final class MNU_Seller_Attribution {
 		$out['steps'][] = array( 'rows_deleted' => (int) $deleted );
 
 		if ( class_exists( 'TNM_Ledger' ) ) {
-			\TNM_Ledger::create_order_rows( $order_id );
+			\TNM_Ledger::create_order_rows( $order );
 			$out['steps'][] = array( 'earnings_rebuilt' => true );
 
 			$refunds = $order->get_refunds();
