@@ -104,6 +104,22 @@ final class MNU_Seller_Attribution {
 	}
 
 	public static function rest_ledger_rebuild( WP_REST_Request $req ): WP_REST_Response {
+		try {
+			return self::do_ledger_rebuild( $req );
+		} catch ( \Throwable $e ) {
+			return rest_ensure_response( array(
+				'ok'    => false,
+				'error' => 'exception',
+				'type'  => get_class( $e ),
+				'msg'   => $e->getMessage(),
+				'file'  => basename( $e->getFile() ),
+				'line'  => $e->getLine(),
+				'trace' => array_slice( explode( "\n", $e->getTraceAsString() ), 0, 10 ),
+			) );
+		}
+	}
+
+	private static function do_ledger_rebuild( WP_REST_Request $req ): WP_REST_Response {
 		global $wpdb;
 		$order_id = (int) $req->get_param( 'order_id' );
 		$order    = function_exists( 'wc_get_order' ) ? wc_get_order( $order_id ) : null;
