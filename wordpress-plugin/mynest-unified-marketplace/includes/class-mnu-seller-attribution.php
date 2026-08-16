@@ -47,6 +47,45 @@ final class MNU_Seller_Attribution {
 				),
 			)
 		);
+
+		register_rest_route(
+			'mnu/v1',
+			'/admin/shippo_state',
+			array(
+				'methods'             => 'GET',
+				'callback'            => array( __CLASS__, 'rest_shippo_state' ),
+				'permission_callback' => static function () {
+					return current_user_can( self::CAP );
+				},
+			)
+		);
+	}
+
+	/**
+	 * Diagnostic: report what mnu_labels_settings() currently sees for the
+	 * Shippo token, without echoing the token itself.
+	 */
+	public static function rest_shippo_state( WP_REST_Request $request ): WP_REST_Response {
+		$raw_labels_option = (array) get_option( 'thenest_shipping_labels_settings', array() );
+		$raw_legacy_token  = (string) get_option( 'thenest_shippo_api_token', '' );
+
+		$settings = function_exists( 'mnu_labels_settings' ) ? mnu_labels_settings() : array();
+		$token    = (string) ( $settings['shippo_token'] ?? '' );
+
+		return rest_ensure_response(
+			array(
+				'has_settings_option'   => ! empty( $raw_labels_option ),
+				'settings_option_keys'  => array_keys( $raw_labels_option ),
+				'settings_has_token'    => ! empty( $raw_labels_option['shippo_token'] ),
+				'legacy_token_present'  => '' !== $raw_legacy_token,
+				'legacy_token_length'   => strlen( $raw_legacy_token ),
+				'legacy_token_prefix'   => '' !== $raw_legacy_token ? substr( $raw_legacy_token, 0, 12 ) : '',
+				'resolved_token_length' => strlen( $token ),
+				'resolved_token_prefix' => '' !== $token ? substr( $token, 0, 12 ) : '',
+				'resolved_test_mode'    => (int) ( $settings['test_mode'] ?? 0 ),
+				'labels_settings_fn'    => function_exists( 'mnu_labels_settings' ),
+			)
+		);
 	}
 
 	public static function rest_ledger( WP_REST_Request $req ): WP_REST_Response {
