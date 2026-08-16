@@ -315,13 +315,23 @@ final class MNU_Woo_Gateway extends WC_Payment_Gateway {
 			return new WP_Error( 'mnu_refund_zero', __( 'Refund amount must be greater than zero.', 'mynest-unified-marketplace' ) );
 		}
 
+		// Detect whether the charge used destination-charge routing (single
+		// seller Connect) or Separate Charges and Transfers (multi-seller).
+		// SCT charges reject reverse_transfer / refund_application_fee — we
+		// must reverse each recorded seller transfer explicitly.
+		$transfers_raw = $order->get_meta( '_mnu_seller_transfers', true );
+		$transfers     = is_string( $transfers_raw ) ? json_decode( $transfers_raw, true ) : $transfers_raw;
+		$has_sct       = is_array( $transfers ) && ! empty( $transfers );
+
 		$params = array(
-			'payment_intent'         => $intent_id,
-			'amount'                 => (string) $cents,
-			'reverse_transfer'       => 'true',
-			'refund_application_fee' => 'true',
-			'metadata[wc_order_id]'  => (string) $order->get_id(),
+			'payment_intent'        => $intent_id,
+			'amount'                => (string) $cents,
+			'metadata[wc_order_id]' => (string) $order->get_id(),
 		);
+		if ( ! $has_sct ) {
+			$params['reverse_transfer']       = 'true';
+			$params['refund_application_fee'] = 'true';
+		}
 		if ( $reason ) {
 			$params['metadata[reason]'] = substr( sanitize_text_field( $reason ), 0, 250 );
 		}
@@ -329,7 +339,50 @@ final class MNU_Woo_Gateway extends WC_Payment_Gateway {
 		if ( is_wp_error( $refund ) ) {
 			return $refund;
 		}
-		$order->add_order_note( sprintf( 'Stripe refund %s issued for $%.2f. Application fee refunded and transfers reversed.', (string) ( $refund['id'] ?? '' ), $cents / 100 ) );
+		$refund_id = (string) ( $refund['id'] ?? '' );
+
+		if ( $has_sct ) {
+			$order_total_cents = (int) round( (float) $order->get_total() * 100 );
+			$is_full           = $order_total_cents > 0 && $cents >= $order_total_cents;
+			$updated           = $transfers;
+			foreach ( $transfers as $seller_id => $t ) {
+				if ( ! is_array( $t ) || 'sent' !== ( $t['status'] ?? '' ) ) {
+					continue;
+				}
+				$tr_id     = (string) ( $t['transfer_id'] ?? '' );
+				$net_cents = (int) ( $t['net_cents'] ?? 0 );
+				if ( '' === $tr_id || $net_cents <= 0 ) {
+					continue;
+				}
+				$reverse_cents = $is_full
+					? $net_cents
+					: (int) round( $net_cents * ( $cents / max( 1, $order_total_cents ) ) );
+				$reverse_cents = max( 1, min( $net_cents, $reverse_cents ) );
+				$rev = mnu_native_stripe_request(
+					'/transfers/' . rawurlencode( $tr_id ) . '/reversals',
+					array(
+						'amount'                => (string) $reverse_cents,
+						'metadata[wc_order_id]' => (string) $order->get_id(),
+						'metadata[refund_id]'   => $refund_id,
+					),
+					'mnu_rev_' . $order->get_id() . '_' . $tr_id . '_' . $reverse_cents
+				);
+				if ( is_wp_error( $rev ) ) {
+					$order->add_order_note( sprintf( 'Transfer reversal FAILED for seller %s (%s): %s', (string) $seller_id, $tr_id, $rev->get_error_message() ) );
+					continue;
+				}
+				$updated[ $seller_id ]['reversal_id']    = (string) ( $rev['id'] ?? '' );
+				$updated[ $seller_id ]['reversed_cents'] = ( (int) ( $updated[ $seller_id ]['reversed_cents'] ?? 0 ) ) + $reverse_cents;
+				if ( ( (int) $updated[ $seller_id ]['reversed_cents'] ) >= $net_cents ) {
+					$updated[ $seller_id ]['status'] = 'reversed';
+				}
+				$order->add_order_note( sprintf( 'Reversed %d cents from transfer %s (seller %s) for refund %s.', $reverse_cents, $tr_id, (string) $seller_id, $refund_id ) );
+			}
+			$order->update_meta_data( '_mnu_seller_transfers', wp_json_encode( $updated ) );
+			$order->save();
+		}
+
+		$order->add_order_note( sprintf( 'Stripe refund %s issued for $%.2f.', $refund_id, $cents / 100 ) );
 		return true;
 	}
 

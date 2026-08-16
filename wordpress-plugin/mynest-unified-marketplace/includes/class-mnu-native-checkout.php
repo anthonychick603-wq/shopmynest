@@ -1175,11 +1175,28 @@ function mnu_native_issue_seller_transfers( WC_Order $order, string $charge_id )
             $transfers[ (string) $seller_id ] = array( 'status' => 'failed', 'error' => $result->get_error_message(), 'net_cents' => $row['net_cents'] );
             continue;
         }
+        $transfer_id_str = (string) ( $result['id'] ?? '' );
         $transfers[ (string) $seller_id ] = array(
             'status'      => 'sent',
-            'transfer_id' => (string) ( $result['id'] ?? '' ),
+            'transfer_id' => $transfer_id_str,
             'net_cents'   => $row['net_cents'],
         );
+        // Write the transfer id back onto every earning ledger row for this
+        // order+seller so downstream refund reversals (record_refund →
+        // reverse_transfer_for_item) can find it without re-parsing the
+        // order-level JSON.
+        if ( '' !== $transfer_id_str && function_exists( 'tnm_table' ) ) {
+            global $wpdb;
+            $wpdb->query(
+                $wpdb->prepare(
+                    'UPDATE ' . tnm_table( 'ledger' ) . " SET stripe_transfer_id=%s, updated_at=%s WHERE order_id=%d AND seller_id=%d AND type='earning' AND (stripe_transfer_id='' OR stripe_transfer_id IS NULL)",
+                    $transfer_id_str,
+                    current_time( 'mysql' ),
+                    $order->get_id(),
+                    (int) $seller_id
+                )
+            );
+        }
     }
     $order->update_meta_data( '_mnu_seller_transfers', wp_json_encode( $transfers ) );
     $order->add_order_note( 'Issued Stripe transfers to ' . count( array_filter( $transfers, static function ( $t ) { return 'sent' === ( $t['status'] ?? '' ); } ) ) . ' seller(s).' );
