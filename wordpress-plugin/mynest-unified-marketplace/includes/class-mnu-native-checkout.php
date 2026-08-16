@@ -1331,7 +1331,12 @@ function mnu_native_check_split_guardrail( WC_Order $order ): array {
         'missing'       => array(),
         'issues'        => array(),
     );
-    if ( ! $order->is_paid() ) {
+    // Guardrail applies once transfers have been (or should have been) issued.
+    // is_paid() returns true for processing/completed; explicit 'refunded'
+    // still had transfers so we evaluate it (transfers should be 'reversed').
+    $status_slug = $order->get_status();
+    $applies     = $order->is_paid() || in_array( $status_slug, array( 'refunded' ), true );
+    if ( ! $applies ) {
         $out['status'] = 'unpaid';
         return $out;
     }
