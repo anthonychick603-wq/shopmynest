@@ -23,6 +23,70 @@ final class MNU_Seller_Attribution {
 	public static function init(): void {
 		add_action( 'admin_menu', array( __CLASS__, 'register_menu' ), 20 );
 		add_action( 'admin_post_mnu_seller_attribution_backfill', array( __CLASS__, 'handle_backfill' ) );
+		add_action( 'rest_api_init', array( __CLASS__, 'register_rest' ) );
+	}
+
+	/**
+	 * Admin-only REST endpoint that returns everything we know about an order
+	 * from the seller-attribution point of view: line stamping, seller-transfer
+	 * order meta, ledger rows, and any collapsed-resolution flags. Used from
+	 * the two-seller verification flow.
+	 */
+	public static function register_rest(): void {
+		register_rest_route(
+			'mnu/v1',
+			'/admin/ledger',
+			array(
+				'methods'             => 'GET',
+				'callback'            => array( __CLASS__, 'rest_ledger' ),
+				'permission_callback' => static function () {
+					return current_user_can( self::CAP );
+				},
+				'args'                => array(
+					'order_id' => array( 'required' => true, 'type' => 'integer' ),
+				),
+			)
+		);
+	}
+
+	public static function rest_ledger( WP_REST_Request $req ): WP_REST_Response {
+		global $wpdb;
+		$order_id = (int) $req->get_param( 'order_id' );
+		$out      = array( 'order_id' => $order_id );
+
+		$table = function_exists( 'tnm_table' ) ? tnm_table( 'ledger' ) : $wpdb->prefix . 'tnm_ledger';
+		$rows  = $wpdb->get_results(
+			$wpdb->prepare( 'SELECT * FROM ' . $table . ' WHERE order_id = %d ORDER BY id ASC', $order_id ),
+			ARRAY_A
+		);
+		$out['ledger_rows'] = $rows ?: array();
+
+		$order = function_exists( 'wc_get_order' ) ? wc_get_order( $order_id ) : null;
+		if ( $order ) {
+			$transfers_raw       = $order->get_meta( '_mnu_seller_transfers', true );
+			$out['transfers']    = is_string( $transfers_raw ) ? json_decode( $transfers_raw, true ) : $transfers_raw;
+			$out['seller_ids']   = $order->get_meta( '_tnm_seller_ids', true );
+			$out['collapsed']    = (bool) $order->get_meta( '_tnm_seller_resolution_collapsed', true );
+			$out['stripe_pi']    = $order->get_meta( '_thenest_stripe_payment_intent', true );
+			$out['status']       = $order->get_status();
+			$out['total']        = $order->get_total();
+			$out['line_items']   = array();
+			foreach ( $order->get_items() as $item_id => $item ) {
+				$out['line_items'][] = array(
+					'item_id'       => $item_id,
+					'product_id'    => $item->get_product_id(),
+					'seller_id'     => (int) $item->get_meta( '_tnm_seller_id', true ),
+					'store_name'    => $item->get_meta( '_tnm_store_name', true ),
+					'subtotal'      => $item->get_subtotal(),
+					'total'         => $item->get_total(),
+					'fee_percent'   => $item->get_meta( '_tnm_fee_percent', true ),
+					'platform_fee'  => $item->get_meta( '_tnm_platform_fee', true ),
+					'net_before_sh' => $item->get_meta( '_tnm_seller_net_before_shipping', true ),
+				);
+			}
+		}
+
+		return new WP_REST_Response( $out, 200 );
 	}
 
 	public static function register_menu(): void {
