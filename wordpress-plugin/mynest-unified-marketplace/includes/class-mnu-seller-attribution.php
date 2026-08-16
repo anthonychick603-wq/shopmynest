@@ -65,6 +65,34 @@ final class MNU_Seller_Attribution {
 
 		register_rest_route(
 			'mnu/v1',
+			'/admin/split_holds',
+			array(
+				'methods'             => 'GET',
+				'callback'            => array( __CLASS__, 'rest_split_holds' ),
+				'permission_callback' => static function () {
+					return current_user_can( self::CAP );
+				},
+			)
+		);
+
+		register_rest_route(
+			'mnu/v1',
+			'/admin/split_holds/resolve',
+			array(
+				'methods'             => 'POST',
+				'callback'            => array( __CLASS__, 'rest_split_hold_resolve' ),
+				'permission_callback' => static function () {
+					return current_user_can( self::CAP );
+				},
+				'args'                => array(
+					'order_id' => array( 'required' => true, 'type' => 'integer' ),
+					'retry'    => array( 'required' => false, 'type' => 'boolean' ),
+				),
+			)
+		);
+
+		register_rest_route(
+			'mnu/v1',
 			'/admin/shippo_state',
 			array(
 				'methods'             => 'GET',
@@ -101,6 +129,134 @@ final class MNU_Seller_Attribution {
 				'labels_settings_fn'    => function_exists( 'mnu_labels_settings' ),
 			)
 		);
+	}
+
+	/**
+	 * List multi-seller orders currently held by the split-payment guardrail.
+	 * Each row includes the compact guardrail snapshot so admin can eyeball
+	 * why the hold triggered without opening every order.
+	 */
+	public static function rest_split_holds( WP_REST_Request $req ): WP_REST_Response {
+		global $wpdb;
+		$sql = "SELECT p.ID as order_id,
+					   p.post_date as created,
+					   MAX(CASE WHEN pm.meta_key='_mnu_split_guardrail' THEN pm.meta_value END) as snapshot,
+					   MAX(CASE WHEN pm.meta_key='_tnm_seller_ids' THEN pm.meta_value END) as seller_ids,
+					   MAX(CASE WHEN pm.meta_key='_order_total' THEN pm.meta_value END) as total
+				FROM {$wpdb->posts} p
+				INNER JOIN {$wpdb->postmeta} pm ON pm.post_id = p.ID
+				WHERE p.post_type = 'shop_order'
+				  AND EXISTS (SELECT 1 FROM {$wpdb->postmeta} h WHERE h.post_id = p.ID AND h.meta_key = '_mnu_split_hold' AND h.meta_value = '1')
+				GROUP BY p.ID
+				ORDER BY p.post_date DESC";
+		$rows = $wpdb->get_results( $sql, ARRAY_A );
+
+		// Also check HPOS orders table if it exists.
+		$hpos_rows = array();
+		$hpos_table = $wpdb->prefix . 'wc_orders';
+		if ( $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $hpos_table ) ) === $hpos_table ) {
+			$hpos_sql = "SELECT o.id as order_id,
+								o.date_created_gmt as created,
+								MAX(CASE WHEN m.meta_key='_mnu_split_guardrail' THEN m.meta_value END) as snapshot,
+								MAX(CASE WHEN m.meta_key='_tnm_seller_ids' THEN m.meta_value END) as seller_ids,
+								o.total_amount as total
+						 FROM {$hpos_table} o
+						 INNER JOIN {$wpdb->prefix}wc_orders_meta m ON m.order_id = o.id
+						 WHERE EXISTS (SELECT 1 FROM {$wpdb->prefix}wc_orders_meta h WHERE h.order_id = o.id AND h.meta_key = '_mnu_split_hold' AND h.meta_value = '1')
+						 GROUP BY o.id
+						 ORDER BY o.date_created_gmt DESC";
+			$hpos_rows = $wpdb->get_results( $hpos_sql, ARRAY_A );
+		}
+		$merged  = array();
+		$seen_id = array();
+		foreach ( array_merge( $rows ?: array(), $hpos_rows ?: array() ) as $r ) {
+			$oid = (int) $r['order_id'];
+			if ( isset( $seen_id[ $oid ] ) ) {
+				continue;
+			}
+			$seen_id[ $oid ] = true;
+			$snap            = $r['snapshot'] ? json_decode( (string) $r['snapshot'], true ) : null;
+			$merged[] = array(
+				'order_id'   => $oid,
+				'created'    => $r['created'],
+				'total'      => (float) $r['total'],
+				'seller_ids' => trim( (string) $r['seller_ids'], ',' ),
+				'snapshot'   => $snap,
+			);
+		}
+		return rest_ensure_response( array( 'count' => count( $merged ), 'orders' => $merged ) );
+	}
+
+	/**
+	 * Resolve (or retry) a split-payment hold. When retry=1 and the order has a
+	 * Stripe payment intent + latest charge, re-run mnu_native_issue_seller_transfers()
+	 * for any seller in {held, failed, missing}. Then re-evaluate the guardrail.
+	 */
+	public static function rest_split_hold_resolve( WP_REST_Request $req ): WP_REST_Response {
+		try {
+			return self::do_resolve( $req );
+		} catch ( \Throwable $e ) {
+			return rest_ensure_response( array(
+				'ok'    => false,
+				'error' => 'exception',
+				'type'  => get_class( $e ),
+				'msg'   => $e->getMessage(),
+				'file'  => basename( $e->getFile() ),
+				'line'  => $e->getLine(),
+			) );
+		}
+	}
+
+	private static function do_resolve( WP_REST_Request $req ): WP_REST_Response {
+		$order_id = (int) $req->get_param( 'order_id' );
+		$retry    = (bool) $req->get_param( 'retry' );
+		$order    = function_exists( 'wc_get_order' ) ? wc_get_order( $order_id ) : null;
+		if ( ! $order ) {
+			return rest_ensure_response( array( 'ok' => false, 'error' => 'order_not_found' ) );
+		}
+		$out = array( 'ok' => true, 'order_id' => $order_id, 'retried' => false );
+
+		if ( $retry && function_exists( 'mnu_native_issue_seller_transfers' ) ) {
+			$pi_id = (string) $order->get_meta( '_thenest_stripe_payment_intent', true );
+			if ( '' !== $pi_id && function_exists( 'mnu_native_stripe_get' ) ) {
+				$intent = mnu_native_stripe_get( '/payment_intents/' . rawurlencode( $pi_id ) );
+				if ( ! is_wp_error( $intent ) ) {
+					$charge_id = (string) ( $intent['latest_charge'] ?? '' );
+					if ( '' === $charge_id && ! empty( $intent['charges']['data'][0]['id'] ) ) {
+						$charge_id = (string) $intent['charges']['data'][0]['id'];
+					}
+					if ( '' !== $charge_id ) {
+						// Clear the existing transfers meta so the issue function
+						// retries the un-sent rows. Preserve entries with a real
+						// transfer_id so we don't double-send.
+						$raw   = (string) $order->get_meta( '_mnu_seller_transfers', true );
+						$curr  = '' !== $raw ? (array) json_decode( $raw, true ) : array();
+						$keep  = array();
+						foreach ( $curr as $sid => $entry ) {
+							if ( is_array( $entry ) && ! empty( $entry['transfer_id'] ) ) {
+								$keep[ $sid ] = $entry;
+							}
+						}
+						$order->update_meta_data( '_mnu_seller_transfers', wp_json_encode( $keep ) );
+						$order->save();
+						mnu_native_issue_seller_transfers( $order, $charge_id );
+						$out['retried'] = true;
+					} else {
+						$out['retry_error'] = 'no_charge_on_intent';
+					}
+				} else {
+					$out['retry_error'] = $intent->get_error_message();
+				}
+			} else {
+				$out['retry_error'] = 'no_intent_meta';
+			}
+		}
+
+		if ( function_exists( 'mnu_native_apply_split_guardrail' ) ) {
+			$eval = mnu_native_apply_split_guardrail( $order );
+			$out['guardrail'] = $eval;
+		}
+		return rest_ensure_response( $out );
 	}
 
 	public static function rest_ledger_rebuild( WP_REST_Request $req ): WP_REST_Response {

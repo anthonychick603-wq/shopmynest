@@ -1303,6 +1303,144 @@ function mnu_native_issue_seller_transfers( WC_Order $order, string $charge_id )
     $order->update_meta_data( '_mnu_seller_transfers', wp_json_encode( $transfers ) );
     $order->add_order_note( 'Issued Stripe transfers to ' . count( array_filter( $transfers, static function ( $t ) { return 'sent' === ( $t['status'] ?? '' ); } ) ) . ' seller(s).' );
     $order->save();
+    // v3.7.65 — evaluate the split-payment guardrail every time transfers are
+    // issued (or attempted). Flags multi-seller orders whose transfer set does
+    // not match the expected seller set so an admin can reconcile before
+    // funds sit indefinitely in the platform balance.
+    mnu_native_apply_split_guardrail( $order );
+}
+
+/**
+ * Compute the split-payment guardrail state for an order without persisting
+ * anything. Returns an array with:
+ *   status         — 'ok' | 'held' | 'single_seller' | 'unpaid'
+ *   expected       — list of seller ids the order was supposed to fund
+ *   actual_sent    — list of seller ids with a successful Stripe transfer
+ *   actual_held    — list of seller ids marked held (no connected account)
+ *   actual_failed  — list of seller ids whose transfer errored
+ *   missing        — expected but not present in transfer meta at all
+ *   issues         — human-readable strings for the admin queue
+ */
+function mnu_native_check_split_guardrail( WC_Order $order ): array {
+    $out = array(
+        'status'        => 'ok',
+        'expected'      => array(),
+        'actual_sent'   => array(),
+        'actual_held'   => array(),
+        'actual_failed' => array(),
+        'missing'       => array(),
+        'issues'        => array(),
+    );
+    if ( ! $order->is_paid() ) {
+        $out['status'] = 'unpaid';
+        return $out;
+    }
+
+    // Expected sellers: use per-line stamps (canonical) and fall back to the
+    // aggregated _tnm_seller_ids CSV.
+    $expected = array();
+    foreach ( $order->get_items() as $item ) {
+        if ( ! $item instanceof WC_Order_Item_Product ) {
+            continue;
+        }
+        $sid = (int) $item->get_meta( '_tnm_seller_id', true );
+        if ( $sid > 0 ) {
+            $expected[ $sid ] = true;
+        }
+    }
+    if ( ! $expected ) {
+        $csv = (string) $order->get_meta( '_tnm_seller_ids', true );
+        foreach ( array_filter( array_map( 'absint', explode( ',', $csv ) ) ) as $sid ) {
+            $expected[ (int) $sid ] = true;
+        }
+    }
+    $expected_ids   = array_keys( $expected );
+    $out['expected'] = $expected_ids;
+
+    // Single-seller orders use a Stripe destination charge (no explicit
+    // per-seller transfer). Nothing to guard.
+    if ( count( $expected_ids ) < 2 ) {
+        $out['status'] = 'single_seller';
+        return $out;
+    }
+
+    // Actual transfer meta written by mnu_native_issue_seller_transfers().
+    $raw       = (string) $order->get_meta( '_mnu_seller_transfers', true );
+    $transfers = '' !== $raw ? (array) json_decode( $raw, true ) : array();
+
+    foreach ( $expected_ids as $sid ) {
+        $key   = (string) $sid;
+        $entry = $transfers[ $key ] ?? null;
+        if ( ! is_array( $entry ) ) {
+            $out['missing'][] = $sid;
+            $out['issues'][]  = sprintf( 'Seller #%d has no transfer record.', $sid );
+            continue;
+        }
+        $status = (string) ( $entry['status'] ?? '' );
+        if ( 'sent' === $status ) {
+            $out['actual_sent'][] = $sid;
+        } elseif ( 'held' === $status ) {
+            $out['actual_held'][] = $sid;
+            $out['issues'][]      = sprintf( 'Seller #%d transfer held (no connected account / onboarding incomplete).', $sid );
+        } elseif ( 'failed' === $status ) {
+            $out['actual_failed'][] = $sid;
+            $out['issues'][]        = sprintf( 'Seller #%d transfer failed: %s', $sid, (string) ( $entry['error'] ?? 'unknown error' ) );
+        } elseif ( 'reversed' === $status ) {
+            // Full refunds mark transfers reversed — that's expected, not a hold.
+            $out['actual_sent'][] = $sid;
+        } else {
+            $out['actual_failed'][] = $sid;
+            $out['issues'][]        = sprintf( 'Seller #%d transfer in unknown state "%s".', $sid, $status );
+        }
+    }
+
+    // Also surface any extra transfer records for sellers we didn't expect —
+    // that's a stamping bug that should stop the order from being marked ok.
+    $extra = array_diff( array_map( 'intval', array_keys( $transfers ) ), $expected_ids );
+    foreach ( $extra as $sid ) {
+        $out['issues'][] = sprintf( 'Transfer to seller #%d recorded but that seller is not in this order.', $sid );
+    }
+
+    if ( $out['missing'] || $out['actual_held'] || $out['actual_failed'] || $extra ) {
+        $out['status'] = 'held';
+    }
+    return $out;
+}
+
+/**
+ * Evaluate the split-payment guardrail and persist the result to order meta,
+ * including a compact history entry for the admin queue and an order note on
+ * the first hold event so it surfaces in wp-admin.
+ */
+function mnu_native_apply_split_guardrail( WC_Order $order ): array {
+    $eval = mnu_native_check_split_guardrail( $order );
+    $prev_status = (string) $order->get_meta( '_mnu_split_guardrail_status', true );
+
+    $snapshot = array(
+        'evaluated_at' => current_time( 'mysql', true ),
+        'status'       => $eval['status'],
+        'issues'       => $eval['issues'],
+        'expected'     => $eval['expected'],
+        'sent'         => $eval['actual_sent'],
+        'held'         => $eval['actual_held'],
+        'failed'       => $eval['actual_failed'],
+        'missing'      => $eval['missing'],
+    );
+    $order->update_meta_data( '_mnu_split_guardrail', wp_json_encode( $snapshot ) );
+    $order->update_meta_data( '_mnu_split_guardrail_status', $eval['status'] );
+    if ( 'held' === $eval['status'] ) {
+        $order->update_meta_data( '_mnu_split_hold', 1 );
+        if ( 'held' !== $prev_status ) {
+            $order->add_order_note( 'Split-payment guardrail HELD: ' . implode( ' ', $eval['issues'] ) . ' Admin action required.' );
+        }
+    } else {
+        $order->delete_meta_data( '_mnu_split_hold' );
+        if ( 'held' === $prev_status ) {
+            $order->add_order_note( 'Split-payment guardrail cleared — all seller transfers accounted for.' );
+        }
+    }
+    $order->save();
+    return $eval;
 }
 
 function mnu_native_verify_webhook_signature( string $payload, string $signature_header, string $secret ): bool {
