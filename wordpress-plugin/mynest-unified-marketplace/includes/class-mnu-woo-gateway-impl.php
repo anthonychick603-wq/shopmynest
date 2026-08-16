@@ -335,7 +335,11 @@ final class MNU_Woo_Gateway extends WC_Payment_Gateway {
 		if ( $reason ) {
 			$params['metadata[reason]'] = substr( sanitize_text_field( $reason ), 0, 250 );
 		}
-		$refund = mnu_native_stripe_request( '/refunds', $params, 'mnu_refund_' . $order->get_id() . '_' . $cents );
+		// Idempotency key includes a wall-clock component so a retry after a
+		// prior failed refund attempt (e.g. old code sending reverse_transfer
+		// on an SCT charge) is not blocked by Stripe's replay protection.
+		$idem_key = 'mnu_refund_' . $order->get_id() . '_' . $cents . '_' . time();
+		$refund   = mnu_native_stripe_request( '/refunds', $params, $idem_key );
 		if ( is_wp_error( $refund ) ) {
 			return $refund;
 		}
