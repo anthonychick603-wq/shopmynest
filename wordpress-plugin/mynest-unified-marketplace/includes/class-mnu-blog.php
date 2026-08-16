@@ -106,7 +106,16 @@ final class MNU_Blog {
     }
 
     public static function public_feed( WP_REST_Request $request ): WP_REST_Response {
-        return rest_ensure_response( self::query( 'approved', $request ) );
+        $response = rest_ensure_response( self::query( 'approved', $request ) );
+        // v3.7.67 — the WPCOM Atomic edge cache was holding the anonymous
+        // JSON feed after an approval, so approved posts didn't surface in
+        // the app until the CDN entry aged out. Tell every intermediate cache
+        // never to store this response; the moderation flow also purges the
+        // path explicitly on approve/reject below.
+        $response->header( 'Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0' );
+        $response->header( 'Pragma', 'no-cache' );
+        $response->header( 'Expires', '0' );
+        return $response;
     }
 
     public static function moderation_feed( WP_REST_Request $request ): WP_REST_Response|WP_Error {
@@ -180,6 +189,30 @@ final class MNU_Blog {
         return rest_ensure_response( array( 'success' => true, 'post' => self::post_to_array( $result ) ) );
     }
 
+    /**
+     * v3.7.67 — nudge every layer that might cache the public blog feed.
+     * WPCOM Atomic exposes wpcom_vip_purge_edge_cache_for_url() on managed
+     * hosts; page-cache plugins expose their own hooks. We call whatever is
+     * defined and stay silent otherwise so the moderation call keeps working
+     * on plain LAMP installs.
+     */
+    private static function purge_public_feed_cache(): void {
+        $url = rest_url( self::NS . '/blog/posts' );
+        if ( function_exists( 'wpcom_vip_purge_edge_cache_for_url' ) ) {
+            wpcom_vip_purge_edge_cache_for_url( $url );
+        }
+        if ( function_exists( 'wpcom_invalidate_wpcom_shortlinks_for_post' ) ) {
+            // no-op guard; keeps the call defensive on non-VIP hosts.
+        }
+        // WP Super Cache / W3 Total Cache / LiteSpeed hooks.
+        do_action( 'litespeed_purge_url', $url );
+        if ( function_exists( 'wp_cache_post_change' ) ) {
+            wp_cache_post_change( get_option( 'siteurl' ) );
+        }
+        // Generic action for anything else listening (our own admin dashboards).
+        do_action( 'mnu_blog_feed_purged', $url );
+    }
+
     /* ------------------------------------------------------------ internals */
 
     /**
@@ -213,6 +246,9 @@ final class MNU_Blog {
         }
         if ( $post->post_status !== self::STATUSES[ $state ] ) {
             wp_update_post( array( 'ID' => $post_id, 'post_status' => self::STATUSES[ $state ] ) );
+            // v3.7.67 — purge caches on any state change so approve/reject from
+            // REST *and* wp-admin surface immediately in the public feed.
+            self::purge_public_feed_cache();
         }
         return get_post( $post_id );
     }

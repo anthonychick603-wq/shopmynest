@@ -639,6 +639,14 @@ final class TNM_Social {
             if ( ! $user ) {
                 continue;
             }
+            // v3.7.67 — hide phantom stores from the public directory: any
+            // seller with zero published products just adds noise (duplicate
+            // display names collide visually and the tap-through lands on an
+            // empty shop). Show them in the admin dashboard only.
+            $product_count = (int) count_user_posts( $sid, 'product', true );
+            if ( $product_count < 1 && ! current_user_can( 'manage_woocommerce' ) ) {
+                continue;
+            }
             $items[] = array(
                 'id'             => $sid,
                 'store_name'     => tnm_seller_display_name( $sid ),
@@ -648,7 +656,7 @@ final class TNM_Social {
                 'about_snippet'  => wp_trim_words( (string) get_user_meta( $sid, 'tnm_store_about', true ), 20 ),
                 'follower_count' => self::follower_count( $sid ),
                 'is_following'   => $viewer_id ? self::is_following( $viewer_id, $sid ) : false,
-                'product_count'  => count_user_posts( $sid, 'product', true ),
+                'product_count'  => $product_count,
                 'shop_url'       => home_url( '/shop-profile/?seller=' . $sid ),
             );
         }
@@ -657,7 +665,7 @@ final class TNM_Social {
             'items'    => $items,
             'page'     => $page,
             'per_page' => $per_page,
-            'total'    => $total,
+            'total'    => count( $items ),
         );
     }
 

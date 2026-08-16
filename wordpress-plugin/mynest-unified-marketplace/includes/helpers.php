@@ -237,6 +237,13 @@ function tnm_seller_display_name( int $seller_id ): string {
             return sanitize_text_field( html_entity_decode( (string) $store_name, ENT_QUOTES | ENT_HTML5, 'UTF-8' ) );
         }
     }
+    // v3.7.67 — fall back to nickname before display_name so sellers whose
+    // WP display_name is their real name still surface as their store name
+    // (nickname is the WP-native "public label" that predates our meta keys).
+    $nickname = (string) get_user_meta( $seller_id, 'nickname', true );
+    if ( $nickname ) {
+        return sanitize_text_field( html_entity_decode( $nickname, ENT_QUOTES | ENT_HTML5, 'UTF-8' ) );
+    }
     $user = get_userdata( $seller_id );
     return $user ? $user->display_name : __( 'Seller', 'mynest-unified-marketplace' );
 }
