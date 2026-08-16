@@ -11,8 +11,8 @@
  *   Body: { "confirm": "yes-truncate-ledgers" }
  *
  * Truncates:
- *   - {prefix}mnu_ledger
- *   - {prefix}mnu_payouts
+ *   - {prefix}tnm_ledger
+ *   - {prefix}tnm_payouts
  *
  * Does NOT touch: mnu_follows, mnu_notifications, mnu_messages, mnu_reviews,
  * mnu_import_jobs, WooCommerce orders, Stripe, products, users, or options.
@@ -58,7 +58,7 @@ final class MNU_Ledger_Reset {
 		}
 
 		global $wpdb;
-		$targets = array( 'mnu_ledger', 'mnu_payouts' );
+		$targets = array( 'tnm_ledger', 'tnm_payouts' );
 		$result  = array();
 		foreach ( $targets as $suffix ) {
 			$table = $wpdb->prefix . $suffix;
