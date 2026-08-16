@@ -82,6 +82,7 @@ function mnu_load_files(): void {
 		'includes/class-mnu-social-frontend.php',
 		'includes/class-mnu-woo-gateway.php',
 		'includes/class-mnu-checkout-finalize.php',
+		'includes/class-mnu-ledger-reset.php',
 		'includes/class-mnu-shipping-labels.php',
 		'includes/class-mnu-shipping-profiles.php',
 		'includes/class-mnu-web-shipping.php',
