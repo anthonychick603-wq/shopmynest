@@ -28,42 +28,42 @@
       "palette": [
         {
           "slug": "theme-1",
-          "color": "#FFFBF3",
+          "color": "#FFFFFF",
           "name": "Card surface"
         },
         {
           "slug": "theme-2",
-          "color": "#F5EFE4",
+          "color": "#F8F5F0",
           "name": "Alt surface"
         },
         {
           "slug": "theme-3",
-          "color": "#DFD3BE",
+          "color": "#E4DED4",
           "name": "Border"
         },
         {
           "slug": "theme-4",
-          "color": "#26221C",
+          "color": "#1B1A21",
           "name": "Body text"
         },
         {
           "slug": "theme-5",
-          "color": "#131210",
+          "color": "#26295F",
           "name": "Dark sections"
         },
         {
           "slug": "brand",
-          "color": "#3C4B33",
+          "color": "#3A3D8A",
           "name": "Brand"
         },
         {
           "slug": "brand-dark",
-          "color": "#2A3624",
+          "color": "#26295F",
           "name": "Brand dark"
         },
         {
           "slug": "accent-warm",
-          "color": "#B0553A",
+          "color": "#E27055",
           "name": "Accent warm"
         }
       ]

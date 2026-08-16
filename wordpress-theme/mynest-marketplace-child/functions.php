@@ -126,7 +126,10 @@ if ( ! function_exists( 'mynest_marketplace_palette_from_plugin' ) ) :
 				return $p;
 			}
 		}
-		// Fallback: Modern Marketplace defaults (mirrors plugin v1.4.0).
+		// Fallback: mirrors the LOCKED Modern Marketplace palette in
+		// shopmynest-branding v1.5.0. Only used if the branding plugin
+		// is deactivated. Keep these EXACT hexes in sync with
+		// SMN_BRAND_PALETTE_LOCKED there.
 		return array(
 			'primary'    => '#3A3D8A',
 			'dark'       => '#26295F',
@@ -153,7 +156,7 @@ if ( ! function_exists( 'mynest_marketplace_theme_json_palette' ) ) :
 			array( 'slug' => 'theme-2',     'color' => $p['background'], 'name' => 'Alt surface' ),
 			array( 'slug' => 'theme-3',     'color' => $p['border'],     'name' => 'Border' ),
 			array( 'slug' => 'theme-4',     'color' => $p['ink'],        'name' => 'Body text' ),
-			array( 'slug' => 'theme-5',     'color' => '#131210',        'name' => 'Dark sections' ),
+			array( 'slug' => 'theme-5',     'color' => $p['dark'],       'name' => 'Dark sections' ),
 			array( 'slug' => 'brand',       'color' => $p['primary'],    'name' => 'Brand' ),
 			array( 'slug' => 'brand-dark',  'color' => $p['dark'],       'name' => 'Brand dark' ),
 			array( 'slug' => 'accent-warm', 'color' => $p['accent'],     'name' => 'Accent warm' ),

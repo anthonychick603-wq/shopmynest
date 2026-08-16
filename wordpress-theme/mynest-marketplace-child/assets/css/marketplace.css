@@ -2,8 +2,10 @@
  * MyNest Marketplace — design system stylesheet
  * Child theme of "Assembler" for shopmynest.com
  *
- * An Etsy + Vinted–inspired marketplace layer on top of the MyNest brand
- * (deep forest #3C4B33 + parchment). Styles WooCommerce blocks, MyNest's
+ * An Etsy + Vinted–inspired marketplace layer on top of the ShopMyNest
+ * brand (Modern Marketplace: Indigo #3A3D8A + Coral #E27055 on warm ivory
+ * #F8F5F0). Palette is LOCKED in shopmynest-branding v1.5.0 as the single
+ * source of truth. Styles WooCommerce blocks, MyNest's
  * own "tnm-" social feed / dashboard markup, and site chrome.
  *
  * Reference: MyNest brand classes were read from the live homepage
@@ -17,14 +19,26 @@
    ========================================================================== */
 
 :root {
-	--mynest-teal: var( --wp--preset--color--brand, #3c4b33 );
-	--mynest-teal-dark: var( --wp--preset--color--brand-dark, #2a3624 );
-	--mynest-terracotta: var( --wp--preset--color--accent-warm, #b0553a );
-	--mynest-white: var( --wp--preset--color--theme-1, #fffbf3 );
-	--mynest-cream: var( --wp--preset--color--theme-2, #f5efe4 );
-	--mynest-muted: var( --wp--preset--color--theme-3, #dfd3be );
-	--mynest-text: var( --wp--preset--color--theme-4, #26221c );
-	--mynest-ink: var( --wp--preset--color--theme-5, #131210 );
+	/* Fallbacks match the LOCKED palette in shopmynest-branding v1.5.0.
+	 * Preferred source: --wp--preset--color--* (from theme.json), which
+	 * itself mirrors the plugin's palette. Naming kept for compatibility
+	 * even though the primary is now Indigo, not teal. */
+	--mynest-teal: var( --wp--preset--color--brand, #3A3D8A );
+	--mynest-teal-dark: var( --wp--preset--color--brand-dark, #26295F );
+	--mynest-terracotta: var( --wp--preset--color--accent-warm, #E27055 );
+	--mynest-white: var( --wp--preset--color--theme-1, #FFFFFF );
+	--mynest-cream: var( --wp--preset--color--theme-2, #F8F5F0 );
+	--mynest-muted: var( --wp--preset--color--theme-3, #E4DED4 );
+	--mynest-text: var( --wp--preset--color--theme-4, #1B1A21 );
+	--mynest-ink: var( --wp--preset--color--theme-5, #26295F );
+
+	/* Canonical v1.5.0 aliases so new code doesn't have to think in old names. */
+	--mynest-primary: var( --mynest-teal );
+	--mynest-primary-dark: var( --mynest-teal-dark );
+	--mynest-accent: var( --mynest-terracotta );
+	--mynest-background: var( --mynest-cream );
+	--mynest-card: var( --mynest-white );
+	--mynest-border: var( --mynest-muted );
 
 	--mynest-radius-sm: 8px;
 	--mynest-radius-md: 10px;

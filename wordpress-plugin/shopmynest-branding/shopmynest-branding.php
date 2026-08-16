@@ -3,7 +3,7 @@
  * Plugin Name:       ShopMyNest Branding
  * Plugin URI:        https://shopmynest.com
  * Description:       Applies the ShopMyNest logo and brand identity across your WordPress + WooCommerce site: custom logo, favicons, wp-admin login screen, admin bar mark, and WooCommerce transactional email header.
- * Version:           1.4.0
+ * Version:           1.5.0
  * Requires at least: 6.0
  * Requires PHP:      7.4
  * Author:            ShopMyNest
@@ -17,28 +17,68 @@ if ( ! defined( 'ABSPATH' ) ) {
     exit;
 }
 
-define( 'SMN_BRANDING_VERSION', '1.4.0' );
+define( 'SMN_BRANDING_VERSION', '1.5.0' );
+
+/**
+ * ============================================================
+ *  SHOPMYNEST CANONICAL BRAND PALETTE — LOCKED (v1.5.0)
+ * ============================================================
+ *  These are the ONE source of truth for ShopMyNest's brand
+ *  colors. Every surface — website, child theme, WooCommerce
+ *  emails, Android app tokens, Play Store assets — must read
+ *  from this constant. Do NOT hard-code hexes anywhere else.
+ *
+ *  Change process: bump this plugin version, update the
+ *  constant here, regenerate the child theme + app tokens from
+ *  this file. There is no other place palette hexes can change.
+ *
+ *  Palette name: Modern Marketplace (Indigo + Coral on Ivory)
+ * ============================================================
+ */
+define( 'SMN_BRAND_PALETTE_LOCKED', wp_json_encode( array(
+    'primary'    => '#3A3D8A', // Brand Indigo
+    'dark'       => '#26295F', // Indigo Dark (hover, headings, footer)
+    'accent'     => '#E27055', // Coral warm accent (CTAs, highlights)
+    'background' => '#F8F5F0', // Warm ivory surface
+    'card'       => '#FFFFFF', // Clean card
+    'ink'        => '#1B1A21', // Near-black body text
+    'border'     => '#E4DED4', // Ivory border
+    'secondary'  => '#E27055', // Alias: legacy code still reads this
+) ) );
 define( 'SMN_BRANDING_DIR', plugin_dir_path( __FILE__ ) );
 define( 'SMN_BRANDING_URL', plugin_dir_url( __FILE__ ) );
 define( 'SMN_BRANDING_ASSETS', SMN_BRANDING_URL . 'assets/' );
 
 /**
- * Brand color palette (from the ShopMyNest logo).
+ * Return the LOCKED brand palette. Always reads from
+ * SMN_BRAND_PALETTE_LOCKED — never define these values inline
+ * anywhere else in the codebase.
+ *
+ * Third-party integrations can filter this at their own risk
+ * via `smn_branding_palette`, but the plugin itself, the child
+ * theme, and every ShopMyNest surface will use the locked
+ * values unmodified.
+ *
+ * History: teal+cream (v<=1.2.2) → Studio Clay (v1.3.0)
+ *          → Modern Marketplace (v1.4.0, LOCKED at v1.5.0)
  */
 function smn_branding_palette() {
-    // Modern Marketplace palette — brand indigo primary + coral accent on warm ivory.
-    // History: teal+cream (v<=1.2.2) → Studio Clay (v1.3.0) → Modern Marketplace (v1.4.0).
-    return array(
-        'primary'    => '#3A3D8A', // Brand Indigo
-        'dark'       => '#26295F', // Indigo Dark
-        'accent'     => '#E27055', // Coral warm accent
-        'background' => '#F8F5F0', // Warm ivory surface
-        'card'       => '#FFFFFF', // Clean card
-        'ink'        => '#1B1A21', // Ink near-black text
-        'border'     => '#E4DED4', // Ivory border
-        // Legacy alias so downstream code keeps working.
-        'secondary'  => '#E27055',
-    );
+    $palette = json_decode( SMN_BRAND_PALETTE_LOCKED, true );
+    if ( ! is_array( $palette ) ) {
+        // Belt-and-suspenders: if the constant ever gets malformed,
+        // fall back to the exact same hexes so nothing renders wrong.
+        $palette = array(
+            'primary'    => '#3A3D8A',
+            'dark'       => '#26295F',
+            'accent'     => '#E27055',
+            'background' => '#F8F5F0',
+            'card'       => '#FFFFFF',
+            'ink'        => '#1B1A21',
+            'border'     => '#E4DED4',
+            'secondary'  => '#E27055',
+        );
+    }
+    return apply_filters( 'smn_branding_palette', $palette );
 }
 
 /* -----------------------------------------------------------
@@ -168,7 +208,7 @@ function smn_branding_woo_email_header( $email_heading ) {
     // If Woo already has a header image configured in settings, don't stomp on it.
     if ( get_option( 'woocommerce_email_header_image' ) ) return;
     ?>
-    <div style="text-align:center; padding:24px 0; background:#FAF4EB;">
+    <div style="text-align:center; padding:24px 0; background:<?php echo esc_attr( smn_branding_palette()['background'] ); ?>;">
         <img src="<?php echo esc_url( SMN_BRANDING_ASSETS . 'email-header.png' ); ?>"
              alt="ShopMyNest"
              style="max-width:280px; height:auto; display:inline-block;" />
@@ -207,7 +247,30 @@ add_action( 'after_setup_theme', function() {
 /* -----------------------------------------------------------
  * 9. Front-end storefront polish + layout upgrades
  * ----------------------------------------------------------- */
-add_action( 'wp_enqueue_scripts', 'smn_branding_enqueue_storefront_css', 20 );
+add_action( 'wp_enqueue_scripts',    'smn_branding_enqueue_storefront_css', 20 );
+add_action( 'admin_enqueue_scripts', 'smn_branding_enqueue_admin_palette_css', 20 );
+function smn_branding_enqueue_admin_palette_css() {
+    // Register a tiny inline-only stylesheet so CSS custom properties are
+    // available in wp-admin too. Any admin surface that wants to match brand
+    // colors reads from --smn-* / --sn-* the same way the front-end does.
+    wp_register_style( 'shopmynest-admin-palette', false, array(), SMN_BRANDING_VERSION );
+    wp_enqueue_style( 'shopmynest-admin-palette' );
+    $p = smn_branding_palette();
+    $css = ":root{" .
+        "--smn-primary:"    . $p['primary']    . ";" .
+        "--smn-dark:"       . $p['dark']       . ";" .
+        "--smn-accent:"     . $p['accent']     . ";" .
+        "--smn-background:" . $p['background'] . ";" .
+        "--smn-card:"       . $p['card']       . ";" .
+        "--smn-ink:"        . $p['ink']        . ";" .
+        "--smn-border:"     . $p['border']     . ";" .
+        "--sn-primary:"     . $p['primary']    . ";" .
+        "--sn-primary-dk:"  . $p['dark']       . ";" .
+        "--sn-accent:"      . $p['accent']     . ";" .
+        "}";
+    wp_add_inline_style( 'shopmynest-admin-palette', $css );
+}
+
 function smn_branding_enqueue_storefront_css() {
     wp_enqueue_style(
         'shopmynest-storefront',
@@ -218,14 +281,31 @@ function smn_branding_enqueue_storefront_css() {
     // Expose the plugin palette as CSS custom properties so templates and
     // future stylesheets can reference the exact same tokens.
     $p = smn_branding_palette();
+    // Canonical CSS custom properties. Child themes and every
+    // plugin surface must read from these — do not hard-code hexes.
     $css = ":root{" .
-        "--sn-teal:"     . $p['primary']    . ";" .
-        "--sn-teal-dk:"  . $p['dark']       . ";" .
-        "--sn-cream:"    . $p['background'] . ";" .
-        "--sn-card:"     . $p['card']       . ";" .
-        "--sn-ink:"      . $p['ink']        . ";" .
-        "--sn-border:"   . $p['border']     . ";" .
-        "--sn-accent:"   . $p['accent']     . ";" .
+        // v1.5.0 canonical names
+        "--smn-primary:"    . $p['primary']    . ";" .
+        "--smn-dark:"       . $p['dark']       . ";" .
+        "--smn-accent:"     . $p['accent']     . ";" .
+        "--smn-background:" . $p['background'] . ";" .
+        "--smn-card:"       . $p['card']       . ";" .
+        "--smn-ink:"        . $p['ink']        . ";" .
+        "--smn-border:"     . $p['border']     . ";" .
+        // Legacy aliases — the child theme and older templates
+        // still reference --sn-* and --sn-teal. Kept so a palette
+        // change here still propagates without a coordinated
+        // deploy across every consumer.
+        "--sn-teal:"        . $p['primary']    . ";" .
+        "--sn-teal-dk:"     . $p['dark']       . ";" .
+        "--sn-primary:"     . $p['primary']    . ";" .
+        "--sn-primary-dk:"  . $p['dark']       . ";" .
+        "--sn-cream:"       . $p['background'] . ";" .
+        "--sn-bg:"          . $p['background'] . ";" .
+        "--sn-card:"        . $p['card']       . ";" .
+        "--sn-ink:"         . $p['ink']        . ";" .
+        "--sn-border:"      . $p['border']     . ";" .
+        "--sn-accent:"      . $p['accent']     . ";" .
         "--sn-shadow:0 6px 24px rgba(58,61,138,0.12);" .
         "--sn-shadow-lg:0 12px 32px rgba(58,61,138,0.18);" .
         "--sn-radius:14px;--sn-radius-sm:8px;--sn-radius-lg:24px;" .
@@ -397,7 +477,7 @@ function smn_branding_settings_page() {
             <?php endforeach; ?>
         </div>
         <h2>Logo preview</h2>
-        <img src="<?php echo esc_url( SMN_BRANDING_ASSETS . 'logo-512.png' ); ?>" style="max-width:300px;height:auto;background:#FAF4EB;padding:16px;border-radius:12px;" />
+        <img src="<?php echo esc_url( SMN_BRANDING_ASSETS . 'logo-512.png' ); ?>" style="max-width:300px;height:auto;background:<?php echo esc_attr( $palette['background'] ); ?>;padding:16px;border-radius:12px;" />
     </div>
     <?php
 }
