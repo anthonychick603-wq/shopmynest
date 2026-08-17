@@ -422,9 +422,12 @@ function mnu_native_get_live_shipping_rates( array $lines, array $address ): arr
         return new WP_Error( 'empty_cart', 'No shippable products found.' );
     }
 
-    $single_seller = 1 === count( $by_seller );
-    $options       = array();
-    $combined_cost = 0.0;
+    $single_seller    = 1 === count( $by_seller );
+    $options          = array();
+    $combined_cost    = 0.0;
+    // v3.7.87 — per-seller rate/parcel snapshots so create-intent can
+     // persist the exact rate the buyer paid for and auto-buy after payment.
+    $seller_snapshots = array();
 
     foreach ( $by_seller as $seller_id => $seller_lines ) {
         if ( $seller_id <= 0 ) {
@@ -472,6 +475,23 @@ function mnu_native_get_live_shipping_rates( array $lines, array $address ): arr
             return new WP_Error( 'no_live_rates', 'No live shipping rates were returned.' );
         }
 
+        // v3.7.87 — always capture the cheapest rate per seller so
+         // create-intent has a per-seller rate/parcel snapshot to buy a
+         // label from after payment, even in multi-seller carts where the
+         // buyer only sees one combined shipping line.
+        $cheapest = $rates[0];
+        $seller_snapshots[ $seller_id ] = array(
+            'shipment_object_id' => (string) ( $shipment['object_id'] ?? '' ),
+            'rate_object_id'     => (string) ( $cheapest['object_id'] ?? '' ),
+            'provider'           => (string) ( $cheapest['provider'] ?? '' ),
+            'service'            => (string) ( $cheapest['servicelevel']['name'] ?? $cheapest['servicelevel_name'] ?? '' ),
+            'service_token'      => (string) ( $cheapest['servicelevel']['token'] ?? $cheapest['servicelevel_token'] ?? '' ),
+            'amount'             => (float) ( $cheapest['amount'] ?? 0 ),
+            'currency'           => (string) ( $cheapest['currency'] ?? 'USD' ),
+            'parcel'             => $parcel,
+            'rated_at'           => gmdate( 'c' ),
+        );
+
         if ( $single_seller ) {
             foreach ( $rates as $rate ) {
                 $provider  = (string) ( $rate['provider'] ?? '' );
@@ -479,10 +499,19 @@ function mnu_native_get_live_shipping_rates( array $lines, array $address ): arr
                 $token     = (string) ( $rate['servicelevel']['token'] ?? $rate['servicelevel_token'] ?? '' );
                 $slug      = sanitize_key( $provider . '_' . ( $token ?: $service ) );
                 $options[] = array(
-                    'id'        => 'shippo_' . ( $slug ?: substr( md5( $provider . $service ), 0, 12 ) ),
-                    'label'     => trim( $provider . ' ' . $service ) ?: 'Shipping',
-                    'amount'    => round( (float) ( $rate['amount'] ?? 0 ), wc_get_price_decimals() ),
-                    'method_id' => 'shippo',
+                    'id'                 => 'shippo_' . ( $slug ?: substr( md5( $provider . $service ), 0, 12 ) ),
+                    'label'              => trim( $provider . ' ' . $service ) ?: 'Shipping',
+                    'amount'             => round( (float) ( $rate['amount'] ?? 0 ), wc_get_price_decimals() ),
+                    'method_id'          => 'shippo',
+                    // v3.7.87 — opaque IDs the create-intent handler resolves
+                    // back to the underlying seller/rate/parcel so auto-buy
+                    // can call transactions.create({rate: rate_object_id}).
+                    'seller_id'          => (int) $seller_id,
+                    'shippo_rate_id'     => (string) ( $rate['object_id'] ?? '' ),
+                    'shippo_shipment_id' => (string) ( $shipment['object_id'] ?? '' ),
+                    'provider'           => $provider,
+                    'service'            => $service,
+                    'service_token'      => $token,
                 );
             }
         } else {
@@ -493,14 +522,40 @@ function mnu_native_get_live_shipping_rates( array $lines, array $address ): arr
 
     if ( ! $single_seller ) {
         $options[] = array(
-            'id'        => 'shippo_combined',
-            'label'     => 'Standard shipping',
-            'amount'    => round( $combined_cost, wc_get_price_decimals() ),
-            'method_id' => 'shippo',
+            'id'                 => 'shippo_combined',
+            'label'               => 'Standard shipping',
+            'amount'             => round( $combined_cost, wc_get_price_decimals() ),
+            'method_id'          => 'shippo',
+            // Combined lines don't map to a single Shippo rate id; the
+            // create-intent handler uses the persisted per-seller snapshots.
+            'combined'           => true,
         );
     }
 
+    // v3.7.87 — stash the per-seller snapshots for the create-intent
+    // handler to pick up. Kept out of the returned array so numeric
+    // iterations elsewhere (cheapest_option, requested-id match) stay
+    // clean; a static holder is fine here because the request lifecycle
+    // is single-threaded.
+    mnu_native_seller_snapshots( $seller_snapshots );
+
     return $options;
+}
+
+/**
+ * v3.7.87 — request-scoped holder for per-seller Shippo rate snapshots.
+ * Written by mnu_native_get_live_shipping_rates(), read by
+ * mnu_native_create_intent_locked() before the order is created.
+ *
+ * @param array<int,array<string,mixed>>|null $set Snapshots to store, or null to read.
+ * @return array<int,array<string,mixed>>
+ */
+function mnu_native_seller_snapshots( ?array $set = null ): array {
+    static $current = array();
+    if ( is_array( $set ) ) {
+        $current = $set;
+    }
+    return $current;
 }
 
 /**
@@ -1050,6 +1105,26 @@ function mnu_native_create_intent_locked( int $user_id, array $data, string $che
             $shipping_total  = (float) ( $chosen['amount'] ?? 0 );
             $shipping_title  = (string) ( $chosen['label'] ?? 'Standard shipping' );
             $shipping_method = (string) ( $chosen['id'] ?? 'thenest_standard' );
+
+            // v3.7.87 — if the buyer picked a non-cheapest rate on a single-seller
+            // cart, overwrite that seller's snapshot with the exact rate they paid
+            // for so auto-buy purchases the same service the buyer selected.
+            if ( ! empty( $chosen['shippo_rate_id'] ) && ! empty( $chosen['seller_id'] ) ) {
+                $snaps = mnu_native_seller_snapshots();
+                if ( isset( $snaps[ (int) $chosen['seller_id'] ] ) ) {
+                    $snaps[ (int) $chosen['seller_id'] ] = array_merge(
+                        $snaps[ (int) $chosen['seller_id'] ],
+                        array(
+                            'rate_object_id' => (string) $chosen['shippo_rate_id'],
+                            'provider'       => (string) ( $chosen['provider'] ?? '' ),
+                            'service'        => (string) ( $chosen['service'] ?? '' ),
+                            'service_token'  => (string) ( $chosen['service_token'] ?? '' ),
+                            'amount'         => (float) $chosen['amount'],
+                        )
+                    );
+                    mnu_native_seller_snapshots( $snaps );
+                }
+            }
         } else {
             // No address: preserve the historical behaviour exactly.
             $shipping_total  = is_array( $quote )
@@ -1074,6 +1149,27 @@ function mnu_native_create_intent_locked( int $user_id, array $data, string $che
         }
         if ( $quote_token ) {
             $order->update_meta_data( '_thenest_quote_token_hash', hash( 'sha256', $quote_token ) );
+            $order->save();
+        }
+
+        // v3.7.87 — persist the per-seller Shippo rate/parcel snapshots so
+        // the auto-label service can buy each seller's label immediately
+        // after payment succeeds, without re-quoting.
+        $snapshots = mnu_native_seller_snapshots();
+        if ( ! empty( $snapshots ) ) {
+            foreach ( $snapshots as $sid => $snap ) {
+                $sid = (int) $sid;
+                if ( $sid <= 0 ) { continue; }
+                $order->update_meta_data( '_mnu_ship_rate_id_'   . $sid, (string) ( $snap['rate_object_id'] ?? '' ) );
+                $order->update_meta_data( '_mnu_ship_shipment_'  . $sid, (string) ( $snap['shipment_object_id'] ?? '' ) );
+                $order->update_meta_data( '_mnu_ship_provider_'  . $sid, (string) ( $snap['provider'] ?? '' ) );
+                $order->update_meta_data( '_mnu_ship_service_'   . $sid, (string) ( $snap['service'] ?? '' ) );
+                $order->update_meta_data( '_mnu_ship_amount_'    . $sid, (string) ( $snap['amount'] ?? '' ) );
+                $order->update_meta_data( '_mnu_ship_currency_'  . $sid, (string) ( $snap['currency'] ?? 'USD' ) );
+                $order->update_meta_data( '_mnu_ship_parcel_'    . $sid, wp_json_encode( (array) ( $snap['parcel'] ?? array() ) ) );
+                $order->update_meta_data( '_mnu_ship_rated_at_'  . $sid, (string) ( $snap['rated_at'] ?? gmdate( 'c' ) ) );
+            }
+            $order->update_meta_data( '_mnu_ship_snapshot_sellers', wp_json_encode( array_map( 'intval', array_keys( $snapshots ) ) ) );
             $order->save();
         }
     }
@@ -1170,6 +1266,9 @@ function mnu_native_complete( WP_REST_Request $request ): array|WP_Error {
         if ( ! $order->is_paid() ) {
             $order->payment_complete( $intent_id );
             $order->add_order_note( 'Paid through The Nest native checkout.' );
+            // v3.7.87 — auto-buy the buyer's selected label. Idempotent, so
+            // it's safe if the webhook path already ran this action.
+            do_action( 'mnu_native_payment_succeeded', $order->get_id() );
         }
         return array( 'ok' => true, 'status' => $order->get_status(), 'order_id' => $order->get_id() );
     }

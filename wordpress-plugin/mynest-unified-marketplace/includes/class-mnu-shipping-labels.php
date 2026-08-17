@@ -996,7 +996,29 @@ function mnu_labels_store_transaction( WC_Order $order, int $seller_id, array $t
  *
  * The row is written status='available' with available_at=NOW so it
  * participates in the very next transfer for this order.
+ *
+ * v3.7.87 — reverse a previously-written postage-debit row when the label
+ * is voided (order cancelled/refunded before shipping). Marks the row
+ * status='reversed' so it stops participating in future payouts and
+ * writes an offsetting note. Idempotent by transaction id (companion
+ * function `mnu_labels_reverse_postage_ledger_row` immediately below).
  */
+function mnu_labels_reverse_postage_ledger_row( WC_Order $order, int $seller_id, string $transaction_id ): void {
+    global $wpdb;
+    if ( $seller_id <= 0 || '' === $transaction_id ) { return; }
+    $table = tnm_table( 'ledger' );
+    $wpdb->query( $wpdb->prepare(
+        "UPDATE {$table} SET status='reversed', updated_at=%s, note=CONCAT(COALESCE(note,''), ' | reversed via void ', %s) WHERE seller_id=%d AND order_id=%d AND type='postage' AND note LIKE %s AND status<>'reversed'",
+        current_time( 'mysql', true ),
+        current_time( 'mysql', true ),
+        $seller_id,
+        $order->get_id(),
+        '%' . $wpdb->esc_like( $transaction_id ) . '%'
+    ) );
+    $order->update_meta_data( '_mnu_label_postage_reversed_' . $seller_id, current_time( 'mysql', true ) );
+    $order->save();
+}
+
 function mnu_labels_write_postage_ledger_row( WC_Order $order, int $seller_id, float $amount, string $currency, string $provider, string $service, string $transaction_id ): void {
     if ( $seller_id <= 0 || $amount <= 0 || ! function_exists( 'tnm_table' ) ) {
         return;
@@ -1139,6 +1161,19 @@ function mnu_labels_payload( WC_Order $order, int $seller_id ): array {
         'transaction'     => (string) ( $order->get_meta( '_thenest_label_transaction' . $suffix, true ) ?: $order->get_meta( '_thenest_label_transaction', true ) ),
         'status'          => (string) ( $order->get_meta( '_thenest_label_status' . $suffix, true ) ?: ( $order->get_meta( '_thenest_label_url' . $suffix, true ) ? 'success' : '' ) ),
         'test_mode'       => ! empty( $settings['test_mode'] ),
+        // v3.7.87 — lets the seller dashboard hide the rate picker when the
+        // label was already bought automatically after buyer payment, and
+        // surface a friendly error/retry when the auto-buy failed.
+        'autolabel'       => array(
+            'status'      => (string) $order->get_meta( '_mnu_autolabel_status' . $suffix, true ),
+            'paid_by'     => (string) $order->get_meta( '_mnu_autolabel_paid_by' . $suffix, true ),
+            'error'       => (string) $order->get_meta( '_mnu_autolabel_error'  . $suffix, true ),
+            'bought_at'   => (string) $order->get_meta( '_mnu_autolabel_bought_at' . $suffix, true ),
+            'failed_at'   => (string) $order->get_meta( '_mnu_autolabel_failed_at' . $suffix, true ),
+            'buyer_paid'  => (string) $order->get_meta( '_mnu_ship_amount_' . $seller_id, true ),
+            'buyer_service' => (string) $order->get_meta( '_mnu_ship_service_' . $seller_id, true ),
+            'buyer_provider' => (string) $order->get_meta( '_mnu_ship_provider_' . $seller_id, true ),
+        ),
     );
 }
 
