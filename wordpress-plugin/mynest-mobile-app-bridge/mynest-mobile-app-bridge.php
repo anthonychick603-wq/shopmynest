@@ -471,7 +471,22 @@ final class MyNest_Mobile_App_Bridge {
             return new WP_Error( 'order_not_found', 'Order not found.', array( 'status' => 404 ) );
         }
         $user_id = get_current_user_id();
-        if ( (int) $order->get_customer_id() !== $user_id && ! user_can( $user_id, 'manage_woocommerce' ) ) {
+        $is_buyer = (int) $order->get_customer_id() === $user_id;
+        $is_admin = user_can( $user_id, 'manage_woocommerce' );
+        // v3.7.84 — sellers with an item in the order can view it too. The
+        // mobile app opens this endpoint from both buyer and seller order
+        // lists, and before this fix a seller viewing an order they only
+        // fulfilled (never bought) got a 403 which surfaced as the lock
+        // screen “This order belongs to another buyer”.
+        $is_seller_on_order = false;
+        if ( ! $is_buyer && ! $is_admin && $user_id > 0 ) {
+            foreach ( $order->get_items() as $item ) {
+                if ( ! $item instanceof WC_Order_Item_Product ) { continue; }
+                $seller_id = function_exists( 'tnm_get_order_item_seller_id' ) ? (int) tnm_get_order_item_seller_id( $item ) : 0;
+                if ( $seller_id === $user_id ) { $is_seller_on_order = true; break; }
+            }
+        }
+        if ( ! $is_buyer && ! $is_admin && ! $is_seller_on_order ) {
             return new WP_Error( 'order_permission_denied', 'You cannot view this order.', array( 'status' => 403 ) );
         }
         return rest_ensure_response( self::order_to_array( $order ) );
