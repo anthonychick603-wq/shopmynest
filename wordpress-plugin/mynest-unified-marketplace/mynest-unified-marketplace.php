@@ -3,7 +3,7 @@
  * Plugin Name: MyNest Unified Marketplace
  * Plugin URI:  https://shopmynest.com/
  * Description: One complete WooCommerce marketplace plugin for MyNest sellers, fees, payouts, orders, social features, mobile APIs, checkout, and shipping.
- * Version:     3.7.90
+ * Version:     3.7.91
  * Author:      MyNest
  * Text Domain: mynest-unified-marketplace
  * Requires at least: 6.5
@@ -16,7 +16,7 @@
 
 defined( 'ABSPATH' ) || exit;
 
-define( 'MNU_VERSION', '3.7.90' );
+define( 'MNU_VERSION', '3.7.91' );
 define( 'MNU_DB_VERSION', '3.0.11' );
 define( 'MNU_FILE', __FILE__ );
 define( 'MNU_BASENAME', plugin_basename( __FILE__ ) );
@@ -97,6 +97,7 @@ function mnu_load_files(): void {
 		'includes/class-mnu-multi-roles.php',
 		'includes/class-mnu-reconciliation.php',
 		'includes/class-mnu-refund-lifecycle.php',
+		'includes/class-mnu-tax-posture.php',
 	);
 
 	foreach ( $files as $file ) {
@@ -125,6 +126,9 @@ function mnu_deactivate_plugin(): void {
 	MNU_Install::deactivate();
 	if ( class_exists( 'MNU_Reconciliation' ) ) {
 		MNU_Reconciliation::deactivate();
+	}
+	if ( class_exists( 'MNU_Tax_Posture' ) ) {
+		MNU_Tax_Posture::deactivate();
 	}
 }
 register_deactivation_hook( __FILE__, 'mnu_deactivate_plugin' );
