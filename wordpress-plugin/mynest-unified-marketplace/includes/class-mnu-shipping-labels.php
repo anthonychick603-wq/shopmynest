@@ -167,6 +167,134 @@ function mnu_labels_routes(): void {
 }
 add_action( 'rest_api_init', 'mnu_labels_routes' );
 
+/**
+ * v3.7.79 — admin-only routes for diagnosing seller-order Shippo failures.
+ * - GET  /mnu/v1/admin/labels_last_error → last recorded Shippo error blob
+ * - POST /mnu/v1/admin/diagnose_seller_order { order_id, seller_id }
+ *   returns the exact from/to/parcel that mnu_labels_rates would have sent
+ *   plus the live Shippo response (including error body when it fails).
+ */
+add_action(
+    'rest_api_init',
+    static function () {
+        register_rest_route(
+            'mnu/v1',
+            '/admin/labels_last_error',
+            array(
+                'methods'             => 'GET',
+                'callback'            => static function () {
+                    return new WP_REST_Response(
+                        array(
+                            'ok'         => true,
+                            'last_error' => get_option( 'mnu_labels_last_shippo_error', null ),
+                        ),
+                        200
+                    );
+                },
+                'permission_callback' => static function () { return current_user_can( 'manage_options' ); },
+            )
+        );
+
+        register_rest_route(
+            'mnu/v1',
+            '/admin/diagnose_seller_order',
+            array(
+                'methods'             => 'POST',
+                'callback'            => 'mnu_labels_diagnose_seller_order',
+                'permission_callback' => static function () { return current_user_can( 'manage_options' ); },
+                'args'                => array(
+                    'order_id'  => array( 'required' => true,  'type' => 'integer' ),
+                    'seller_id' => array( 'required' => false, 'type' => 'integer' ),
+                ),
+            )
+        );
+    }
+);
+
+/**
+ * v3.7.79 — mirror of mnu_labels_rates for admins that also returns the
+ * from/to/parcel used and the full Shippo response (including on failure).
+ */
+function mnu_labels_diagnose_seller_order( WP_REST_Request $request ): WP_REST_Response {
+    $order_id  = (int) $request->get_param( 'order_id' );
+    $seller_id = (int) $request->get_param( 'seller_id' );
+    $order     = wc_get_order( $order_id );
+    if ( ! $order ) {
+        return new WP_REST_Response( array( 'error' => 'invalid_order' ), 404 );
+    }
+    if ( $seller_id <= 0 ) {
+        foreach ( $order->get_items() as $item ) {
+            $sid = (int) tnm_get_order_item_seller_id( $item );
+            if ( $sid > 0 ) { $seller_id = $sid; break; }
+        }
+    }
+    if ( $seller_id <= 0 ) {
+        return new WP_REST_Response( array( 'error' => 'no_seller' ), 400 );
+    }
+
+    list( $from, $to ) = mnu_labels_order_addresses( $order, $seller_id );
+    $out = array(
+        'order_id'  => $order_id,
+        'seller_id' => $seller_id,
+        'from'      => $from,
+        'to'        => $to,
+    );
+
+    $from_valid = mnu_labels_validate_address( $from, 'ship-from' );
+    if ( is_wp_error( $from_valid ) ) {
+        $out['error']        = 'incomplete_from';
+        $out['error_detail'] = $from_valid->get_error_message();
+        return new WP_REST_Response( $out, 200 );
+    }
+    $to_valid = mnu_labels_validate_address( $to, 'ship-to' );
+    if ( is_wp_error( $to_valid ) ) {
+        $out['error']        = 'incomplete_to';
+        $out['error_detail'] = $to_valid->get_error_message();
+        return new WP_REST_Response( $out, 200 );
+    }
+
+    $parcel = mnu_labels_parcel_from_order( $order, $seller_id );
+    if ( is_wp_error( $parcel ) ) {
+        $out['error']        = 'parcel_error';
+        $out['error_detail'] = $parcel->get_error_message();
+        return new WP_REST_Response( $out, 200 );
+    }
+    $out['parcel'] = $parcel;
+
+    $body = array(
+        'address_from' => $from,
+        'address_to'   => $to,
+        'parcels'      => array( $parcel ),
+        'async'        => false,
+        'metadata'     => sprintf( 'diagnose order %s seller %d', $order->get_order_number(), $seller_id ),
+    );
+    $shipment = mnu_labels_shippo_request( '/shipments/', $body );
+    if ( is_wp_error( $shipment ) ) {
+        $out['error']        = 'shippo_error';
+        $out['error_detail'] = $shipment->get_error_message();
+        $out['shippo']       = $shipment->get_error_data();
+        return new WP_REST_Response( $out, 200 );
+    }
+
+    $out['shipment_id'] = (string) ( $shipment['object_id'] ?? '' );
+    $out['messages']    = isset( $shipment['messages'] ) ? $shipment['messages'] : array();
+    $out['rates']       = array_map(
+        static function ( $r ) {
+            return array(
+                'provider'  => (string) ( $r['provider'] ?? '' ),
+                'service'   => (string) ( $r['servicelevel']['name'] ?? '' ),
+                'token'     => (string) ( $r['servicelevel']['token'] ?? '' ),
+                'amount'    => (string) ( $r['amount'] ?? '' ),
+                'currency'  => (string) ( $r['currency'] ?? '' ),
+                'estimated' => (string) ( $r['estimated_days'] ?? '' ),
+                'state'     => (string) ( $r['object_state'] ?? 'VALID' ),
+            );
+        },
+        isset( $shipment['rates'] ) && is_array( $shipment['rates'] ) ? $shipment['rates'] : array()
+    );
+    return new WP_REST_Response( $out, 200 );
+}
+
 function mnu_labels_auth( WP_REST_Request $request ): bool|WP_Error {
     $user_id = mnu_labels_current_user_id( $request );
     if ( ! $user_id ) {
@@ -233,6 +361,28 @@ function mnu_labels_shippo_error_message( mixed $data ): string {
 }
 
 /**
+ * v3.7.79 — stash the last Shippo error (request + response) so an admin
+ * can inspect what went wrong without server logs. Keeps only the newest.
+ *
+ * @param array<string,mixed>  $body    Request body sent to Shippo.
+ * @param array<string,mixed>|null $data Decoded response, if any.
+ * @param string               $raw     Raw response body, if data was not JSON.
+ * @param array<string,mixed>  $context Free-form context (order_id, seller_id, ...).
+ */
+function mnu_labels_record_last_shippo_error( string $method, string $path, array $body, int $code, mixed $data, string $raw = '', array $context = array() ): void {
+    $entry = array(
+        'ts'       => gmdate( 'c' ),
+        'method'   => $method,
+        'path'     => $path,
+        'code'     => $code,
+        'request'  => $body,
+        'response' => is_array( $data ) ? $data : array( 'raw' => (string) $raw ),
+        'context'  => $context,
+    );
+    update_option( 'mnu_labels_last_shippo_error', $entry, false );
+}
+
+/**
  * Send a request to Shippo while preserving the legacy POST helper signature.
  *
  * @param array<string,mixed> $body
@@ -268,14 +418,24 @@ function mnu_labels_shippo_api_request( string $method, string $path, array $bod
     $code = wp_remote_retrieve_response_code( $response );
 
     if ( $code < 200 || $code >= 300 ) {
-        return new WP_Error(
+        // v3.7.79 — preserve the raw Shippo response body and endpoint
+        // so seller-orders errors can be diagnosed without shell access.
+        // Also stashed to an option (see mnu_labels_record_last_shippo_error)
+        // that the admin diagnose endpoint reads back.
+        $err = new WP_Error(
             'shippo_error',
             mnu_labels_shippo_error_message( $data ),
             array(
                 'status'      => 502,
                 'shippo_code' => $code,
+                'shippo_path' => $path,
+                'shippo_body' => is_array( $data ) ? $data : array( 'raw' => (string) $raw ),
             )
         );
+        if ( function_exists( 'mnu_labels_record_last_shippo_error' ) ) {
+            mnu_labels_record_last_shippo_error( $method, $path, $body, $code, $data, $raw );
+        }
+        return $err;
     }
 
     return is_array( $data )
@@ -475,17 +635,33 @@ function mnu_labels_rates( WP_REST_Request $request ): array|WP_Error {
         return $parcel;
     }
 
-    $shipment = mnu_labels_shippo_request(
-        '/shipments/',
-        array(
-            'address_from' => $from,
-            'address_to'   => $to,
-            'parcels'      => array( $parcel ),
-            'async'        => false,
-            'metadata'     => sprintf( 'MyNest order %s seller %d', $order->get_order_number(), $seller_id ),
-        )
+    $shippo_body = array(
+        'address_from' => $from,
+        'address_to'   => $to,
+        'parcels'      => array( $parcel ),
+        'async'        => false,
+        'metadata'     => sprintf( 'MyNest order %s seller %d', $order->get_order_number(), $seller_id ),
     );
+    $shipment = mnu_labels_shippo_request( '/shipments/', $shippo_body );
     if ( is_wp_error( $shipment ) ) {
+        // v3.7.79 — attach the request payload so the shipper knows exactly
+        // what we sent to Shippo when the response was a 4xx/5xx.
+        $data = $shipment->get_error_data();
+        if ( is_array( $data ) ) {
+            $data['request'] = array(
+                'from'   => $from,
+                'to'     => $to,
+                'parcel' => $parcel,
+            );
+            $shipment->add_data( $data );
+        }
+        mnu_labels_record_last_shippo_error(
+            'POST', '/shipments/', $shippo_body,
+            (int) ( $data['shippo_code'] ?? 0 ),
+            $data['shippo_body'] ?? array(),
+            '',
+            array( 'order_id' => $order->get_id(), 'seller_id' => $seller_id )
+        );
         return $shipment;
     }
 
