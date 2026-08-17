@@ -295,6 +295,8 @@ final class TNM_REST {
             'order'          => 'DESC',
             'tax_query'      => array(
                 array( 'taxonomy' => 'product_visibility', 'field' => 'name', 'terms' => array( 'exclude-from-catalog' ), 'operator' => 'NOT IN' ),
+                // v3.7.75 — hide out-of-stock products from the mobile shop feed.
+                array( 'taxonomy' => 'product_visibility', 'field' => 'name', 'terms' => array( 'outofstock' ), 'operator' => 'NOT IN' ),
             ),
         );
         $category = absint( $request->get_param( 'category' ) );
@@ -319,16 +321,43 @@ final class TNM_REST {
         $items = array();
         foreach ( $query->posts as $post ) {
             $product = wc_get_product( $post->ID );
-            if ( $product && $product->is_visible() ) {
+            if ( $product && $product->is_visible() && ! self::is_out_of_stock( $product ) ) {
                 $items[] = TNM_Marketplace::product_to_array( $product );
             }
         }
         return rest_ensure_response( array( 'items' => $items, 'page' => $page, 'total' => (int) $query->found_posts, 'total_pages' => (int) $query->max_num_pages ) );
     }
 
+    /**
+     * v3.7.75 — buyer-facing OOS check. WC_Product::is_in_stock() covers the
+     * common case (Woo stock_status = 'outofstock'), and we also guard against
+     * manage_stock=true products whose quantity has dropped to zero even when
+     * their status hasn't been resynced by Woo yet.
+     */
+    protected static function is_out_of_stock( $product ): bool {
+        if ( ! $product ) {
+            return true;
+        }
+        if ( method_exists( $product, 'is_in_stock' ) && ! $product->is_in_stock() ) {
+            return true;
+        }
+        if ( method_exists( $product, 'managing_stock' ) && $product->managing_stock() ) {
+            $qty = $product->get_stock_quantity();
+            if ( null !== $qty && (float) $qty <= 0 ) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     public static function product( WP_REST_Request $request ): WP_REST_Response|WP_Error {
         $product = wc_get_product( absint( $request['id'] ) );
         if ( ! $product || 'publish' !== $product->get_status() ) {
+            return tnm_json_error( 'product_not_found', 'Product not found.', 404 );
+        }
+        // v3.7.75 — don't return OOS products to shoppers browsing the app.
+        // Existing deep links still 404 gracefully.
+        if ( self::is_out_of_stock( $product ) ) {
             return tnm_json_error( 'product_not_found', 'Product not found.', 404 );
         }
         return rest_ensure_response( TNM_Marketplace::product_to_array( $product ) );
@@ -376,11 +405,13 @@ final class TNM_REST {
                 'order'          => 'DESC',
                 'tax_query'      => array(
                     array( 'taxonomy' => 'product_visibility', 'field' => 'name', 'terms' => array( 'exclude-from-catalog' ), 'operator' => 'NOT IN' ),
+                    // v3.7.75 — hide OOS from home feed.
+                    array( 'taxonomy' => 'product_visibility', 'field' => 'name', 'terms' => array( 'outofstock' ), 'operator' => 'NOT IN' ),
                 ),
             ) );
             foreach ( $q->posts as $post ) {
                 $product = wc_get_product( $post->ID );
-                if ( $product && $product->is_visible() ) {
+                if ( $product && $product->is_visible() && ! self::is_out_of_stock( $product ) ) {
                     $row = TNM_Marketplace::product_to_array( $product );
                     $row['from_followed'] = true;
                     $items[] = $row;
@@ -400,6 +431,8 @@ final class TNM_REST {
                 'order'          => 'DESC',
                 'tax_query'      => array(
                     array( 'taxonomy' => 'product_visibility', 'field' => 'name', 'terms' => array( 'exclude-from-catalog' ), 'operator' => 'NOT IN' ),
+                    // v3.7.75 — hide OOS from home feed fallback pad.
+                    array( 'taxonomy' => 'product_visibility', 'field' => 'name', 'terms' => array( 'outofstock' ), 'operator' => 'NOT IN' ),
                 ),
             );
             if ( ! empty( $seen ) ) {
@@ -408,7 +441,7 @@ final class TNM_REST {
             $q2 = new WP_Query( $args );
             foreach ( $q2->posts as $post ) {
                 $product = wc_get_product( $post->ID );
-                if ( $product && $product->is_visible() ) {
+                if ( $product && $product->is_visible() && ! self::is_out_of_stock( $product ) ) {
                     $row = TNM_Marketplace::product_to_array( $product );
                     $row['from_followed'] = false;
                     $items[] = $row;

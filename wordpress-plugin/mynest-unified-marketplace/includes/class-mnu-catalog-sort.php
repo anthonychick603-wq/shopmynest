@@ -17,8 +17,17 @@ final class MNU_Catalog_Sort {
 
 	public static function init(): void {
 		add_filter( 'woocommerce_default_catalog_orderby', array( __CLASS__, 'default_orderby' ) );
-		add_filter( 'woocommerce_catalog_orderby', array( __CLASS__, 'catalog_options' ) );
-		add_filter( 'woocommerce_default_catalog_orderby_options', array( __CLASS__, 'catalog_options' ) );
+		// v3.7.75 — do NOT re-register "In stock first" as a Woo catalog option.
+		// Out-of-stock is hidden from listings entirely, so a stock-first option
+		// is redundant and could reveal that OOS items exist.
+		// add_filter( 'woocommerce_catalog_orderby', array( __CLASS__, 'catalog_options' ) );
+		// add_filter( 'woocommerce_default_catalog_orderby_options', array( __CLASS__, 'catalog_options' ) );
+		// v3.7.75 — hide out-of-stock products from the shop / category / tag
+		// archives, the block-based Product Collection, and the classic
+		// [products] shortcode. Mirrors Woo's "Hide out of stock" option but
+		// applied programmatically so it can't be toggled off from settings.
+		add_filter( 'woocommerce_product_query_tax_query', array( __CLASS__, 'exclude_outofstock_tax_query' ), 20, 2 );
+		add_filter( 'woocommerce_shortcode_products_query', array( __CLASS__, 'exclude_outofstock_shortcode_query' ), 20, 3 );
 		add_filter( 'woocommerce_get_catalog_ordering_args', array( __CLASS__, 'ordering_args' ), 10, 3 );
 		add_filter( 'woocommerce_shortcode_products_query', array( __CLASS__, 'shortcode_query' ), 10, 3 );
 		// v3.7.74 — the block-based Product Collection block (used in the
@@ -47,14 +56,17 @@ final class MNU_Catalog_Sort {
 			$atts,
 			'shopmynest_shop_sort'
 		);
-		$current = isset( $_GET['orderby'] ) ? sanitize_key( wp_unslash( $_GET['orderby'] ) ) : self::IN_STOCK_KEY;
+		$current = isset( $_GET['orderby'] ) ? sanitize_key( wp_unslash( $_GET['orderby'] ) ) : 'date';
+		// v3.7.75 — do NOT expose "In stock first" as a user-facing option.
+		// Out-of-stock items are hidden from the shop entirely (see
+		// exclude_outofstock_products / product_query_tax_query below), so
+		// there's nothing to sort against.
 		$options = array(
-			self::IN_STOCK_KEY => __( 'In stock first', 'mynest-unified-marketplace' ),
-			'date'             => __( 'Newest', 'mynest-unified-marketplace' ),
-			'price'            => __( 'Price: low to high', 'mynest-unified-marketplace' ),
-			'price-desc'       => __( 'Price: high to low', 'mynest-unified-marketplace' ),
-			'popularity'       => __( 'Best selling', 'mynest-unified-marketplace' ),
-			'rating'           => __( 'Top rated', 'mynest-unified-marketplace' ),
+			'date'       => __( 'Newest', 'mynest-unified-marketplace' ),
+			'price'      => __( 'Price: low to high', 'mynest-unified-marketplace' ),
+			'price-desc' => __( 'Price: high to low', 'mynest-unified-marketplace' ),
+			'popularity' => __( 'Best selling', 'mynest-unified-marketplace' ),
+			'rating'     => __( 'Top rated', 'mynest-unified-marketplace' ),
 		);
 		$align_class = 'mnu-shop-sort--' . sanitize_html_class( $atts['align'], 'right' );
 
@@ -166,6 +178,11 @@ final class MNU_Catalog_Sort {
 		if ( ! $post_types || ! in_array( 'product', $post_types, true ) ) {
 			return;
 		}
+
+		// v3.7.75 — exclude the outofstock visibility term from every product
+		// query on the front end. Merges with any existing tax_query.
+		self::inject_outofstock_exclusion( $query );
+
 		$requested = isset( $_GET['orderby'] ) ? sanitize_key( wp_unslash( $_GET['orderby'] ) ) : '';
 		if ( '' === $requested ) {
 			// Nothing chosen — default to stock-first only on the primary shop archive
@@ -181,7 +198,8 @@ final class MNU_Catalog_Sort {
 		switch ( $requested ) {
 			case self::IN_STOCK_KEY:
 			case 'menu_order':
-				$query->set( 'mnu_stock_first', true );
+				// v3.7.75 — no longer a user-visible option, but any stale link
+				// bookmarked with ?orderby=in_stock still lands somewhere sensible.
 				$query->set( 'orderby', 'date' );
 				$query->set( 'order', 'DESC' );
 				break;
@@ -214,10 +232,88 @@ final class MNU_Catalog_Sort {
 
 	public static function shortcode_query( $query_args, $attributes, $type ) {
 		if ( empty( $query_args['orderby'] ) || 'menu_order' === $query_args['orderby'] || self::IN_STOCK_KEY === $query_args['orderby'] ) {
-			$query_args['orderby']         = 'date';
-			$query_args['order']           = 'DESC';
-			$query_args['mnu_stock_first'] = true;
+			$query_args['orderby'] = 'date';
+			$query_args['order']   = 'DESC';
 		}
+		return $query_args;
+	}
+
+	/**
+	 * v3.7.75 — append the outofstock visibility term as a NOT IN clause on
+	 * the WP_Query tax_query. Idempotent: only adds the clause once. Called by
+	 * pre_get_posts on all front-end product queries.
+	 */
+	protected static function inject_outofstock_exclusion( WP_Query $query ): void {
+		$tax_query = (array) $query->get( 'tax_query' );
+		foreach ( $tax_query as $clause ) {
+			if ( is_array( $clause )
+				&& isset( $clause['taxonomy'], $clause['terms'] )
+				&& 'product_visibility' === $clause['taxonomy']
+				&& in_array( 'outofstock', (array) $clause['terms'], true )
+				&& isset( $clause['operator'] ) && 'NOT IN' === $clause['operator']
+			) {
+				return;
+			}
+		}
+		$tax_query[] = array(
+			'taxonomy' => 'product_visibility',
+			'field'    => 'name',
+			'terms'    => array( 'outofstock' ),
+			'operator' => 'NOT IN',
+		);
+		$query->set( 'tax_query', $tax_query );
+	}
+
+	/**
+	 * v3.7.75 — add outofstock exclusion to Woo's classic product query
+	 * (used by shop / category loops that go through wc_get_products()).
+	 */
+	public static function exclude_outofstock_tax_query( $tax_query, $query = null ) {
+		if ( ! is_array( $tax_query ) ) {
+			$tax_query = array();
+		}
+		foreach ( $tax_query as $clause ) {
+			if ( is_array( $clause )
+				&& isset( $clause['taxonomy'], $clause['terms'] )
+				&& 'product_visibility' === $clause['taxonomy']
+				&& in_array( 'outofstock', (array) $clause['terms'], true )
+				&& isset( $clause['operator'] ) && 'NOT IN' === $clause['operator']
+			) {
+				return $tax_query;
+			}
+		}
+		$tax_query[] = array(
+			'taxonomy' => 'product_visibility',
+			'field'    => 'name',
+			'terms'    => array( 'outofstock' ),
+			'operator' => 'NOT IN',
+		);
+		return $tax_query;
+	}
+
+	/**
+	 * v3.7.75 — hide out-of-stock from the [products] shortcode too.
+	 */
+	public static function exclude_outofstock_shortcode_query( $query_args, $attributes = array(), $type = '' ) {
+		if ( ! isset( $query_args['tax_query'] ) || ! is_array( $query_args['tax_query'] ) ) {
+			$query_args['tax_query'] = array();
+		}
+		foreach ( $query_args['tax_query'] as $clause ) {
+			if ( is_array( $clause )
+				&& isset( $clause['taxonomy'], $clause['terms'] )
+				&& 'product_visibility' === $clause['taxonomy']
+				&& in_array( 'outofstock', (array) $clause['terms'], true )
+				&& isset( $clause['operator'] ) && 'NOT IN' === $clause['operator']
+			) {
+				return $query_args;
+			}
+		}
+		$query_args['tax_query'][] = array(
+			'taxonomy' => 'product_visibility',
+			'field'    => 'name',
+			'terms'    => array( 'outofstock' ),
+			'operator' => 'NOT IN',
+		);
 		return $query_args;
 	}
 
