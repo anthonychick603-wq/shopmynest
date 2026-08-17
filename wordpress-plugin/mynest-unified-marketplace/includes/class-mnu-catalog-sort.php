@@ -21,6 +21,11 @@ final class MNU_Catalog_Sort {
 		add_filter( 'woocommerce_default_catalog_orderby_options', array( __CLASS__, 'catalog_options' ) );
 		add_filter( 'woocommerce_get_catalog_ordering_args', array( __CLASS__, 'ordering_args' ), 10, 3 );
 		add_filter( 'woocommerce_shortcode_products_query', array( __CLASS__, 'shortcode_query' ), 10, 3 );
+		// v3.7.74 — the block-based Product Collection block (used in the
+		// archive-product FSE template) ignores the classic Woo shortcode
+		// filters. Hook into its query too so the dropdown selection actually
+		// changes the on-screen ordering.
+		add_filter( 'pre_get_posts', array( __CLASS__, 'apply_product_collection_orderby' ), 20 );
 		add_filter( 'posts_clauses', array( __CLASS__, 'apply_in_stock_clauses' ), 20, 2 );
 		add_shortcode( 'shopmynest_shop_sort', array( __CLASS__, 'render_sort_dropdown' ) );
 	}
@@ -143,6 +148,68 @@ final class MNU_Catalog_Sort {
 		$args['meta_key']        = '';
 		$args['mnu_stock_first'] = true;
 		return $args;
+	}
+
+	/**
+	 * v3.7.74 — the Woo Product Collection block calls WP_Query directly
+	 * (bypassing woocommerce_shortcode_products_query and
+	 * woocommerce_get_catalog_ordering_args). When we're on a product archive
+	 * or the front-end Shop page and the shopper picked an orderby via our
+	 * dropdown, translate it onto the WP_Query the block is about to run so
+	 * the on-screen listing matches the selection.
+	 */
+	public static function apply_product_collection_orderby( $query ) {
+		if ( is_admin() || ! ( $query instanceof WP_Query ) ) {
+			return;
+		}
+		$post_types = (array) $query->get( 'post_type' );
+		if ( ! $post_types || ! in_array( 'product', $post_types, true ) ) {
+			return;
+		}
+		$requested = isset( $_GET['orderby'] ) ? sanitize_key( wp_unslash( $_GET['orderby'] ) ) : '';
+		if ( '' === $requested ) {
+			// Nothing chosen — default to stock-first only on the primary shop archive
+			// and category / tag archives, not on unrelated product queries.
+			if ( ( function_exists( 'is_shop' ) && is_shop() ) ||
+			     ( function_exists( 'is_product_taxonomy' ) && is_product_taxonomy() ) ) {
+				$query->set( 'mnu_stock_first', true );
+				$query->set( 'orderby', 'date' );
+				$query->set( 'order', 'DESC' );
+			}
+			return;
+		}
+		switch ( $requested ) {
+			case self::IN_STOCK_KEY:
+			case 'menu_order':
+				$query->set( 'mnu_stock_first', true );
+				$query->set( 'orderby', 'date' );
+				$query->set( 'order', 'DESC' );
+				break;
+			case 'date':
+				$query->set( 'orderby', 'date' );
+				$query->set( 'order', 'DESC' );
+				break;
+			case 'price':
+				$query->set( 'meta_key', '_price' );
+				$query->set( 'orderby', 'meta_value_num' );
+				$query->set( 'order', 'ASC' );
+				break;
+			case 'price-desc':
+				$query->set( 'meta_key', '_price' );
+				$query->set( 'orderby', 'meta_value_num' );
+				$query->set( 'order', 'DESC' );
+				break;
+			case 'popularity':
+				$query->set( 'meta_key', 'total_sales' );
+				$query->set( 'orderby', 'meta_value_num' );
+				$query->set( 'order', 'DESC' );
+				break;
+			case 'rating':
+				$query->set( 'meta_key', '_wc_average_rating' );
+				$query->set( 'orderby', 'meta_value_num' );
+				$query->set( 'order', 'DESC' );
+				break;
+		}
 	}
 
 	public static function shortcode_query( $query_args, $attributes, $type ) {
