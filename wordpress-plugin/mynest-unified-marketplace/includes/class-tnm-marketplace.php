@@ -852,6 +852,11 @@ final class TNM_Marketplace {
             ),
             'items'           => $items,
             'gross'           => $subtotal,
+            // v3.7.88 — alias so mobile clients that read `total` (the seller
+            // dashboard's recent-orders row) render the seller's subtotal
+            // instead of $0.00. Kept alongside `gross`/`net_before_shipping`
+            // so no existing consumer breaks.
+            'total'           => $subtotal,
             'platform_fee'    => $fees,
             'net_before_shipping' => max( 0, $subtotal - $fees ),
             'currency'        => $order->get_currency(),
