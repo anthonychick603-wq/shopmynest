@@ -858,13 +858,25 @@ function mnu_labels_store_transaction( WC_Order $order, int $seller_id, array $t
         $already_finalized = (bool) $order->get_meta( '_mnu_label_finalized_' . $seller_id, true );
         $order->update_meta_data( '_tnm_seller_status_' . $seller_id, 'shipped' );
 
+        // v3.7.81 — postage recovery. Marketplace pays Shippo; we deduct the
+        // postage from the seller’s next payout via a ledger row (status=
+        // available, no hold). Idempotent via _mnu_label_postage_debited_{sid}.
+        if ( ! $order->get_meta( '_mnu_label_postage_debited_' . $seller_id, true ) ) {
+            $postage_amount = (float) $amount;
+            if ( $postage_amount > 0 ) {
+                mnu_labels_write_postage_ledger_row( $order, $seller_id, $postage_amount, $currency, $provider, $service, $transaction_id );
+                $order->update_meta_data( '_mnu_label_postage_debited_' . $seller_id, current_time( 'mysql', true ) );
+            }
+        }
+
         if ( ! $already_finalized ) {
             $order->add_order_note(
                 sprintf(
-                    '%s purchased a %s%s shipping label. Tracking: %s',
+                    '%s purchased a %s%s shipping label ($%s deducted from next payout). Tracking: %s',
                     tnm_seller_display_name( $seller_id ),
                     $provider ? $provider . ' ' : '',
                     $service,
+                    $amount ?: '0.00',
                     $tracking ?: 'pending'
                 )
             );
@@ -901,6 +913,51 @@ function mnu_labels_store_transaction( WC_Order $order, int $seller_id, array $t
 
     $order->save();
     return mnu_labels_payload( $order, $seller_id );
+}
+
+/**
+ * v3.7.81 — write a single postage-debit row into the marketplace ledger
+ * so the amount the marketplace paid Shippo is netted off the seller’s
+ * next Stripe Connect transfer. Idempotent via the unique key
+ * (order_id, order_item_id, type) with order_item_id=0, type='postage'.
+ *
+ * The row is written status='available' with available_at=NOW so it
+ * participates in the very next transfer for this order.
+ */
+function mnu_labels_write_postage_ledger_row( WC_Order $order, int $seller_id, float $amount, string $currency, string $provider, string $service, string $transaction_id ): void {
+    if ( $seller_id <= 0 || $amount <= 0 || ! function_exists( 'tnm_table' ) ) {
+        return;
+    }
+    global $wpdb;
+    $now  = current_time( 'mysql', true );
+    $note = sprintf(
+        'Postage deducted: %s %s (Shippo txn %s).',
+        $provider ?: 'carrier',
+        $service ?: 'label',
+        $transaction_id ?: 'unknown'
+    );
+    // Negative net so SUM(net) in create_seller_transfers naturally nets it
+    // off the seller’s earning rows for the same order.
+    $wpdb->query(
+        $wpdb->prepare(
+            'INSERT IGNORE INTO ' . tnm_table( 'ledger' ) . ' (seller_id,order_id,order_item_id,type,gross,platform_fee,tax,shipping,net,currency,status,available_at,payout_id,note,created_at,updated_at) VALUES (%d,%d,%d,%s,%f,%f,%f,%f,%f,%s,%s,%s,0,%s,%s,%s)',
+            $seller_id,
+            $order->get_id(),
+            0,
+            'postage',
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            -1 * $amount,
+            $currency ?: $order->get_currency(),
+            'available',
+            $now,
+            $note,
+            $now,
+            $now
+        )
+    );
 }
 
 function mnu_labels_buy( WP_REST_Request $request ): array|WP_Error {

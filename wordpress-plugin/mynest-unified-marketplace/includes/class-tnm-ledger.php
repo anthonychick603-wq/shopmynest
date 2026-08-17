@@ -200,9 +200,12 @@ final class TNM_Ledger {
             return;
         }
         global $wpdb;
+        // v3.7.81 — include postage-debit rows so the marketplace recovers
+        // Shippo postage from the seller’s payout for the same order. Postage
+        // rows have net<0; grouping by seller lets SUM(net) do the netting.
         $rows = $wpdb->get_results(
             $wpdb->prepare(
-                'SELECT id, seller_id, net, currency FROM ' . tnm_table( 'ledger' ) . " WHERE order_id=%d AND type='earning' AND status='available' AND stripe_transfer_id='' AND net>0",
+                'SELECT id, seller_id, net, currency FROM ' . tnm_table( 'ledger' ) . " WHERE order_id=%d AND type IN ('earning','postage') AND status='available' AND stripe_transfer_id=''",
                 $order_id
             )
         );
@@ -235,6 +238,9 @@ final class TNM_Ledger {
             }
             $cents = (int) round( $group['amount'] * 100 );
             if ( $cents <= 0 ) {
+                // v3.7.81 — seller net is <= 0 after subtracting postage.
+                // Leave the rows in place (do not stamp stripe_transfer_id)
+                // so a later, larger payout can absorb the debt.
                 continue;
             }
             $transfer = mnu_native_stripe_request(
