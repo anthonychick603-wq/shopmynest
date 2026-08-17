@@ -162,6 +162,73 @@ final class MNU_Seller_Attribution {
 					),
 				)
 			);
+
+			// v3.7.84 — admin-only seller storefront meta cleanup. Sets
+			// (or clears) tnm_store_name / mynest_store_name /
+			// _mynest_shop_name / billing_company for a seller so the
+			// listing surfaces the intended shop label instead of a
+			// stale test string. Pass store_name='' to clear all four
+			// keys and fall back to the nickname/display-name chain.
+			register_rest_route(
+				'mnu/v1',
+				'/admin/seller_store_name',
+				array(
+					'methods'             => 'POST',
+					'callback'            => array( __CLASS__, 'rest_seller_store_name' ),
+					'permission_callback' => static function () {
+						return current_user_can( self::CAP );
+					},
+					'args'                => array(
+						'seller_id'  => array( 'required' => true, 'type' => 'integer' ),
+						'store_name' => array( 'required' => true, 'type' => 'string'  ),
+					),
+				)
+			);
+	}
+
+	/**
+	 * v3.7.84 — rewrite a seller's storefront label. Writes the same
+	 * value to every meta key the helper chain in helpers.php reads so
+	 * the label is stable regardless of which key was seeded first. If
+	 * store_name is empty, delete all four keys and let the fallback
+	 * chain (nickname → display_name) take over.
+	 */
+	public static function rest_seller_store_name( WP_REST_Request $req ): WP_REST_Response|WP_Error {
+		$seller_id  = absint( $req->get_param( 'seller_id' ) );
+		$store_name = sanitize_text_field( (string) $req->get_param( 'store_name' ) );
+		if ( $seller_id <= 0 ) {
+			return new WP_Error( 'invalid_seller', 'seller_id is required.', array( 'status' => 422 ) );
+		}
+		$user = get_userdata( $seller_id );
+		if ( ! $user ) {
+			return new WP_Error( 'seller_not_found', 'Seller not found.', array( 'status' => 404 ) );
+		}
+		$keys   = array( 'tnm_store_name', 'mynest_store_name', '_mynest_shop_name', 'billing_company' );
+		$before = array();
+		foreach ( $keys as $k ) {
+			$before[ $k ] = (string) get_user_meta( $seller_id, $k, true );
+		}
+		if ( $store_name === '' ) {
+			foreach ( $keys as $k ) {
+				delete_user_meta( $seller_id, $k );
+			}
+		} else {
+			foreach ( $keys as $k ) {
+				update_user_meta( $seller_id, $k, $store_name );
+			}
+		}
+		$after = array();
+		foreach ( $keys as $k ) {
+			$after[ $k ] = (string) get_user_meta( $seller_id, $k, true );
+		}
+		return rest_ensure_response( array(
+			'ok'        => true,
+			'seller_id' => $seller_id,
+			'username'  => $user->user_login,
+			'resolved'  => tnm_seller_display_name( $seller_id ),
+			'before'    => $before,
+			'after'     => $after,
+		) );
 	}
 
 	/**
