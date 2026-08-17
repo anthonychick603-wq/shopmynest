@@ -239,11 +239,16 @@ final class MNU_Install {
             KEY created_at (created_at)
         ) $charset;";
 
+        // v3.7.86 — photo_attachments carries a JSON array of WP attachment
+        // IDs owned by the sender, e.g. "[123,124,125]". Rendered by the
+        // client via signed URLs from /messages/photo/{id}. Kept nullable so
+        // existing rows (and text-only messages) don't need backfill.
         $queries[] = 'CREATE TABLE ' . tnm_table( 'messages' ) . " (
             id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
             sender_id bigint(20) unsigned NOT NULL,
             recipient_id bigint(20) unsigned NOT NULL,
             message text NOT NULL,
+            photo_attachments text NULL,
             is_read tinyint(1) NOT NULL DEFAULT 0,
             created_at datetime NOT NULL,
             PRIMARY KEY  (id),

@@ -38,6 +38,12 @@ final class TNM_REST {
         register_rest_route( self::NS, '/notifications/read', array( 'methods' => WP_REST_Server::CREATABLE, 'callback' => array( __CLASS__, 'notifications_read' ), 'permission_callback' => array( __CLASS__, 'logged_in' ) ) );
         register_rest_route( self::NS, '/messages', array( array( 'methods' => WP_REST_Server::READABLE, 'callback' => array( __CLASS__, 'conversations' ), 'permission_callback' => array( __CLASS__, 'logged_in' ) ), array( 'methods' => WP_REST_Server::CREATABLE, 'callback' => array( __CLASS__, 'send_message' ), 'permission_callback' => array( __CLASS__, 'logged_in' ) ) ) );
         register_rest_route( self::NS, '/messages/(?P<user_id>\d+)', array( 'methods' => WP_REST_Server::READABLE, 'callback' => array( __CLASS__, 'conversation' ), 'permission_callback' => array( __CLASS__, 'logged_in' ) ) );
+        // v3.7.86 — photo attachments in DMs. Upload is multipart; photo
+        // fetch is unauth (uses HMAC-signed URL). Report requires login and
+        // participant status.
+        register_rest_route( self::NS, '/messages/photo_upload', array( 'methods' => WP_REST_Server::CREATABLE, 'callback' => array( __CLASS__, 'message_photo_upload' ), 'permission_callback' => array( __CLASS__, 'logged_in' ) ) );
+        register_rest_route( self::NS, '/messages/photo/(?P<id>\d+)', array( 'methods' => WP_REST_Server::READABLE, 'callback' => array( __CLASS__, 'message_photo_get' ), 'permission_callback' => '__return_true' ) );
+        register_rest_route( self::NS, '/messages/(?P<id>\d+)/report_photo', array( 'methods' => WP_REST_Server::CREATABLE, 'callback' => array( __CLASS__, 'message_photo_report' ), 'permission_callback' => array( __CLASS__, 'logged_in' ) ) );
 
         register_rest_route( self::NS, '/seller/application', array( 'methods' => WP_REST_Server::CREATABLE, 'callback' => array( __CLASS__, 'application' ), 'permission_callback' => array( __CLASS__, 'logged_in' ) ) );
         register_rest_route( self::NS, '/seller/dashboard', array( 'methods' => WP_REST_Server::READABLE, 'callback' => array( __CLASS__, 'seller_dashboard' ), 'permission_callback' => array( __CLASS__, 'seller' ) ) );
@@ -572,8 +578,134 @@ final class TNM_REST {
     }
 
     public static function send_message( WP_REST_Request $request ): WP_REST_Response|WP_Error {
-        $message_id = TNM_Social::send_message( get_current_user_id(), absint( $request->get_param( 'recipient_id' ) ), (string) $request->get_param( 'message' ), absint( $request->get_param( 'product_id' ) ) );
+        // v3.7.86 — photo_ids arrives as either a JSON string or a real array
+        // depending on transport (some clients still send form-encoded), so
+        // normalize to an int array before handing off to TNM_Social.
+        $raw = $request->get_param( 'photo_ids' );
+        if ( is_string( $raw ) ) {
+            $decoded = json_decode( $raw, true );
+            $raw = is_array( $decoded ) ? $decoded : array();
+        }
+        $photo_ids = is_array( $raw ) ? $raw : array();
+        $message_id = TNM_Social::send_message(
+            get_current_user_id(),
+            absint( $request->get_param( 'recipient_id' ) ),
+            (string) $request->get_param( 'message' ),
+            absint( $request->get_param( 'product_id' ) ),
+            $photo_ids
+        );
         return is_wp_error( $message_id ) ? $message_id : rest_ensure_response( array( 'success' => true, 'message_id' => $message_id ) );
+    }
+
+    /**
+     * v3.7.86 — accept a multipart upload from the message composer. The
+     * client sends a single field "file" (per call, one photo). We validate
+     * mime + size, run it through wp_handle_upload, create a private WP
+     * attachment tagged as a message photo, and return the attachment ID for
+     * later send_message() attach.
+     */
+    public static function message_photo_upload( WP_REST_Request $request ): WP_REST_Response|WP_Error {
+        $sender_id    = get_current_user_id();
+        $recipient_id = absint( $request->get_param( 'recipient_id' ) );
+        if ( ! $recipient_id || ! get_userdata( $recipient_id ) || $recipient_id === $sender_id ) {
+            return tnm_json_error( 'invalid_recipient', 'Choose a valid recipient.', 422 );
+        }
+        $files = $request->get_file_params();
+        if ( empty( $files['file'] ) ) {
+            return tnm_json_error( 'no_file', 'No photo was uploaded.', 422 );
+        }
+        $file  = $files['file'];
+        $mime  = strtolower( (string) ( $file['type'] ?? '' ) );
+        $size  = (int) ( $file['size'] ?? 0 );
+        if ( ! in_array( $mime, array( 'image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/heic' ), true ) ) {
+            return tnm_json_error( 'invalid_type', 'Only JPG, PNG, WEBP or HEIC photos are supported.', 415 );
+        }
+        if ( $size <= 0 || $size > 8 * 1024 * 1024 ) {
+            return tnm_json_error( 'file_too_large', 'Photos must be 8 MB or smaller.', 413 );
+        }
+        // Rate limit — 20 photo uploads per hour per sender to blunt abuse.
+        global $wpdb;
+        if ( ! tnm_is_admin_or_manager( $sender_id ) ) {
+            $recent = (int) $wpdb->get_var( $wpdb->prepare(
+                "SELECT COUNT(*) FROM {$wpdb->posts} p INNER JOIN {$wpdb->postmeta} m ON p.ID=m.post_id WHERE p.post_author=%d AND p.post_type='attachment' AND m.meta_key='_mnu_message_photo' AND p.post_date_gmt >= %s",
+                $sender_id,
+                gmdate( 'Y-m-d H:i:s', time() - HOUR_IN_SECONDS )
+            ) );
+            if ( $recent >= 20 ) {
+                return tnm_json_error( 'rate_limited', 'You have uploaded too many photos in the last hour.', 429 );
+            }
+        }
+        require_once ABSPATH . 'wp-admin/includes/file.php';
+        $upload = wp_handle_upload( $file, array( 'test_form' => false, 'mimes' => array(
+            'jpg|jpeg|jpe' => 'image/jpeg',
+            'png'          => 'image/png',
+            'webp'         => 'image/webp',
+            'heic'         => 'image/heic',
+        ) ) );
+        if ( isset( $upload['error'] ) ) {
+            return tnm_json_error( 'upload_failed', (string) $upload['error'], 500 );
+        }
+        $attach_id = TNM_Social::create_message_photo_attachment( $upload, $sender_id, $recipient_id );
+        if ( is_wp_error( $attach_id ) ) { return $attach_id; }
+        $meta = wp_get_attachment_metadata( $attach_id );
+        return rest_ensure_response( array(
+            'attachment_id' => (int) $attach_id,
+            'w'             => (int) ( $meta['width']  ?? 0 ),
+            'h'             => (int) ( $meta['height'] ?? 0 ),
+            'mime'          => $upload['type'],
+            'preview_url'   => TNM_Social::signed_photo_url( (int) $attach_id, $sender_id ),
+        ) );
+    }
+
+    /**
+     * v3.7.86 — stream a message photo to the caller. Uses HMAC signature
+     * instead of cookie auth so the URL works from any client (including the
+     * expo-image cache) without needing to forward the app-password header.
+     */
+    public static function message_photo_get( WP_REST_Request $request ) {
+        $attachment_id = absint( $request->get_param( 'id' ) );
+        $viewer_id     = absint( $request->get_param( 'u' ) );
+        $expires       = absint( $request->get_param( 'e' ) );
+        $sig           = (string) $request->get_param( 's' );
+        if ( ! $attachment_id || ! $viewer_id || ! $expires || ! $sig ) {
+            return tnm_json_error( 'bad_signature', 'Missing signature parameters.', 400 );
+        }
+        if ( ! TNM_Social::verify_signed_photo( $attachment_id, $viewer_id, $expires, $sig ) ) {
+            return tnm_json_error( 'bad_signature', 'Invalid or expired photo URL.', 403 );
+        }
+        // Extra guardrail: the signature already binds the viewer, but we
+        // still verify the viewer is actually a participant in case a stale
+        // URL is being replayed after a message deletion, etc.
+        $sender_id    = (int) get_post_meta( $attachment_id, '_mnu_sender_id', true );
+        $recipient_id = (int) get_post_meta( $attachment_id, '_mnu_recipient_id', true );
+        if ( ! $sender_id ) {
+            return tnm_json_error( 'not_found', 'Photo not found.', 404 );
+        }
+        if ( $viewer_id !== $sender_id && $viewer_id !== $recipient_id && ! user_can( $viewer_id, 'manage_woocommerce' ) ) {
+            return tnm_json_error( 'forbidden', 'You cannot view this photo.', 403 );
+        }
+        if ( get_post_meta( $attachment_id, '_mnu_photo_hidden', true ) === '1' && ! user_can( $viewer_id, 'manage_woocommerce' ) ) {
+            return tnm_json_error( 'hidden', 'This photo was hidden by a report.', 410 );
+        }
+        $path = get_attached_file( $attachment_id );
+        if ( ! $path || ! file_exists( $path ) ) {
+            return tnm_json_error( 'not_found', 'Photo file missing.', 404 );
+        }
+        $mime = (string) get_post_mime_type( $attachment_id );
+        nocache_headers();
+        header( 'Content-Type: ' . ( $mime ?: 'image/jpeg' ) );
+        header( 'Content-Length: ' . filesize( $path ) );
+        header( 'X-Content-Type-Options: nosniff' );
+        header( 'Cache-Control: private, max-age=86400' );
+        readfile( $path );
+        exit;
+    }
+
+    public static function message_photo_report( WP_REST_Request $request ): WP_REST_Response|WP_Error {
+        $attachment_id = absint( $request->get_param( 'attachment_id' ) );
+        $reason        = (string) $request->get_param( 'reason' );
+        $result        = TNM_Social::report_message_photo( get_current_user_id(), $attachment_id, $reason );
+        return is_wp_error( $result ) ? $result : rest_ensure_response( $result );
     }
 
     public static function application( WP_REST_Request $request ): WP_REST_Response|WP_Error {

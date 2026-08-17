@@ -117,21 +117,62 @@ final class MNU_Admin_Tables {
 				'search_cols' => array( 'message' ),
 				'search_ids'  => array( 'sender_id', 'recipient_id' ),
 				'columns'     => array(
-					'id'           => 'ID',
-					'sender_id'    => 'From',
-					'recipient_id' => 'To',
-					'message'      => 'Message',
-					'is_read'      => 'Read',
-					'created_at'   => 'When',
+					'id'                => 'ID',
+					'sender_id'         => 'From',
+					'recipient_id'      => 'To',
+					'message'           => 'Message',
+					'photo_attachments' => 'Photos',
+					'is_read'           => 'Read',
+					'created_at'        => 'When',
 				),
 				'renderers'   => array(
-					'sender_id'    => array( __CLASS__, 'render_user' ),
-					'recipient_id' => array( __CLASS__, 'render_user' ),
-					'is_read'      => array( __CLASS__, 'render_bool' ),
-					'message'      => array( __CLASS__, 'render_truncated' ),
+					'sender_id'         => array( __CLASS__, 'render_user' ),
+					'recipient_id'      => array( __CLASS__, 'render_user' ),
+					'is_read'           => array( __CLASS__, 'render_bool' ),
+					'message'           => array( __CLASS__, 'render_truncated' ),
+					'photo_attachments' => array( __CLASS__, 'render_message_photos' ),
 				),
 			)
 		);
+	}
+
+	/**
+	 * v3.7.86 — render message photo attachments as small square thumbnails
+	 * in the admin messages table. Each thumb links to the full attachment
+	 * so an admin can click through to investigate a report.
+	 */
+	public static function render_message_photos( $value, array $row ): string {
+		$json = (string) $value;
+		if ( $json === '' || $json === '[]' ) {
+			return '<span style="color:#999">—</span>';
+		}
+		$ids = json_decode( $json, true );
+		if ( ! is_array( $ids ) || empty( $ids ) ) {
+			return '<span style="color:#999">—</span>';
+		}
+		$out = '<div style="display:flex;gap:4px;flex-wrap:wrap;">';
+		foreach ( $ids as $aid ) {
+			$aid = absint( $aid );
+			if ( $aid <= 0 ) { continue; }
+			$src    = wp_get_attachment_image_src( $aid, array( 48, 48 ) );
+			$full   = wp_get_attachment_url( $aid );
+			$hidden = get_post_meta( $aid, '_mnu_photo_hidden', true ) === '1';
+			$border = $hidden ? '2px solid #c00' : '1px solid #ccc';
+			$title  = $hidden ? 'Reported — hidden. Click to review.' : 'Click to open full-size.';
+			if ( $src && ! empty( $src[0] ) ) {
+				$out .= sprintf(
+					'<a href="%s" target="_blank" rel="noopener" title="%s"><img src="%s" width="48" height="48" style="object-fit:cover;border-radius:4px;border:%s" /></a>',
+					esc_url( $full ),
+					esc_attr( $title ),
+					esc_url( $src[0] ),
+					esc_attr( $border )
+				);
+			} else {
+				$out .= sprintf( '<a href="%s" target="_blank">#%d</a>', esc_url( admin_url( 'post.php?post=' . $aid . '&action=edit' ) ), $aid );
+			}
+		}
+		$out .= '</div>';
+		return $out;
 	}
 
 	public static function screen_reviews(): void {

@@ -305,16 +305,33 @@ final class TNM_Social {
         return (int) $wpdb->update( tnm_table( 'notifications' ), array( 'is_read' => 1 ), array( 'user_id' => $user_id, 'is_read' => 0 ), array( '%d' ), array( '%d', '%d' ) );
     }
 
-    public static function send_message( int $sender_id, int $recipient_id, string $message, int $product_id = 0 ): int|WP_Error {
+    public static function send_message( int $sender_id, int $recipient_id, string $message, int $product_id = 0, array $photo_ids = array() ): int|WP_Error {
         global $wpdb;
         $message = sanitize_textarea_field( $message );
+        // v3.7.86 — photo_ids are WP attachment IDs uploaded via
+        // /messages/photo_upload. Sanitize hard: cap at 5, keep ints only,
+        // dedupe, and confirm each attachment is (a) owned by the sender and
+        // (b) actually marked as a messages photo. This blocks a caller from
+        // attaching arbitrary media library items they don't own.
+        $photo_ids = array_values( array_unique( array_filter( array_map( 'absint', $photo_ids ) ) ) );
+        if ( count( $photo_ids ) > 5 ) {
+            $photo_ids = array_slice( $photo_ids, 0, 5 );
+        }
+        $valid_photo_ids = array();
+        foreach ( $photo_ids as $aid ) {
+            $author = (int) get_post_field( 'post_author', $aid );
+            $tag    = (string) get_post_meta( $aid, '_mnu_message_photo', true );
+            if ( $author === $sender_id && $tag === '1' ) {
+                $valid_photo_ids[] = $aid;
+            }
+        }
         if ( ! $sender_id ) {
             return tnm_json_error( 'login_required', 'You must be logged in to send a message.', 401 );
         }
         if ( ! $recipient_id || ! get_userdata( $recipient_id ) || $sender_id === $recipient_id ) {
             return tnm_json_error( 'invalid_recipient', 'Choose a valid recipient.', 422 );
         }
-        if ( ! $message ) {
+        if ( ! $message && empty( $valid_photo_ids ) ) {
             return tnm_json_error( 'empty_message', 'Message cannot be empty.', 422 );
         }
         if ( strlen( $message ) > 5000 ) {
@@ -351,19 +368,31 @@ final class TNM_Social {
                 }
             }
         }
+        $photo_json = ! empty( $valid_photo_ids ) ? wp_json_encode( $valid_photo_ids ) : null;
         $wpdb->insert(
             tnm_table( 'messages' ),
             array(
-                'sender_id'    => $sender_id,
-                'recipient_id' => $recipient_id,
-                'message'      => $message,
-                'is_read'      => 0,
-                'created_at'   => current_time( 'mysql', true ),
+                'sender_id'         => $sender_id,
+                'recipient_id'      => $recipient_id,
+                'message'           => $message,
+                'photo_attachments' => $photo_json,
+                'is_read'           => 0,
+                'created_at'        => current_time( 'mysql', true ),
             ),
-            array( '%d', '%d', '%s', '%d', '%s' )
+            array( '%d', '%d', '%s', '%s', '%d', '%s' )
         );
         $message_id = (int) $wpdb->insert_id;
-        tnm_notify( $recipient_id, $sender_id, 'new_message', 'New message from ' . get_the_author_meta( 'display_name', $sender_id ), wp_trim_words( $message, 15 ), $message_id, 'message' );
+        // v3.7.86 — link each attachment to its parent message so admins can
+        // trace a photo back to the thread it was sent in without having to
+        // JOIN the messages table on JSON.
+        foreach ( $valid_photo_ids as $aid ) {
+            update_post_meta( $aid, '_mnu_message_id', $message_id );
+            update_post_meta( $aid, '_mnu_recipient_id', $recipient_id );
+        }
+        // Notification body reflects photo-only sends so the push preview is
+        // meaningful even when there's no accompanying text.
+        $notif_body = $message !== '' ? wp_trim_words( $message, 15 ) : sprintf( _n( '%d photo', '%d photos', count( $valid_photo_ids ), 'mynest' ), count( $valid_photo_ids ) );
+        tnm_notify( $recipient_id, $sender_id, 'new_message', 'New message from ' . get_the_author_meta( 'display_name', $sender_id ), $notif_body, $message_id, 'message' );
         // Fire the email notification for the recipient (throttled to at most
         // one email per 15 minutes per sender/recipient pair so a rapid flurry
         // collapses into a single alert).
@@ -472,9 +501,123 @@ final class TNM_Social {
                 'message'      => $row['message'],
                 'is_read'      => (bool) $row['is_read'],
                 'created_at'   => $row['created_at'],
+                // v3.7.86 — hydrate photo attachments so the client can render
+                // the grid without a second round-trip. Each entry carries a
+                // 24h signed URL scoped to the viewer.
+                'photos'       => self::hydrate_message_photos( isset( $row['photo_attachments'] ) ? (string) $row['photo_attachments'] : '', $user_id ),
             ),
             $rows
         );
+    }
+
+    /**
+     * v3.7.86 — turn a message row's photo_attachments JSON into an array of
+     * viewer-facing photo objects with a fresh signed URL. Hidden-by-report
+     * attachments are returned with hidden=true and no URL so the client can
+     * render a placeholder instead of a broken image.
+     *
+     * @return array<int,array{id:int,url:string,w:int,h:int,mime:string,hidden:bool}>
+     */
+    public static function hydrate_message_photos( string $json, int $viewer_id ): array {
+        if ( $json === '' ) { return array(); }
+        $ids = json_decode( $json, true );
+        if ( ! is_array( $ids ) ) { return array(); }
+        $out = array();
+        foreach ( $ids as $aid ) {
+            $aid = absint( $aid );
+            if ( $aid <= 0 ) { continue; }
+            $meta   = wp_get_attachment_metadata( $aid );
+            $mime   = (string) get_post_mime_type( $aid );
+            $hidden = get_post_meta( $aid, '_mnu_photo_hidden', true ) === '1';
+            $out[] = array(
+                'id'     => $aid,
+                'url'    => $hidden ? '' : self::signed_photo_url( $aid, $viewer_id ),
+                'w'      => (int) ( $meta['width']  ?? 0 ),
+                'h'      => (int) ( $meta['height'] ?? 0 ),
+                'mime'   => $mime ?: 'image/jpeg',
+                'hidden' => $hidden,
+            );
+        }
+        return $out;
+    }
+
+    /**
+     * v3.7.86 — build a 24h HMAC-signed URL to the photo endpoint. The
+     * signature binds the attachment ID + viewer ID + expiry so a leaked URL
+     * can't be used by anyone else and expires on its own. The signing key
+     * is AUTH_KEY so it rotates only if the site's WP salts rotate.
+     */
+    public static function signed_photo_url( int $attachment_id, int $viewer_id ): string {
+        $expires = time() + DAY_IN_SECONDS;
+        $payload = $attachment_id . '|' . $viewer_id . '|' . $expires;
+        $sig     = hash_hmac( 'sha256', $payload, defined( 'AUTH_KEY' ) ? AUTH_KEY : 'mnu-fallback' );
+        return rest_url( 'the-nest/v1/messages/photo/' . $attachment_id ) . '?u=' . $viewer_id . '&e=' . $expires . '&s=' . $sig;
+    }
+
+    /**
+     * v3.7.86 — verify a signed photo URL. Returns true iff the signature is
+     * valid, the URL hasn't expired, and the caller matches the viewer that
+     * the signature was minted for. This lets the endpoint be public (no
+     * cookie auth required) while still gating access to the two thread
+     * participants.
+     */
+    public static function verify_signed_photo( int $attachment_id, int $claimed_viewer_id, int $expires, string $sig ): bool {
+        if ( $expires < time() ) { return false; }
+        $payload  = $attachment_id . '|' . $claimed_viewer_id . '|' . $expires;
+        $expected = hash_hmac( 'sha256', $payload, defined( 'AUTH_KEY' ) ? AUTH_KEY : 'mnu-fallback' );
+        return hash_equals( $expected, $sig );
+    }
+
+    /**
+     * v3.7.86 — persist an uploaded message photo. Runs after wp_handle_upload
+     * has moved the file into place. Creates a WP attachment owned by the
+     * uploader, tags it as a message photo (both for cleanup and to gate
+     * send_message() attach requests), and generates metadata so the client
+     * has width/height for grid layout.
+     */
+    public static function create_message_photo_attachment( array $upload, int $sender_id, int $recipient_id ): int|WP_Error {
+        require_once ABSPATH . 'wp-admin/includes/image.php';
+        require_once ABSPATH . 'wp-admin/includes/file.php';
+        require_once ABSPATH . 'wp-admin/includes/media.php';
+        $attachment = array(
+            'post_mime_type' => $upload['type'],
+            'post_title'     => 'Message photo',
+            'post_content'   => '',
+            'post_status'    => 'private',
+            'post_author'    => $sender_id,
+        );
+        $attach_id = wp_insert_attachment( $attachment, $upload['file'] );
+        if ( is_wp_error( $attach_id ) ) { return $attach_id; }
+        $metadata = wp_generate_attachment_metadata( $attach_id, $upload['file'] );
+        wp_update_attachment_metadata( $attach_id, $metadata );
+        update_post_meta( $attach_id, '_mnu_message_photo', '1' );
+        update_post_meta( $attach_id, '_mnu_sender_id', $sender_id );
+        update_post_meta( $attach_id, '_mnu_recipient_id', $recipient_id );
+        return (int) $attach_id;
+    }
+
+    /**
+     * v3.7.86 — flag a photo as hidden by report. Only participants of the
+     * message thread (and admins) can report. Reports write a note to the
+     * ops feed so admins can review or restore.
+     */
+    public static function report_message_photo( int $reporter_id, int $attachment_id, string $reason ): array|WP_Error {
+        $reason = sanitize_textarea_field( $reason );
+        if ( strlen( $reason ) > 500 ) { $reason = substr( $reason, 0, 500 ); }
+        $sender_id    = (int) get_post_meta( $attachment_id, '_mnu_sender_id', true );
+        $recipient_id = (int) get_post_meta( $attachment_id, '_mnu_recipient_id', true );
+        $is_message   = get_post_meta( $attachment_id, '_mnu_message_photo', true ) === '1';
+        if ( ! $is_message || ! $sender_id ) {
+            return tnm_json_error( 'invalid_photo', 'That photo is not a message attachment.', 404 );
+        }
+        if ( $reporter_id !== $sender_id && $reporter_id !== $recipient_id && ! tnm_is_admin_or_manager( $reporter_id ) ) {
+            return tnm_json_error( 'not_participant', 'You cannot report a photo you did not receive.', 403 );
+        }
+        update_post_meta( $attachment_id, '_mnu_photo_hidden', '1' );
+        update_post_meta( $attachment_id, '_mnu_photo_report_reason', $reason );
+        update_post_meta( $attachment_id, '_mnu_photo_reported_by', $reporter_id );
+        update_post_meta( $attachment_id, '_mnu_photo_reported_at', current_time( 'mysql', true ) );
+        return array( 'ok' => true, 'attachment_id' => $attachment_id, 'hidden' => true );
     }
 
     public static function can_review( int $reviewer_id, int $seller_id, int $order_id = 0 ): int|false {
