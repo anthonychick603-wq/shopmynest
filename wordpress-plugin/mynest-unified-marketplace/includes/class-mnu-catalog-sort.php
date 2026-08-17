@@ -22,6 +22,77 @@ final class MNU_Catalog_Sort {
 		add_filter( 'woocommerce_get_catalog_ordering_args', array( __CLASS__, 'ordering_args' ), 10, 3 );
 		add_filter( 'woocommerce_shortcode_products_query', array( __CLASS__, 'shortcode_query' ), 10, 3 );
 		add_filter( 'posts_clauses', array( __CLASS__, 'apply_in_stock_clauses' ), 20, 2 );
+		add_shortcode( 'shopmynest_shop_sort', array( __CLASS__, 'render_sort_dropdown' ) );
+	}
+
+	/**
+	 * Render a lightweight sort dropdown for the Shop landing page (and any
+	 * other page that lists the [products] shortcode). Updates ?orderby=
+	 * without JS by using a native <form> that submits GET; falls back to
+	 * a tiny inline handler for instant client-side navigation. We deliberately
+	 * avoid enqueueing a script so this works everywhere including block
+	 * template contexts.
+	 */
+	public static function render_sort_dropdown( $atts = array() ): string {
+		$atts = shortcode_atts(
+			array(
+				'align' => 'right', // 'left' | 'right' | 'center'
+				'label' => __( 'Sort', 'mynest-unified-marketplace' ),
+			),
+			$atts,
+			'shopmynest_shop_sort'
+		);
+		$current = isset( $_GET['orderby'] ) ? sanitize_key( wp_unslash( $_GET['orderby'] ) ) : self::IN_STOCK_KEY;
+		$options = array(
+			self::IN_STOCK_KEY => __( 'In stock first', 'mynest-unified-marketplace' ),
+			'date'             => __( 'Newest', 'mynest-unified-marketplace' ),
+			'price'            => __( 'Price: low to high', 'mynest-unified-marketplace' ),
+			'price-desc'       => __( 'Price: high to low', 'mynest-unified-marketplace' ),
+			'popularity'       => __( 'Best selling', 'mynest-unified-marketplace' ),
+			'rating'           => __( 'Top rated', 'mynest-unified-marketplace' ),
+		);
+		$align_class = 'mnu-shop-sort--' . sanitize_html_class( $atts['align'], 'right' );
+
+		ob_start();
+		?>
+		<form class="mnu-shop-sort <?php echo esc_attr( $align_class ); ?>" method="get" role="search" aria-label="<?php echo esc_attr( $atts['label'] ); ?>">
+			<?php
+			// Preserve every other query parameter so pagination + filters survive.
+			foreach ( (array) $_GET as $key => $value ) {
+				if ( 'orderby' === $key || 'paged' === $key ) {
+					continue;
+				}
+				if ( is_array( $value ) ) {
+					foreach ( $value as $v ) {
+						echo '<input type="hidden" name="' . esc_attr( $key . '[]' ) . '" value="' . esc_attr( wp_unslash( $v ) ) . '">';
+					}
+				} else {
+					echo '<input type="hidden" name="' . esc_attr( $key ) . '" value="' . esc_attr( wp_unslash( $value ) ) . '">';
+				}
+			}
+			?>
+			<label class="mnu-shop-sort__label" for="mnu-shop-sort-select"><?php echo esc_html( $atts['label'] ); ?>:</label>
+			<select id="mnu-shop-sort-select" name="orderby" onchange="this.form.submit()">
+				<?php foreach ( $options as $val => $label ) : ?>
+					<option value="<?php echo esc_attr( $val ); ?>" <?php selected( $current, $val ); ?>><?php echo esc_html( $label ); ?></option>
+				<?php endforeach; ?>
+			</select>
+			<noscript><button type="submit" class="mnu-shop-sort__go"><?php esc_html_e( 'Apply', 'mynest-unified-marketplace' ); ?></button></noscript>
+		</form>
+		<style>
+			.mnu-shop-sort { display:flex; align-items:center; gap:.5rem; margin:.5rem 0 1rem; font-size:.95rem; }
+			.mnu-shop-sort--right { justify-content:flex-end; }
+			.mnu-shop-sort--left  { justify-content:flex-start; }
+			.mnu-shop-sort--center{ justify-content:center; }
+			.mnu-shop-sort__label { color:#26295F; font-weight:600; }
+			.mnu-shop-sort select {
+				padding:.4rem .7rem; border:1px solid #E4DED4; border-radius:.5rem;
+				background:#FFFFFF; color:#1B1A21; font:inherit; min-height:2.25rem;
+			}
+			.mnu-shop-sort select:focus { outline:2px solid #3A3D8A; outline-offset:1px; }
+		</style>
+		<?php
+		return (string) ob_get_clean();
 	}
 
 	/**
