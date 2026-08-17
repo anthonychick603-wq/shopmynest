@@ -103,6 +103,24 @@ final class MNU_Seller_Attribution {
 			)
 		);
 
+		// v3.7.77 — flip every published product with no featured image and
+		// no gallery to 'draft' so sellers must upload a photo before it can
+		// be seen again. Idempotent; safe to re-run.
+		register_rest_route(
+			'mnu/v1',
+			'/admin/draft_photoless_products',
+			array(
+				'methods'             => 'POST',
+				'callback'            => array( __CLASS__, 'rest_draft_photoless_products' ),
+				'permission_callback' => static function () {
+					return current_user_can( self::CAP );
+				},
+				'args'                => array(
+					'dry_run' => array( 'required' => false, 'type' => 'boolean', 'default' => false ),
+				),
+			)
+		);
+
 		// v3.7.76 — marketplace-wide ledger reset. Wipes every row of
 		// tnm_ledger and tnm_payouts and (optionally) cancels the linked
 		// WooCommerce orders. Destructive; requires manage_options + an
@@ -121,6 +139,64 @@ final class MNU_Seller_Attribution {
 					'confirm'       => array( 'required' => true,  'type' => 'string' ),
 					'cancel_orders' => array( 'required' => false, 'type' => 'boolean', 'default' => true ),
 				),
+			)
+		);
+	}
+
+	/**
+	 * v3.7.77 — flip every published (or pending-review) product with no
+	 * featured image and no gallery to 'draft'. Sets _mnu_needs_photo=1 so
+	 * the seller-facing follow-up notice can highlight them.
+	 */
+	public static function rest_draft_photoless_products( WP_REST_Request $req ): WP_REST_Response {
+		global $wpdb;
+		$dry_run = (bool) $req->get_param( 'dry_run' );
+
+		// phpcs:disable WordPress.DB.DirectDatabaseQuery.NoCaching
+		$rows = $wpdb->get_results(
+			"SELECT p.ID, p.post_title, p.post_status, p.post_author
+			   FROM {$wpdb->posts} p
+			  WHERE p.post_type = 'product'
+				AND p.post_status IN ('publish','pending')
+				AND NOT EXISTS (
+					SELECT 1 FROM {$wpdb->postmeta} tm
+					 WHERE tm.post_id = p.ID AND tm.meta_key = '_thumbnail_id' AND tm.meta_value <> '' AND tm.meta_value <> '0'
+				)
+				AND NOT EXISTS (
+					SELECT 1 FROM {$wpdb->postmeta} gm
+					 WHERE gm.post_id = p.ID AND gm.meta_key = '_product_image_gallery' AND gm.meta_value <> '' AND gm.meta_value <> '0'
+				)"
+		);
+		// phpcs:enable
+
+		$affected = array();
+		$failed   = array();
+		foreach ( (array) $rows as $r ) {
+			$affected[] = array(
+				'id'         => (int) $r->ID,
+				'title'      => (string) $r->post_title,
+				'was_status' => (string) $r->post_status,
+				'seller_id'  => (int) $r->post_author,
+			);
+			if ( ! $dry_run ) {
+				$ok = wp_update_post( array( 'ID' => (int) $r->ID, 'post_status' => 'draft' ), true );
+				if ( is_wp_error( $ok ) ) {
+					$failed[] = array( 'id' => (int) $r->ID, 'reason' => $ok->get_error_message() );
+					continue;
+				}
+				update_post_meta( (int) $r->ID, '_mnu_needs_photo', 1 );
+				update_post_meta( (int) $r->ID, '_mnu_needs_photo_at', current_time( 'mysql' ) );
+			}
+		}
+
+		return new WP_REST_Response(
+			array(
+				'ok'             => true,
+				'dry_run'        => $dry_run,
+				'affected_count' => count( $affected ),
+				'failed_count'   => count( $failed ),
+				'affected'       => $affected,
+				'failed'         => $failed,
 			)
 		);
 	}

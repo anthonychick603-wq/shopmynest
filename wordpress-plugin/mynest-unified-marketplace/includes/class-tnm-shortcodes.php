@@ -235,7 +235,7 @@ final class TNM_Shortcodes {
                                     <label>Height (in)<input type="number" name="shipping_height_in" min="0.1" step="0.1" inputmode="decimal"></label>
                                 </div>
                             </fieldset>
-                            <label data-tnm-image-label>Product image<input type="file" name="image" accept="image/*"></label>
+                            <label data-tnm-image-label>Product image <span class="tnm-required">(required)</span><input type="file" name="image" accept="image/*" required></label>
                             <div class="tnm-form-actions">
                                 <button class="tnm-button" type="submit" data-tnm-submit>Create product</button>
                                 <button class="tnm-button tnm-button-secondary" type="button" data-tnm-cancel-edit hidden>Cancel edit</button>
@@ -524,6 +524,11 @@ final class TNM_Shortcodes {
             // enforces the same rule again for every other caller.
             if ( tnm_seller_listing_blocked( $seller_id ) ) {
                 return '<div class="tnm-notice tnm-error">' . esc_html( tnm_seller_listing_blocked_message() ) . '</div>';
+            }
+            // v3.7.77 — short-circuit if no photo was attached so we don't
+            // even try to upload. create_product() re-checks for every caller.
+            if ( empty( $_FILES['image']['tmp_name'] ) ) {
+                return '<div class="tnm-notice tnm-error">A photo is required. Please attach at least one image before saving your listing.</div>';
             }
             $image_id = tnm_upload_image_from_request( 'image' );
             if ( is_wp_error( $image_id ) ) {

@@ -572,6 +572,24 @@ final class TNM_Marketplace {
             return tnm_json_error( 'invalid_product', 'Product name and a valid non-negative price are required.', 422 );
         }
 
+        // v3.7.77 — every listing must ship with at least one photo. The
+        // seller portal shortcode uploads first and passes `image_id`, and
+        // the mobile REST client uploads via /media then passes `image_id`
+        // (or `image_ids[]` for the gallery), so we check both. Importers
+        // can bypass via the `mnu_skip_photo_required_gate` filter so the
+        // CSV importer keeps working when it sources images from a URL
+        // column processed later in the same request.
+        $skip_photo_gate = (bool) apply_filters( 'mnu_skip_photo_required_gate', false, $seller_id, $data );
+        if ( ! $skip_photo_gate ) {
+            $primary_image_id = absint( tnm_array_get( $data, 'image_id', 0 ) );
+            $gallery_ids      = array_filter( array_map( 'absint', (array) tnm_array_get( $data, 'image_ids', array() ) ) );
+            $gallery_ids      = array_merge( $gallery_ids, array_filter( array_map( 'absint', (array) tnm_array_get( $data, 'gallery_image_ids', array() ) ) ) );
+            $has_upload_file  = ! empty( $files['image']['tmp_name'] ) || ! empty( $files['product_image']['tmp_name'] );
+            if ( ! $primary_image_id && ! $gallery_ids && ! $has_upload_file ) {
+                return tnm_json_error( 'photo_required', 'A photo is required. Please attach at least one image before saving your listing.', 422 );
+            }
+        }
+
         $product = new WC_Product_Simple();
         $product->set_name( $name );
         $product->set_description( $description );
