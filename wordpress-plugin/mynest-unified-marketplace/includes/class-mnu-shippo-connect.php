@@ -147,7 +147,8 @@ function mnu_shippo_status_for_seller( int $seller_id ): array {
     if ( $seller_id <= 0 ) {
         return array( 'connected' => false, 'source' => null );
     }
-    $token = trim( (string) get_user_meta( $seller_id, '_mnu_shippo_token', true ) );
+    // v3.7.83 — always decrypt through the helper; raw storage is opaque.
+    $token = mnu_shippo_read_token( $seller_id );
     $meta  = get_user_meta( $seller_id, '_mnu_shippo_account_meta', true );
     $meta  = is_array( $meta ) ? $meta : array();
     return array(
@@ -188,27 +189,25 @@ function mnu_shippo_clear_seller( int $seller_id ): void {
 }
 
 /**
- * Filter that lets mnu_labels_resolve_token() decrypt what we stored.
- * Runs late so we don’t interfere with unrelated user_meta reads.
+ * Read + decrypt a seller’s Shippo token in one hop. Prefer this over
+ * calling get_user_meta directly so encryption stays a private detail of
+ * the connect module. Returns ‘’ when the seller has no token stored.
+ *
+ * v3.7.83 — replaced the get_user_metadata filter approach, which caused
+ * an unbounded recursion + WP fatal (__FUNCTION__ evaluated to ’’ in a
+ * static closure, so remove_filter() silently no-op’d and get_user_meta()
+ * re-entered the same filter).
  */
-add_filter(
-    'get_user_metadata',
-    static function ( $value, int $object_id, string $meta_key, bool $single ) {
-        if ( '_mnu_shippo_token' !== $meta_key || ! $single ) {
-            return $value;
-        }
-        // Read the raw stored value directly to avoid recursion.
-        remove_filter( 'get_user_metadata', __FUNCTION__, 10 );
-        $raw = get_user_meta( $object_id, $meta_key, true );
-        add_filter( 'get_user_metadata', __FUNCTION__, 10, 4 );
-        if ( ! is_string( $raw ) || '' === $raw ) {
-            return $value;
-        }
-        return array( mnu_shippo_decrypt( $raw ) );
-    },
-    10,
-    4
-);
+function mnu_shippo_read_token( int $seller_id ): string {
+    if ( $seller_id <= 0 ) {
+        return '';
+    }
+    $stored = get_user_meta( $seller_id, '_mnu_shippo_token', true );
+    if ( ! is_string( $stored ) || '' === $stored ) {
+        return '';
+    }
+    return mnu_shippo_decrypt( $stored );
+}
 
 // ---------------------------------------------------------------------------
 // B1 (dormant) — platform-side OAuth config.

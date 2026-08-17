@@ -510,7 +510,8 @@ function mnu_labels_resolve_token(): array {
     $scope     = (int) ( $GLOBALS['_mnu_labels_seller_scope'] ?? 0 );
     $seller_id = $scope > 0 ? $scope : 0;
     if ( $seller_id > 0 ) {
-        $seller_token = trim( (string) get_user_meta( $seller_id, '_mnu_shippo_token', true ) );
+        // v3.7.83 — mnu_shippo_read_token decrypts what the connect module stored.
+        $seller_token = function_exists( 'mnu_shippo_read_token' ) ? mnu_shippo_read_token( $seller_id ) : '';
         if ( '' !== $seller_token ) {
             return array( 'token' => $seller_token, 'source' => 'seller', 'seller_id' => $seller_id );
         }
@@ -548,7 +549,8 @@ function mnu_labels_seller_on_own_shippo( int $seller_id ): bool {
     if ( $seller_id <= 0 ) {
         return false;
     }
-    return '' !== trim( (string) get_user_meta( $seller_id, '_mnu_shippo_token', true ) );
+    // v3.7.83 — presence check is cheap enough to run through the decrypt helper.
+    return function_exists( 'mnu_shippo_read_token' ) && '' !== mnu_shippo_read_token( $seller_id );
 }
 
 function mnu_labels_shippo_api_request( string $method, string $path, array $body = array() ): array|WP_Error {
