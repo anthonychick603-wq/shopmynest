@@ -141,6 +141,27 @@ final class MNU_Seller_Attribution {
 				),
 			)
 		);
+
+			// v3.7.78 — admin shipping diagnostic. Runs the live per-seller
+			// Shippo rate lookup against a test destination and returns a
+			// per-seller breakdown so we can prove multi-seller carts quote
+			// distinct rates instead of failing with 'no shipping options'.
+			register_rest_route(
+				'mnu/v1',
+				'/admin/shipping_diagnose',
+				array(
+					'methods'             => 'POST',
+					'callback'            => array( __CLASS__, 'rest_shipping_diagnose' ),
+					'permission_callback' => static function () {
+						return current_user_can( self::CAP );
+					},
+					'args'                => array(
+						'order_id'    => array( 'required' => false, 'type' => 'integer' ),
+						'product_ids' => array( 'required' => false, 'type' => 'array' ),
+						'to'          => array( 'required' => false, 'type' => 'object' ),
+					),
+				)
+			);
 	}
 
 	/**
@@ -803,6 +824,210 @@ final class MNU_Seller_Attribution {
 			<?php endif; ?>
 		</div>
 		<?php
+	}
+
+	/**
+	 * v3.7.78 — Admin shipping diagnostic.
+	 *
+	 * Accepts EITHER an existing order_id (uses its line items + shipping
+	 * address) OR a list of product_ids + a destination { street1, city,
+	 * state, zip, country }. Groups the lines by seller, runs the live
+	 * per-seller Shippo rate lookup independently for each seller, and
+	 * returns a per-seller breakdown so we can prove distinct rates on a
+	 * multi-seller cart instead of returning a single blended "no options"
+	 * error the way the checkout does.
+	 */
+	public static function rest_shipping_diagnose( WP_REST_Request $req ): WP_REST_Response {
+		$order_id    = (int) $req->get_param( 'order_id' );
+		$product_ids = (array) ( $req->get_param( 'product_ids' ) ?: array() );
+		$to_addr     = (array) ( $req->get_param( 'to' ) ?: array() );
+
+		$lines = array();
+		$address = array();
+
+		if ( $order_id > 0 ) {
+			$order = wc_get_order( $order_id );
+			if ( ! $order ) {
+				return new WP_REST_Response( array( 'error' => 'order_not_found', 'order_id' => $order_id ), 404 );
+			}
+			foreach ( $order->get_items() as $item ) {
+				$product = $item->get_product();
+				if ( ! $product instanceof WC_Product ) {
+					continue;
+				}
+				$lines[] = array(
+					'product_id' => (int) $product->get_id(),
+					'quantity'   => max( 1, (int) $item->get_quantity() ),
+					'product'    => $product,
+				);
+			}
+			$address = array(
+				'address_1' => $order->get_shipping_address_1() ?: $order->get_billing_address_1(),
+				'address_2' => $order->get_shipping_address_2() ?: $order->get_billing_address_2(),
+				'city'      => $order->get_shipping_city() ?: $order->get_billing_city(),
+				'state'     => $order->get_shipping_state() ?: $order->get_billing_state(),
+				'postcode'  => $order->get_shipping_postcode() ?: $order->get_billing_postcode(),
+				'country'   => $order->get_shipping_country() ?: $order->get_billing_country() ?: 'US',
+			);
+		} else {
+			foreach ( $product_ids as $pid ) {
+				$pid     = (int) $pid;
+				$product = $pid > 0 ? wc_get_product( $pid ) : null;
+				if ( ! $product instanceof WC_Product ) {
+					continue;
+				}
+				$lines[] = array(
+					'product_id' => (int) $product->get_id(),
+					'quantity'   => 1,
+					'product'    => $product,
+				);
+			}
+			$address = array(
+				'address_1' => (string) ( $to_addr['street1']  ?? '' ),
+				'address_2' => (string) ( $to_addr['street2']  ?? '' ),
+				'city'      => (string) ( $to_addr['city']     ?? '' ),
+				'state'     => (string) ( $to_addr['state']    ?? '' ),
+				'postcode'  => (string) ( $to_addr['zip']      ?? '' ),
+				'country'   => (string) ( $to_addr['country']  ?? 'US' ),
+			);
+		}
+
+		if ( empty( $lines ) ) {
+			return new WP_REST_Response( array( 'error' => 'no_lines' ), 400 );
+		}
+
+		// Group by seller.
+		$by_seller = array();
+		foreach ( $lines as $line ) {
+			$product   = $line['product'];
+			$seller_id = (int) tnm_get_product_seller_id( $product );
+			$by_seller[ $seller_id ][] = $line;
+		}
+
+		// Build the Shippo "to" once.
+		$to = function_exists( 'mnu_native_shippo_destination' )
+			? mnu_native_shippo_destination( $address )
+			: array( 'street1' => $address['address_1'] ?? '', 'city' => $address['city'] ?? '', 'state' => $address['state'] ?? '', 'zip' => $address['postcode'] ?? '', 'country' => $address['country'] ?? 'US' );
+
+		$breakdown = array();
+
+		foreach ( $by_seller as $seller_id => $seller_lines ) {
+			$row = array(
+				'seller_id'      => $seller_id,
+				'line_count'     => count( $seller_lines ),
+				'product_ids'    => array_map( static function ( $l ) { return (int) $l['product_id']; }, $seller_lines ),
+				'ship_from_ok'   => false,
+				'parcel_ok'      => false,
+				'rates_count'    => 0,
+				'cheapest'       => null,
+				'rates'          => array(),
+				'error'          => null,
+				'missing_field'  => null,
+			);
+
+			if ( $seller_id <= 0 ) {
+				$row['error']         = 'no_seller_attributed';
+				$row['missing_field'] = 'seller_id';
+				$breakdown[]          = $row;
+				continue;
+			}
+
+			$missing_from = function_exists( 'mnu_seller_ship_from_missing_field' )
+				? mnu_seller_ship_from_missing_field( $seller_id )
+				: '';
+			if ( '' !== $missing_from ) {
+				$row['error']         = 'incomplete_ship_from';
+				$row['missing_field'] = $missing_from;
+				$breakdown[]          = $row;
+				continue;
+			}
+			$row['ship_from_ok'] = true;
+
+			// Check per-product parcel completeness before firing at Shippo.
+			foreach ( $seller_lines as $line ) {
+				$missing_pkg = function_exists( 'mnu_product_parcel_missing_field' )
+					? mnu_product_parcel_missing_field( (int) $line['product_id'] )
+					: '';
+				if ( '' !== $missing_pkg ) {
+					$row['error']         = 'incomplete_parcel';
+					$row['missing_field'] = $missing_pkg . ' (product ' . (int) $line['product_id'] . ')';
+					break;
+				}
+			}
+			if ( null !== $row['error'] ) {
+				$breakdown[] = $row;
+				continue;
+			}
+			$row['parcel_ok'] = true;
+
+			// Build parcel + call Shippo directly so one seller's failure
+			// doesn't short-circuit the others.
+			$profile = mnu_ship_get_profile( $seller_id );
+			$from    = mnu_native_seller_ship_from( $seller_id );
+			$parcel  = mnu_native_parcel_for_lines( $seller_lines, $profile );
+			if ( is_wp_error( $parcel ) ) {
+				$row['error'] = 'parcel_error:' . $parcel->get_error_code();
+				$breakdown[]  = $row;
+				continue;
+			}
+
+			$shipment = function_exists( 'mnu_labels_shippo_request' )
+				? mnu_labels_shippo_request(
+					'/shipments/',
+					array(
+						'address_from' => $from,
+						'address_to'   => $to,
+						'parcels'      => array( $parcel ),
+						'async'        => false,
+					)
+				)
+				: new WP_Error( 'no_shippo_client', 'mnu_labels_shippo_request unavailable' );
+
+			if ( is_wp_error( $shipment ) ) {
+				$row['error'] = 'shippo_error:' . $shipment->get_error_code() . ':' . $shipment->get_error_message();
+				$breakdown[]  = $row;
+				continue;
+			}
+
+			$raw_rates = ( isset( $shipment['rates'] ) && is_array( $shipment['rates'] ) ) ? $shipment['rates'] : array();
+			$rates     = function_exists( 'mnu_labels_sort_rates' ) ? mnu_labels_sort_rates( $raw_rates ) : $raw_rates;
+
+			if ( empty( $rates ) ) {
+				$row['error'] = 'no_live_rates';
+				if ( function_exists( 'mnu_labels_shippo_error_message' ) ) {
+					$row['error'] .= ':' . mnu_labels_shippo_error_message( $shipment );
+				}
+				$breakdown[] = $row;
+				continue;
+			}
+
+			$row['rates_count'] = count( $rates );
+			$flat = array();
+			foreach ( $rates as $rate ) {
+				$flat[] = array(
+					'provider' => (string) ( $rate['provider'] ?? '' ),
+					'service'  => (string) ( $rate['servicelevel']['name'] ?? $rate['servicelevel_name'] ?? '' ),
+					'token'    => (string) ( $rate['servicelevel']['token'] ?? $rate['servicelevel_token'] ?? '' ),
+					'amount'   => (string) ( $rate['amount'] ?? '' ),
+					'currency' => (string) ( $rate['currency'] ?? 'USD' ),
+					'days'     => (string) ( $rate['estimated_days'] ?? '' ),
+				);
+			}
+			$row['rates']    = $flat;
+			$row['cheapest'] = $flat[0];
+			$breakdown[]     = $row;
+		}
+
+		return new WP_REST_Response(
+			array(
+				'ok'          => true,
+				'order_id'    => $order_id,
+				'to'          => $to,
+				'seller_count'=> count( $by_seller ),
+				'breakdown'   => $breakdown,
+			),
+			200
+		);
 	}
 }
 

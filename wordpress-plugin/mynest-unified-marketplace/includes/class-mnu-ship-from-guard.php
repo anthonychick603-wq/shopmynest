@@ -36,16 +36,73 @@ function mnu_ship_from_required_fields(): array {
  * True when the seller's ship-from profile is fully populated.
  */
 function mnu_seller_has_complete_ship_from( int $seller_id ): bool {
+	return '' === mnu_seller_ship_from_missing_field( $seller_id );
+}
+
+/**
+ * v3.7.78 — return the specific first missing ship-from field for a seller,
+ * or empty string when the profile is complete. Powers user-facing messages
+ * ("Add your ship-from ZIP before publishing") and the admin diagnostic.
+ */
+function mnu_seller_ship_from_missing_field( int $seller_id ): string {
 	if ( $seller_id <= 0 || ! function_exists( 'mnu_ship_get_profile' ) ) {
-		return false;
+		return 'ship_from_profile';
 	}
 	$profile = mnu_ship_get_profile( $seller_id );
 	foreach ( mnu_ship_from_required_fields() as $field ) {
 		if ( '' === trim( (string) ( $profile[ $field ] ?? '' ) ) ) {
-			return false;
+			return $field;
 		}
 	}
-	return true;
+	return '';
+}
+
+/**
+ * v3.7.78 — return the specific first missing package field for a product
+ * (weight/length/width/height), or empty string when the product parcel is
+ * complete. A non-custom package_size preset counts as complete for the
+ * three dimensions but weight is always seller-entered.
+ */
+function mnu_product_parcel_missing_field( int $product_id ): string {
+	if ( $product_id <= 0 || ! function_exists( 'mnu_ship_get_product_shipping' ) ) {
+		return 'product_shipping_profile';
+	}
+	$shipping = mnu_ship_get_product_shipping( $product_id );
+	$weight   = (float) ( $shipping['weight_oz'] ?? 0 );
+	if ( $weight <= 0 ) {
+		return 'weight_oz';
+	}
+	$package_size = (string) ( $shipping['package_size'] ?? 'custom' );
+	if ( 'custom' === $package_size ) {
+		foreach ( array( 'length_in', 'width_in', 'height_in' ) as $dim ) {
+			if ( (float) ( $shipping[ $dim ] ?? 0 ) <= 0 ) {
+				return $dim;
+			}
+		}
+	}
+	return '';
+}
+
+/**
+ * v3.7.78 — human-readable label for a missing field so the message
+ * says "Add your ship-from ZIP" not "Add your ship_from_zip".
+ */
+function mnu_missing_field_label( string $field ): string {
+	$labels = array(
+		'ship_from_name'    => 'ship-from name',
+		'ship_from_street1' => 'ship-from street address',
+		'ship_from_city'    => 'ship-from city',
+		'ship_from_state'   => 'ship-from state',
+		'ship_from_zip'     => 'ship-from ZIP',
+		'ship_from_country' => 'ship-from country',
+		'weight_oz'         => 'package weight (oz)',
+		'length_in'         => 'package length (in)',
+		'width_in'          => 'package width (in)',
+		'height_in'         => 'package height (in)',
+		'ship_from_profile' => 'ship-from address',
+		'product_shipping_profile' => 'package details',
+	);
+	return $labels[ $field ] ?? $field;
 }
 
 /**
@@ -115,14 +172,21 @@ function mnu_ship_from_guard_insert_data( array $data, array $postarr ): array {
 		return $data;
 	}
 
-	if ( mnu_seller_has_complete_ship_from( $seller ) ) {
+	$missing_from = mnu_seller_ship_from_missing_field( $seller );
+	$missing_pkg  = $product_id > 0 ? mnu_product_parcel_missing_field( $product_id ) : '';
+	if ( '' === $missing_from && '' === $missing_pkg ) {
 		return $data;
 	}
 
 	$data['post_status'] = 'draft';
+	$missing = '' !== $missing_from ? $missing_from : $missing_pkg;
 	mnu_ship_from_flash_notice(
 		$seller,
-		__( 'This product was saved as a draft because your ship-from address is not complete. Add your shipping origin before publishing so buyers can be quoted live rates at checkout.', 'mynest-unified-marketplace' )
+		sprintf(
+			/* translators: %s: human-readable name of the missing shipping field */
+			__( 'This product was saved as a draft because your %s is missing. Buyers cannot be quoted live shipping without it.', 'mynest-unified-marketplace' ),
+			mnu_missing_field_label( $missing )
+		)
 	);
 
 	return $data;
@@ -178,11 +242,21 @@ function mnu_ship_from_guard_pre_rest_insert( mixed $prepared, WP_REST_Request $
 		'post_author' => (int) ( $request->get_param( 'author' ) ?: get_current_user_id() ),
 	);
 	$seller = mnu_ship_from_seller_for_product( $product_id, $postarr );
-	if ( $seller > 0 && ! mnu_seller_has_complete_ship_from( $seller ) ) {
+	if ( $seller <= 0 ) {
+		return $prepared;
+	}
+	$missing_from = mnu_seller_ship_from_missing_field( $seller );
+	$missing_pkg  = $product_id > 0 ? mnu_product_parcel_missing_field( $product_id ) : '';
+	if ( '' !== $missing_from || '' !== $missing_pkg ) {
+		$missing = '' !== $missing_from ? $missing_from : $missing_pkg;
 		return new WP_Error(
-			'mnu_incomplete_ship_from',
-			__( 'Add your ship-from address before publishing a product so buyers can be quoted shipping.', 'mynest-unified-marketplace' ),
-			array( 'status' => 400 )
+			'mnu_incomplete_shipping',
+			sprintf(
+				/* translators: %s: name of the missing shipping field */
+				__( 'Add %s before publishing so buyers can be quoted live shipping.', 'mynest-unified-marketplace' ),
+				mnu_missing_field_label( $missing )
+			),
+			array( 'status' => 400, 'missing_field' => $missing )
 		);
 	}
 	return $prepared;
@@ -211,7 +285,12 @@ function mnu_ship_from_guard_save_post( int $post_id, WP_Post $post, bool $updat
 		$post_id,
 		array( 'ID' => $post_id, 'post_author' => (int) $post->post_author )
 	);
-	if ( $seller <= 0 || mnu_seller_has_complete_ship_from( $seller ) ) {
+	if ( $seller <= 0 ) {
+		return;
+	}
+	$missing_from = mnu_seller_ship_from_missing_field( $seller );
+	$missing_pkg  = mnu_product_parcel_missing_field( $post_id );
+	if ( '' === $missing_from && '' === $missing_pkg ) {
 		return;
 	}
 
@@ -224,9 +303,14 @@ function mnu_ship_from_guard_save_post( int $post_id, WP_Post $post, bool $updat
 	);
 	add_action( 'save_post_product', 'mnu_ship_from_guard_save_post', 20, 3 );
 
+	$missing = '' !== $missing_from ? $missing_from : $missing_pkg;
 	mnu_ship_from_flash_notice(
 		$seller,
-		__( 'This product was reverted to draft because your ship-from address is not complete.', 'mynest-unified-marketplace' )
+		sprintf(
+			/* translators: %s: missing shipping field name */
+			__( 'This product was reverted to draft because your %s is missing.', 'mynest-unified-marketplace' ),
+			mnu_missing_field_label( $missing )
+		)
 	);
 }
 add_action( 'save_post_product', 'mnu_ship_from_guard_save_post', 20, 3 );
