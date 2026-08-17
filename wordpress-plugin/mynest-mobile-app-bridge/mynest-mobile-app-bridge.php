@@ -3,7 +3,7 @@
  * Plugin Name: MyNest Mobile App Bridge
  * Plugin URI:  https://shopmynest.com/
  * Description: Adds mobile buyer endpoints, moderated community posts for the home feed, an app permissions endpoint, reliable bearer-token authentication, and safe Stripe Tax sandbox checkout compatibility for The Nest Android app.
- * Version:     1.2.1
+ * Version:     1.2.2
  * Author:      MyNest
  * Text Domain: mynest-mobile-app-bridge
  * Requires at least: 6.5
@@ -550,8 +550,25 @@ final class MyNest_Mobile_App_Bridge {
             'shipping'        => $order->get_address( 'shipping' ),
             'items'           => $items,
             'tracking'        => $tracking,
+            'refund'          => self::refund_block( $order ),
             'customer_note'   => $order->get_customer_note(),
         );
+    }
+
+    /**
+     * v3.7.90 — buyer-safe refund lifecycle block on every order payload.
+     */
+    private static function refund_block( WC_Order $order ): array {
+        if ( ! class_exists( 'MNU_Refund_Lifecycle' ) ) {
+            return array(
+                'state'   => 'none',
+                'label'   => 'No refund activity',
+                'eligibility' => array( 'can_request' => false, 'blockers' => array( 'Refund lifecycle unavailable.' ), 'policy_days' => 14 ),
+            );
+        }
+        $lifecycle   = \MNU_Refund_Lifecycle::get( $order );
+        $eligibility = \MNU_Refund_Lifecycle::eligibility( $order );
+        return \MNU_Refund_Lifecycle::view_payload( $order, $lifecycle, $eligibility );
     }
 
     public static function report_product( WP_REST_Request $request ): WP_REST_Response|WP_Error {

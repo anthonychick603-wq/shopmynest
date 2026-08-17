@@ -1598,6 +1598,14 @@ function mnu_native_webhook( WP_REST_Request $request ): array|WP_Error {
         return array( 'received' => true );
     }
 
+    // v3.7.90 — refund lifecycle sync from Stripe.
+    if ( 0 === strpos( $event_type, 'refund.' ) || 'charge.refund.updated' === $event_type ) {
+        if ( class_exists( 'MNU_Refund_Lifecycle' ) ) {
+            MNU_Refund_Lifecycle::handle_stripe_refund_event( (array) ( $event['data']['object'] ?? array() ) );
+        }
+        return array( 'received' => true );
+    }
+
     $intent     = (array) ( $event['data']['object'] ?? array() );
     $order_id   = absint( $intent['metadata']['wc_order_id'] ?? 0 );
     $order      = $order_id ? wc_get_order( $order_id ) : false;
