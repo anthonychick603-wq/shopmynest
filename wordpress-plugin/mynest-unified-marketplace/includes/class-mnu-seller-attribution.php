@@ -102,6 +102,93 @@ final class MNU_Seller_Attribution {
 				},
 			)
 		);
+
+		// v3.7.76 — marketplace-wide ledger reset. Wipes every row of
+		// tnm_ledger and tnm_payouts and (optionally) cancels the linked
+		// WooCommerce orders. Destructive; requires manage_options + an
+		// explicit confirm=RESET_ALL_LEDGERS body param so no accidental
+		// call from another script can trigger it.
+		register_rest_route(
+			'mnu/v1',
+			'/admin/reset_all_ledgers',
+			array(
+				'methods'             => 'POST',
+				'callback'            => array( __CLASS__, 'rest_reset_all_ledgers' ),
+				'permission_callback' => static function () {
+					return current_user_can( self::CAP );
+				},
+				'args'                => array(
+					'confirm'       => array( 'required' => true,  'type' => 'string' ),
+					'cancel_orders' => array( 'required' => false, 'type' => 'boolean', 'default' => true ),
+				),
+			)
+		);
+	}
+
+	/**
+	 * v3.7.76 — wipe every ledger row and every payout row, and (optionally)
+	 * cancel every WooCommerce order that had ledger rows attached. Returns
+	 * counts and the list of cancelled order ids so the reset is auditable
+	 * from the response alone.
+	 */
+	public static function rest_reset_all_ledgers( WP_REST_Request $req ): WP_REST_Response {
+		global $wpdb;
+		if ( 'RESET_ALL_LEDGERS' !== (string) $req->get_param( 'confirm' ) ) {
+			return new WP_REST_Response( array( 'error' => 'missing_confirmation' ), 400 );
+		}
+		$cancel_orders = (bool) $req->get_param( 'cancel_orders' );
+
+		$ledger_table  = function_exists( 'tnm_table' ) ? tnm_table( 'ledger' )  : $wpdb->prefix . 'tnm_ledger';
+		$payouts_table = function_exists( 'tnm_table' ) ? tnm_table( 'payouts' ) : $wpdb->prefix . 'tnm_payouts';
+
+		$order_ids = array();
+		if ( $cancel_orders ) {
+			// phpcs:disable WordPress.DB.DirectDatabaseQuery.NoCaching
+			$rows = $wpdb->get_col( "SELECT DISTINCT order_id FROM {$ledger_table} WHERE order_id > 0" );
+			// phpcs:enable
+			$order_ids = array_values( array_unique( array_map( 'intval', (array) $rows ) ) );
+		}
+
+		// phpcs:disable WordPress.DB.DirectDatabaseQuery.SchemaChange
+		$ledger_before  = (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$ledger_table}" );
+		$payouts_before = (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$payouts_table}" );
+		$wpdb->query( "TRUNCATE TABLE {$ledger_table}" );
+		$wpdb->query( "TRUNCATE TABLE {$payouts_table}" );
+		// phpcs:enable
+
+		$cancelled = array();
+		$failed    = array();
+		if ( $cancel_orders && $order_ids && function_exists( 'wc_get_order' ) ) {
+			foreach ( $order_ids as $oid ) {
+				$order = wc_get_order( $oid );
+				if ( ! $order ) {
+					$failed[] = array( 'order_id' => $oid, 'reason' => 'order_not_found' );
+					continue;
+				}
+				if ( in_array( $order->get_status(), array( 'cancelled', 'refunded', 'failed' ), true ) ) {
+					$cancelled[] = $oid;
+					continue;
+				}
+				try {
+					$order->update_status( 'cancelled', 'Ledger reset (v3.7.76)' );
+					$cancelled[] = $oid;
+				} catch ( \Throwable $e ) {
+					$failed[] = array( 'order_id' => $oid, 'reason' => $e->getMessage() );
+				}
+			}
+		}
+
+		return new WP_REST_Response(
+			array(
+				'ok'               => true,
+				'ledger_deleted'   => $ledger_before,
+				'payouts_deleted'  => $payouts_before,
+				'orders_seen'      => count( $order_ids ),
+				'orders_cancelled' => count( $cancelled ),
+				'cancelled_ids'    => $cancelled,
+				'failed'           => $failed,
+			)
+		);
 	}
 
 	/**
