@@ -18,7 +18,7 @@
  *
  *   1. Provides one canonical description of the expected values.
  *   2. Detects drift on every request (cheap: options are always cached).
- *   3. Renders a Marketplace \u2192 Tax Posture admin page showing current vs
+ *   3. Renders a Marketplace → Tax Posture admin page showing current vs
  *      expected, with a single "Restore expected posture" action.
  *   4. Runs daily via WP-Cron and emails admin when drift is found.
  *   5. Adds a persistent WooCommerce settings-page banner when the
@@ -116,7 +116,7 @@ final class MNU_Tax_Posture {
 		$stripe = self::stripe_tax_info();
 
 		// Consider Stripe Tax in Live mode as unwanted drift unless the user
-		// has explicitly acknowledged (see handle_ack). Sandbox is fine \u2014
+		// has explicitly acknowledged (see handle_ack). Sandbox is fine —
 		// the bridge already has a Sandbox fallback.
 		$ack = (string) get_option( self::ACK_OPTION, '' );
 		$acknowledged = ( 'stripe-tax-live-' . self::stripe_tax_ack_fingerprint( $stripe ) === $ack );
@@ -297,7 +297,7 @@ final class MNU_Tax_Posture {
 							<?php if ( ! $state['stripe_tax']['present'] || ! $state['stripe_tax']['live'] || $state['acknowledged'] ) : ?>
 								<span style="color:#136a2e;">&#10003; ok</span>
 							<?php else : ?>
-								<span style="color:#a71b1b;">&#9888; live \u2014 needs acknowledgement</span>
+								<span style="color:#a71b1b;">&#9888; live — needs acknowledgement</span>
 							<?php endif; ?>
 						</td>
 					</tr>
