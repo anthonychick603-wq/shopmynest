@@ -88,6 +88,8 @@ final class TNM_REST {
                     'terms'              => tnm_page_url( 'terms' ),
                     'seller_terms'       => tnm_page_url( 'seller_terms' ),
                     'refund_policy'      => tnm_page_url( 'refund_policy' ),
+                    'shipping_policy'    => tnm_page_url( 'shipping_policy', home_url( '/shipping/' ) ),
+                    'data_deletion'      => tnm_page_url( 'data_deletion', home_url( '/data-deletion/' ) ),
                 ),
                 'features'   => array(
                     'social_feed'       => true,

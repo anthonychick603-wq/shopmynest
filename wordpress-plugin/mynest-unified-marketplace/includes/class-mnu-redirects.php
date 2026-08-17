@@ -33,13 +33,18 @@ if ( ! class_exists( 'MNU_Redirects' ) ) {
 			'/cart-classic-2'    => '/cart',
 			'/checkout-classic'  => '/checkout',
 
-			// Policy page duplicates. Canonicals are the older, indexed slugs.
-			'/privacy'           => '/privacy-policy',
-			'/terms'             => '/terms-of-service',
-			'/terms-of-use'      => '/terms-of-service',
-			'/refunds'           => '/refund-policy',
-			'/returns-refunds'   => '/refund-policy',
-			'/shipping'          => '/shipping-policy',
+			// Policy page duplicates. Canonicals are the short slugs owned by
+			// the ShopMyNest Legal Pages plugin (single source of truth with
+			// admin-editable business address / contact / effective date).
+			// v3.7.94 flip: the old direction pointed short -> long, which
+			// looped against the legal plugin's own long -> short redirect and
+			// meant no legal page was reachable on the live site.
+			'/privacy-policy'    => '/privacy',
+			'/terms-of-service'  => '/terms',
+			'/terms-of-use'      => '/terms',
+			'/refund-policy'     => '/refunds',
+			'/returns-refunds'   => '/refunds',
+			'/shipping-policy'   => '/shipping',
 
 			// Legacy dashboard aliases. Canonical seller pages live at their own
 			// slugs (/seller-dashboard/, /seller-orders/, /seller-payouts/,
@@ -67,11 +72,56 @@ if ( ! class_exists( 'MNU_Redirects' ) ) {
 			'/seller-login',
 		);
 
+		/**
+		 * v3.7.94: legacy short-slug policy redirects that shipped in v3.7.11+
+		 * and formed a loop against shopmynest-legal-pages. On upgrade these
+		 * are stripped from the stored option once, then merge_new_defaults
+		 * adds the correct long -> short direction.
+		 *
+		 * @var string[]
+		 */
+		private const POLICY_FLIP_LEGACY_KEYS = array(
+			'/privacy',
+			'/terms',
+			'/refunds',
+			'/shipping',
+		);
+
 		public static function init(): void {
 			self::seed_defaults_once();
 			self::purge_removed_keys_once();
+			self::flip_policy_redirects_once();
 			self::merge_new_defaults();
 			add_action( 'template_redirect', array( __CLASS__, 'maybe_redirect' ), 1 );
+		}
+
+		/**
+		 * v3.7.94 one-shot: remove the four legacy short -> long policy
+		 * mappings from the stored option. Combined with the new DEFAULT_MAP
+		 * direction (long -> short) picked up by merge_new_defaults, this
+		 * breaks the redirect loop with shopmynest-legal-pages and restores
+		 * the four canonical pages on the live site.
+		 */
+		public static function flip_policy_redirects_once(): void {
+			$sentinel = get_option( 'mnu_redirects_policy_flip_v1', 0 );
+			if ( 1 === (int) $sentinel ) {
+				return;
+			}
+			$current = get_option( self::OPTION, array() );
+			if ( ! is_array( $current ) ) {
+				$current = array();
+			}
+			$changed = false;
+			foreach ( self::POLICY_FLIP_LEGACY_KEYS as $lk ) {
+				if ( array_key_exists( $lk, $current ) ) {
+					unset( $current[ $lk ] );
+					$changed = true;
+				}
+			}
+			if ( $changed ) {
+				update_option( self::OPTION, $current, false );
+			}
+			update_option( 'mnu_redirects_policy_flip_v1', 1, false );
 		}
 
 		/**

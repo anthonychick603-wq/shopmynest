@@ -319,9 +319,16 @@ final class MNU_Install {
             'checkout' => array( 'title' => 'Checkout', 'slug' => 'checkout', 'content' => '[woocommerce_checkout]' ),
             'my_account' => array( 'title' => 'My Account', 'slug' => 'my-account', 'content' => '[woocommerce_my_account]' ),
             'seller_terms' => array( 'title' => 'Seller Terms', 'slug' => 'seller-terms', 'content' => '<h2>MyNest Seller Terms</h2><p>Replace this starter text with your reviewed seller agreement before launch.</p>' ),
-            'privacy_policy' => array( 'title' => 'Privacy Policy', 'slug' => 'privacy-policy', 'content' => '<h2>Privacy Policy</h2><p>Replace this starter text with a privacy policy reviewed for your marketplace, mobile app, payment processors, and jurisdiction.</p>' ),
-            'terms' => array( 'title' => 'Terms of Service', 'slug' => 'terms-of-service', 'content' => '<h2>Terms of Service</h2><p>Replace this starter text with your reviewed marketplace terms before launch.</p>' ),
-            'refund_policy' => array( 'title' => 'Refund Policy', 'slug' => 'refund-policy', 'content' => '<h2>Refund Policy</h2><p>Replace this starter text with your reviewed refund and dispute policy before launch.</p>' ),
+            // v3.7.94 — point at the short canonical slugs owned by
+            // shopmynest-legal-pages. When that plugin is active, get_page_by_path
+            // will resolve these to the real editable pages instead of creating
+            // duplicate placeholder posts. When it isn't, wp_insert_post will
+            // still create a starter page at the short slug so the URL is stable.
+            'privacy_policy' => array( 'title' => 'Privacy Policy', 'slug' => 'privacy', 'content' => '<h2>Privacy Policy</h2><p>Replace this starter text with a privacy policy reviewed for your marketplace, mobile app, payment processors, and jurisdiction.</p>' ),
+            'terms' => array( 'title' => 'Terms of Service', 'slug' => 'terms', 'content' => '<h2>Terms of Service</h2><p>Replace this starter text with your reviewed marketplace terms before launch.</p>' ),
+            'refund_policy' => array( 'title' => 'Refund Policy', 'slug' => 'refunds', 'content' => '<h2>Refund Policy</h2><p>Replace this starter text with your reviewed refund and dispute policy before launch.</p>' ),
+            'shipping_policy' => array( 'title' => 'Shipping Policy', 'slug' => 'shipping', 'content' => '<h2>Shipping Policy</h2><p>Replace this starter text with your reviewed shipping policy before launch.</p>' ),
+            'data_deletion' => array( 'title' => 'Account & Data Deletion', 'slug' => 'data-deletion', 'content' => '<h2>Account & Data Deletion</h2><p>Contact help@shopmynest.com to request account and data deletion.</p>' ),
         );
 
         foreach ( $pages as $key => $page ) {
