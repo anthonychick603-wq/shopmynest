@@ -106,16 +106,80 @@ final class MNU_Blog {
     }
 
     public static function public_feed( WP_REST_Request $request ): WP_REST_Response {
-        $response = rest_ensure_response( self::query( 'approved', $request ) );
+        $payload  = self::query( 'approved', $request );
+        $fingerprint = self::approved_fingerprint();
+        $payload['refreshed_at'] = $fingerprint['iso'];
+        $payload['etag']         = $fingerprint['etag'];
+
+        $response = rest_ensure_response( $payload );
         // v3.7.67 — the WPCOM Atomic edge cache was holding the anonymous
         // JSON feed after an approval, so approved posts didn't surface in
         // the app until the CDN entry aged out. Tell every intermediate cache
         // never to store this response; the moderation flow also purges the
         // path explicitly on approve/reject below.
-        $response->header( 'Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0' );
+        $response->header( 'Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0, private' );
         $response->header( 'Pragma', 'no-cache' );
         $response->header( 'Expires', '0' );
+
+        // v3.7.70 — the React Native HTTP layer in 1.0.41 keys its cache on
+        // (URL, headers). Nothing about the URL or request headers changes
+        // on pull-to-refresh, so it can serve a stale body. Rotate response
+        // signals that force any RFC-compliant client cache (and every well
+        // behaved intermediate proxy) to treat each approval as a new
+        // resource:
+        //   • ETag / Last-Modified derived from newest approved post so
+        //     conditional revalidation works and edge caches key correctly.
+        //   • Vary: MyNest-Blog-Fingerprint so intermediates that vary on
+        //     that response header treat every fingerprint as a distinct
+        //     cache entry (we set the fingerprint response header below).
+        //   • X-MyNest-Blog-Fingerprint response header + refreshed_at in
+        //     the body so the app can detect fresh-content changes without
+        //     needing a matching client-side change.
+        $response->header( 'ETag', '"' . $fingerprint['etag'] . '"' );
+        $response->header( 'Last-Modified', $fingerprint['http_date'] );
+        $response->header( 'Vary', 'Accept, Origin, MyNest-Blog-Fingerprint' );
+        $response->header( 'X-MyNest-Blog-Fingerprint', $fingerprint['etag'] );
+
+        // Honor conditional GET so a 1.0.42+ client (or curl -H If-None-Match)
+        // gets a cheap 304 when the fingerprint hasn't moved.
+        $inm = trim( (string) $request->get_header( 'if_none_match' ) );
+        if ( $inm && trim( $inm, '"' ) === $fingerprint['etag'] ) {
+            $response->set_status( 304 );
+            $response->set_data( null );
+        }
+
         return $response;
+    }
+
+    /**
+     * v3.7.70 — build a fingerprint from the newest approved post so
+     * response-level cache signals rotate the moment an approval lands.
+     * Cache the value for the request lifetime; moderation changes call
+     * clean_post_cache() / do_action( 'mnu_blog_feed_purged' ) which
+     * invalidate this transient path implicitly by changing the underlying
+     * post_modified_gmt.
+     *
+     * @return array{etag:string,iso:string,http_date:string}
+     */
+    private static function approved_fingerprint(): array {
+        global $wpdb;
+        $row = $wpdb->get_row(
+            $wpdb->prepare(
+                "SELECT COUNT(*) AS total, COALESCE( MAX( post_modified_gmt ), '1970-01-01 00:00:00' ) AS latest
+                 FROM {$wpdb->posts}
+                 WHERE post_type = %s AND post_status = %s",
+                self::CPT,
+                self::STATUSES['approved']
+            )
+        );
+        $total  = $row ? (int) $row->total : 0;
+        $latest = $row ? (string) $row->latest : '1970-01-01 00:00:00';
+        $ts     = strtotime( $latest . ' UTC' ) ?: time();
+        return array(
+            'etag'      => 'blog-' . $total . '-' . $ts,
+            'iso'       => mysql_to_rfc3339( $latest ),
+            'http_date' => gmdate( 'D, d M Y H:i:s', $ts ) . ' GMT',
+        );
     }
 
     public static function moderation_feed( WP_REST_Request $request ): WP_REST_Response|WP_Error {
