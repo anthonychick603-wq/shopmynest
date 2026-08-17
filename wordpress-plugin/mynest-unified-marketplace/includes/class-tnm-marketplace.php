@@ -876,8 +876,25 @@ final class TNM_Marketplace {
             return tnm_json_error( 'invalid_seller_status', 'Invalid seller order status.', 422 );
         }
         $order->update_meta_data( '_tnm_seller_status_' . $seller_id, $status );
+        // v3.7.95 - stamp shipped/completed timestamps so the buyer order
+        // payload can render "Shipped Aug 17" / "Delivered Aug 20" per seller.
+        if ( 'shipped' === $status && ! $order->get_meta( '_tnm_seller_shipped_at_' . $seller_id, true ) ) {
+            $order->update_meta_data( '_tnm_seller_shipped_at_' . $seller_id, current_time( 'mysql', true ) );
+        }
+        if ( 'completed' === $status && ! $order->get_meta( '_tnm_seller_completed_at_' . $seller_id, true ) ) {
+            $order->update_meta_data( '_tnm_seller_completed_at_' . $seller_id, current_time( 'mysql', true ) );
+        }
         if ( $tracking ) {
             $order->update_meta_data( '_tnm_tracking_' . $seller_id, sanitize_text_field( $tracking ) );
+            // v3.7.95 - if seller pasted "USPS 9400..." split the carrier off
+            // and store it, so the buyer sees carrier + number and a
+            // tap-through tracking URL (guessed on read if not stored).
+            $parts = preg_split( '/\s+/', trim( sanitize_text_field( $tracking ) ), 2 );
+            if ( is_array( $parts ) && count( $parts ) === 2 && ! $order->get_meta( '_thenest_tracking_carrier_' . $seller_id, true ) ) {
+                $order->update_meta_data( '_thenest_tracking_carrier_' . $seller_id, $parts[0] );
+                $order->update_meta_data( '_thenest_tracking_number_' . $seller_id, $parts[1] );
+                $order->update_meta_data( '_tnm_tracking_' . $seller_id, $parts[1] );
+            }
         }
         $order->add_order_note( sprintf( '%s updated their seller fulfillment status to %s%s.', tnm_seller_display_name( $seller_id ), $status, $tracking ? ' (tracking: ' . sanitize_text_field( $tracking ) . ')' : '' ) );
         $order->save();

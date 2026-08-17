@@ -598,6 +598,12 @@ final class MNU_Ops {
             $order->update_meta_data( '_thenest_seller_shipping_note' . $suffix, $note );
         }
         $order->update_meta_data( '_tnm_seller_status_' . $seller_id, 'shipped' );
+        // v3.7.95 - stamp the shipped timestamp so the buyer order screen
+        // can show "Shipped Aug 17" per seller instead of just the placed
+        // date. Preserved on subsequent tracking edits.
+        if ( ! $order->get_meta( '_tnm_seller_shipped_at' . $suffix, true ) ) {
+            $order->update_meta_data( '_tnm_seller_shipped_at' . $suffix, current_time( 'mysql', true ) );
+        }
         $order->add_order_note( tnm_seller_display_name( $seller_id ) . ' marked their items shipped.' );
         $order->save();
 

@@ -102,7 +102,10 @@ final class MNU_Seller_Readiness {
 			'description'  => 'Choose the name buyers will see on your listings and profile.',
 			'ok'           => $has_name,
 			'blocking'     => false,
-			'action_url'   => '/(tabs)/(more)/seller/apply',
+			// v3.7.95 - approved sellers who never set a display store name
+			// used to be routed back into /seller/apply, which detects
+			// "approved" and dead-ends. Point at the new shop settings screen.
+			'action_url'   => '/(tabs)/(more)/seller/shop-settings',
 			'action_label' => $has_name ? '' : 'Add name',
 			'detail'       => $has_name ? $display_name : '',
 		);

@@ -923,6 +923,12 @@ function mnu_labels_store_transaction( WC_Order $order, int $seller_id, array $t
     if ( 'success' === $status && $label ) {
         $already_finalized = (bool) $order->get_meta( '_mnu_label_finalized_' . $seller_id, true );
         $order->update_meta_data( '_tnm_seller_status_' . $seller_id, 'shipped' );
+        // v3.7.95 - match manual mark_shipped so the buyer order screen has
+        // a real "Shipped" timestamp per seller regardless of whether the
+        // label was auto-bought or the seller pasted a tracking number.
+        if ( ! $order->get_meta( '_tnm_seller_shipped_at' . $suffix, true ) ) {
+            $order->update_meta_data( '_tnm_seller_shipped_at' . $suffix, current_time( 'mysql', true ) );
+        }
 
         // v3.7.81/82 — postage recovery. Marketplace pays Shippo only when the
         // seller is on the platform token; when they’re on their own Shippo,

@@ -3,7 +3,7 @@
  * Plugin Name: MyNest Mobile App Bridge
  * Plugin URI:  https://shopmynest.com/
  * Description: Adds mobile buyer endpoints, moderated community posts for the home feed, an app permissions endpoint, reliable bearer-token authentication, and safe Stripe Tax sandbox checkout compatibility for The Nest Android app.
- * Version:     1.2.2
+ * Version:     1.2.3
  * Author:      MyNest
  * Text Domain: mynest-mobile-app-bridge
  * Requires at least: 6.5
@@ -521,23 +521,61 @@ final class MyNest_Mobile_App_Bridge {
             );
         }
 
+        // v3.7.95 - buyers used to see a single seller-name-as-carrier line
+        // even on multi-seller orders. Emit one row per seller with the
+        // metadata we already store (carrier, service, tracking url, label
+        // source) so the app can render a real "USPS 9400... - track this"
+        // card and the buyer can tap through to the carrier.
         foreach ( array_keys( $seller_ids ) as $seller_id ) {
-            $number = sanitize_text_field( (string) $order->get_meta( '_tnm_tracking_' . $seller_id, true ) );
-            if ( $number ) {
-                $tracking[] = array(
-                    'seller_id'   => (int) $seller_id,
-                    'seller_name' => function_exists( 'tnm_seller_display_name' ) ? tnm_seller_display_name( $seller_id ) : '',
-                    'number'      => $number,
-                    'status'      => sanitize_key( (string) $order->get_meta( '_tnm_seller_status_' . $seller_id, true ) ),
-                );
+            $suffix         = '_' . $seller_id;
+            $number         = sanitize_text_field( (string) $order->get_meta( '_tnm_tracking_' . $seller_id, true ) );
+            $carrier        = sanitize_text_field( (string) $order->get_meta( '_thenest_tracking_carrier' . $suffix, true ) );
+            $service        = sanitize_text_field( (string) $order->get_meta( '_thenest_shipping_service' . $suffix, true ) );
+            $tracking_url   = esc_url_raw( (string) $order->get_meta( '_thenest_tracking_url' . $suffix, true ) );
+            $label_url      = esc_url_raw( (string) $order->get_meta( '_thenest_label_url' . $suffix, true ) );
+            $shipped_at     = sanitize_text_field( (string) $order->get_meta( '_tnm_seller_shipped_at' . $suffix, true ) );
+            $seller_status  = sanitize_key( (string) $order->get_meta( '_tnm_seller_status_' . $seller_id, true ) );
+            if ( ! $number && ! $seller_status ) {
+                continue;
             }
+            if ( ! $tracking_url && $number ) {
+                $tracking_url = self::guess_tracking_url( $carrier, $number );
+            }
+            $tracking[] = array(
+                'seller_id'    => (int) $seller_id,
+                'seller_name'  => function_exists( 'tnm_seller_display_name' ) ? tnm_seller_display_name( $seller_id ) : '',
+                'number'       => $number,
+                'carrier'      => $carrier,
+                'service'      => $service,
+                'tracking_url' => $tracking_url,
+                'label_source' => $label_url ? 'shippo' : ( $number ? 'manual' : '' ),
+                'shipped_at'   => $shipped_at,
+                'status'       => $seller_status,
+            );
+        }
+
+        // v3.7.95 - derive an aggregate shipping_status across all sellers on
+        // the order so the buyer sees "partial" instead of just "processing"
+        // when one of two sellers has shipped. The adapter on mobile uses
+        // this to map to the buyer-facing status vocabulary.
+        $shipping_status = self::aggregate_shipping_status( $order, array_keys( $seller_ids ), $tracking );
+        $can_review      = false;
+        $reviewable_seller_ids = array();
+        if ( in_array( $order->get_status(), array( 'processing', 'completed' ), true ) ) {
+            foreach ( array_keys( $seller_ids ) as $sid ) {
+                $reviewable_seller_ids[] = (int) $sid;
+            }
+            $can_review = ! empty( $reviewable_seller_ids );
         }
 
         return array(
             'id'              => $order->get_id(),
             'number'          => $order->get_order_number(),
             'status'          => $order->get_status(),
+            'shipping_status' => $shipping_status,
             'date_created'    => $order->get_date_created() ? $order->get_date_created()->date( DATE_ATOM ) : null,
+            'date_paid'       => $order->get_date_paid() ? $order->get_date_paid()->date( DATE_ATOM ) : null,
+            'date_completed'  => $order->get_date_completed() ? $order->get_date_completed()->date( DATE_ATOM ) : null,
             'currency'        => $order->get_currency(),
             'subtotal'        => (float) $order->get_subtotal(),
             'shipping_total'  => (float) $order->get_shipping_total(),
@@ -552,7 +590,70 @@ final class MyNest_Mobile_App_Bridge {
             'tracking'        => $tracking,
             'refund'          => self::refund_block( $order ),
             'customer_note'   => $order->get_customer_note(),
+            'reviewable'      => array(
+                'can_review'       => $can_review,
+                'seller_ids'       => $reviewable_seller_ids,
+            ),
         );
+    }
+
+    /**
+     * v3.7.95 - collapse per-seller shipping status into one buyer-facing
+     * value. Returns 'awaiting' when nobody has shipped, 'partial' when at
+     * least one but not all sellers have shipped, 'shipped' when all have,
+     * and 'delivered' when the order itself is completed.
+     *
+     * @param WC_Order $order        Woo order.
+     * @param int[]    $seller_ids   Sellers with items on the order.
+     * @param array[]  $tracking     Tracking rows already assembled above.
+     */
+    private static function aggregate_shipping_status( WC_Order $order, array $seller_ids, array $tracking ): string {
+        if ( in_array( $order->get_status(), array( 'completed' ), true ) ) {
+            return 'delivered';
+        }
+        if ( empty( $seller_ids ) ) {
+            return 'awaiting';
+        }
+        $shipped = 0;
+        foreach ( $seller_ids as $sid ) {
+            $seller_status = (string) $order->get_meta( '_tnm_seller_status_' . $sid, true );
+            if ( 'shipped' === $seller_status || 'completed' === $seller_status ) {
+                $shipped++;
+            }
+        }
+        if ( 0 === $shipped ) {
+            return 'awaiting';
+        }
+        if ( $shipped < count( $seller_ids ) ) {
+            return 'partial';
+        }
+        return 'shipped';
+    }
+
+    /**
+     * v3.7.95 - build a best-effort tracking URL when the seller didn't
+     * paste one. Falls back to empty string when the carrier isn't one of
+     * the majors, at which point the app just shows the raw number.
+     */
+    private static function guess_tracking_url( string $carrier, string $number ): string {
+        $c = strtolower( trim( $carrier ) );
+        if ( '' === $c || '' === $number ) {
+            return '';
+        }
+        $n = rawurlencode( $number );
+        if ( str_contains( $c, 'usps' ) ) {
+            return 'https://tools.usps.com/go/TrackConfirmAction?tLabels=' . $n;
+        }
+        if ( str_contains( $c, 'ups' ) ) {
+            return 'https://www.ups.com/track?tracknum=' . $n;
+        }
+        if ( str_contains( $c, 'fedex' ) ) {
+            return 'https://www.fedex.com/fedextrack/?trknbr=' . $n;
+        }
+        if ( str_contains( $c, 'dhl' ) ) {
+            return 'https://www.dhl.com/us-en/home/tracking/tracking-express.html?tracking-id=' . $n;
+        }
+        return '';
     }
 
     /**
