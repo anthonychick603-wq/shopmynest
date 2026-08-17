@@ -498,17 +498,78 @@ function mnu_labels_record_last_shippo_error( string $method, string $path, arra
  *
  * @param array<string,mixed> $body
  */
-function mnu_labels_shippo_api_request( string $method, string $path, array $body = array() ): array|WP_Error {
+/**
+ * v3.7.82 — per-seller Shippo token routing (B2 bridge). Callers push a
+ * seller_id via mnu_labels_with_seller_token( $seller_id, fn ) before making
+ * a Shippo request; the low-level HTTP function reads that scope and picks
+ * the seller’s own token when present, falling back to the platform token.
+ *
+ * Returns array{ token:string, source:'seller'|'platform'|'', seller_id:int }.
+ */
+function mnu_labels_resolve_token(): array {
+    $scope     = (int) ( $GLOBALS['_mnu_labels_seller_scope'] ?? 0 );
+    $seller_id = $scope > 0 ? $scope : 0;
+    if ( $seller_id > 0 ) {
+        $seller_token = trim( (string) get_user_meta( $seller_id, '_mnu_shippo_token', true ) );
+        if ( '' !== $seller_token ) {
+            return array( 'token' => $seller_token, 'source' => 'seller', 'seller_id' => $seller_id );
+        }
+    }
     $settings = mnu_labels_settings();
-    if ( empty( $settings['shippo_token'] ) ) {
+    $platform = trim( (string) ( $settings['shippo_token'] ?? '' ) );
+    return array( 'token' => $platform, 'source' => $platform ? 'platform' : '', 'seller_id' => $seller_id );
+}
+
+/**
+ * v3.7.82 — execute a callback with a pinned seller scope so any nested
+ * mnu_labels_shippo_request() calls use that seller’s Shippo token when set.
+ * The previous scope is restored even if the callback throws.
+ *
+ * @template T
+ * @param callable():T $fn
+ * @return T
+ */
+function mnu_labels_with_seller_token( int $seller_id, callable $fn ) {
+    $prev = $GLOBALS['_mnu_labels_seller_scope'] ?? 0;
+    $GLOBALS['_mnu_labels_seller_scope'] = max( 0, $seller_id );
+    try {
+        return $fn();
+    } finally {
+        $GLOBALS['_mnu_labels_seller_scope'] = $prev;
+    }
+}
+
+/**
+ * v3.7.82 — tell callers (mnu_labels_store_transaction, dashboard) whether
+ * the seller is on their own Shippo. Used to skip the postage-recovery
+ * ledger row (their Shippo bills them directly, no marketplace debit).
+ */
+function mnu_labels_seller_on_own_shippo( int $seller_id ): bool {
+    if ( $seller_id <= 0 ) {
+        return false;
+    }
+    return '' !== trim( (string) get_user_meta( $seller_id, '_mnu_shippo_token', true ) );
+}
+
+function mnu_labels_shippo_api_request( string $method, string $path, array $body = array() ): array|WP_Error {
+    $auth = mnu_labels_resolve_token();
+    if ( '' === $auth['token'] ) {
+        // Seller is expected to be on their own Shippo but hasn't connected yet.
+        if ( $auth['seller_id'] > 0 ) {
+            return new WP_Error(
+                'shippo_seller_not_connected',
+                'This seller has not connected their Shippo account yet. Ask them to open the app, go to My Nest → Settings, and connect Shippo before buying a label.',
+                array( 'status' => 409, 'seller_id' => $auth['seller_id'] )
+            );
+        }
         return new WP_Error( 'shippo_not_configured', sprintf( 'Shippo API token is missing. An administrator must configure it under %s → Shipping Labels.', get_bloginfo( 'name' ) ), array( 'status' => 503 ) );
     }
 
     $args = array(
         'method'  => strtoupper( $method ),
         'headers' => array(
-            'Authorization' => 'ShippoToken ' . $settings['shippo_token'],
-            'Content-Type'  => 'application/json',
+            'Authorization'      => 'ShippoToken ' . $auth['token'],
+            'Content-Type'       => 'application/json',
             'Accept'             => 'application/json',
             'SHIPPO-API-VERSION' => '2018-02-08',
         ),
@@ -753,7 +814,10 @@ function mnu_labels_rates( WP_REST_Request $request ): array|WP_Error {
         'async'        => false,
         'metadata'     => sprintf( 'MyNest order %s seller %d', $order->get_order_number(), $seller_id ),
     );
-    $shipment = mnu_labels_shippo_request( '/shipments/', $shippo_body );
+    // v3.7.82 — pin the seller so their Shippo token is used when connected.
+    $shipment = mnu_labels_with_seller_token( $seller_id, function () use ( $shippo_body ) {
+        return mnu_labels_shippo_request( '/shipments/', $shippo_body );
+    } );
     if ( is_wp_error( $shipment ) ) {
         // v3.7.79 — attach the request payload so the shipper knows exactly
         // what we sent to Shippo when the response was a 4xx/5xx.
@@ -858,25 +922,32 @@ function mnu_labels_store_transaction( WC_Order $order, int $seller_id, array $t
         $already_finalized = (bool) $order->get_meta( '_mnu_label_finalized_' . $seller_id, true );
         $order->update_meta_data( '_tnm_seller_status_' . $seller_id, 'shipped' );
 
-        // v3.7.81 — postage recovery. Marketplace pays Shippo; we deduct the
-        // postage from the seller’s next payout via a ledger row (status=
-        // available, no hold). Idempotent via _mnu_label_postage_debited_{sid}.
-        if ( ! $order->get_meta( '_mnu_label_postage_debited_' . $seller_id, true ) ) {
+        // v3.7.81/82 — postage recovery. Marketplace pays Shippo only when the
+        // seller is on the platform token; when they’re on their own Shippo,
+        // Shippo bills them directly, so we skip the ledger debit entirely.
+        // Idempotent via _mnu_label_postage_debited_{sid}.
+        $seller_on_own_shippo = mnu_labels_seller_on_own_shippo( (int) $seller_id );
+        $postage_debited      = false;
+        if ( ! $seller_on_own_shippo && ! $order->get_meta( '_mnu_label_postage_debited_' . $seller_id, true ) ) {
             $postage_amount = (float) $amount;
             if ( $postage_amount > 0 ) {
                 mnu_labels_write_postage_ledger_row( $order, $seller_id, $postage_amount, $currency, $provider, $service, $transaction_id );
                 $order->update_meta_data( '_mnu_label_postage_debited_' . $seller_id, current_time( 'mysql', true ) );
+                $postage_debited = true;
             }
         }
 
         if ( ! $already_finalized ) {
+            $note_suffix = $postage_debited
+                ? sprintf( ' ($%s deducted from next payout)', $amount ?: '0.00' )
+                : ( $seller_on_own_shippo ? ' (billed to seller’s Shippo account)' : '' );
             $order->add_order_note(
                 sprintf(
-                    '%s purchased a %s%s shipping label ($%s deducted from next payout). Tracking: %s',
+                    '%s purchased a %s%s shipping label%s. Tracking: %s',
                     tnm_seller_display_name( $seller_id ),
                     $provider ? $provider . ' ' : '',
                     $service,
-                    $amount ?: '0.00',
+                    $note_suffix,
                     $tracking ?: 'pending'
                 )
             );
@@ -993,8 +1064,13 @@ function mnu_labels_buy( WP_REST_Request $request ): array|WP_Error {
     }
 
     $settings = mnu_labels_settings();
-    if ( ! empty( $settings['test_mode'] ) && str_starts_with( $settings['shippo_token'], 'shippo_live_' ) ) {
-        return new WP_Error( 'live_token_blocked', 'Test mode is enabled, but a live Shippo token is configured. Use a test token or have an administrator intentionally disable test mode.', array( 'status' => 409 ) );
+    // v3.7.82 — only enforce the platform test-mode guard when this seller
+    // will actually use the platform token. Sellers on their own Shippo pay
+    // Shippo directly, so their token/mode is their business.
+    if ( ! mnu_labels_seller_on_own_shippo( (int) $seller_id ) ) {
+        if ( ! empty( $settings['test_mode'] ) && str_starts_with( (string) ( $settings['shippo_token'] ?? '' ), 'shippo_live_' ) ) {
+            return new WP_Error( 'live_token_blocked', 'Test mode is enabled, but a live Shippo token is configured. Use a test token or have an administrator intentionally disable test mode.', array( 'status' => 409 ) );
+        }
     }
 
     $selected_rate = array(
@@ -1010,7 +1086,10 @@ function mnu_labels_buy( WP_REST_Request $request ): array|WP_Error {
         'async'           => false,
         'metadata'        => sprintf( 'MyNest order %s seller %d', $order->get_order_number(), $seller_id ),
     );
-    $transaction = mnu_labels_shippo_request( '/transactions/', $tx_body );
+    // v3.7.82 — pin the seller so their Shippo token is used when connected.
+    $transaction = mnu_labels_with_seller_token( $seller_id, function () use ( $tx_body ) {
+        return mnu_labels_shippo_request( '/transactions/', $tx_body );
+    } );
     if ( is_wp_error( $transaction ) ) {
         // v3.7.80 — same friendly-error mapping used for /rates so label
         // purchase failures give the seller a concrete next step.
