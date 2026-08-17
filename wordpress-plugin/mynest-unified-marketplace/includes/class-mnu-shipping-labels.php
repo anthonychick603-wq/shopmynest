@@ -357,7 +357,118 @@ function mnu_labels_shippo_error_message( mixed $data ): string {
         }
     }
 
+    // v3.7.80 — Shippo field errors arrive as { "__all__": [...] } or
+    // { "address_from": { "street1": ["..."] } }. Walk the whole payload
+    // and return the first non-empty string.
+    $walk = static function ( $node ) use ( &$walk ) {
+        if ( is_string( $node ) ) {
+            $t = trim( $node );
+            return '' !== $t ? $t : null;
+        }
+        if ( is_array( $node ) ) {
+            foreach ( $node as $child ) {
+                $found = $walk( $child );
+                if ( null !== $found ) {
+                    return $found;
+                }
+            }
+        }
+        return null;
+    };
+    $found = $walk( $data );
+    if ( is_string( $found ) && '' !== $found ) {
+        return sanitize_text_field( $found );
+    }
+
     return 'Shippo request failed.';
+}
+
+/**
+ * v3.7.80 — map a raw Shippo error message into an actionable, friendly
+ * message aimed at a seller looking at their order and the next step to take.
+ * When no pattern matches, returns the raw Shippo text so we never regress
+ * back to "Shippo request failed."
+ *
+ * Pairs a `code` (stable, for the mobile app / UI) with `message`
+ * (human-readable). Called from mnu_labels_rates + mnu_labels_buy.
+ *
+ * @return array{code:string, message:string}
+ */
+function mnu_labels_friendly_shippo_error( string $raw ): array {
+    $raw   = trim( $raw );
+    $lower = strtolower( $raw );
+
+    if ( '' === $raw ) {
+        return array( 'code' => 'shippo_unknown', 'message' => 'Shippo did not return a specific reason. Try again in a minute, or contact support if this keeps happening.' );
+    }
+
+    // 1. Same from/to — usually a test order or a buyer-is-the-seller edge.
+    if ( str_contains( $lower, 'identical' ) && str_contains( $lower, 'address' ) ) {
+        return array(
+            'code'    => 'shippo_same_address',
+            'message' => 'The buyer shipping address is the same as your ship-from address. Shippo cannot create a label for a shipment to yourself. Cancel and refund this order, or contact support.',
+        );
+    }
+
+    // 2. Address verification / not deliverable.
+    if ( str_contains( $lower, 'invalid' ) && str_contains( $lower, 'address' ) ) {
+        return array(
+            'code'    => 'shippo_invalid_address',
+            'message' => 'Shippo could not verify the buyer address. Ask the buyer to confirm street, city, state, and ZIP, then try again.',
+        );
+    }
+    if ( str_contains( $lower, 'could not be verified' ) || str_contains( $lower, 'not deliverable' ) || str_contains( $lower, 'not a valid' ) ) {
+        return array(
+            'code'    => 'shippo_unverified_address',
+            'message' => 'Shippo could not verify the destination address. Double-check the buyer\'s street, city, state, and ZIP before creating the label.',
+        );
+    }
+
+    // 3. Missing / bad zip or state.
+    if ( ( str_contains( $lower, 'zip' ) || str_contains( $lower, 'postal' ) ) && ( str_contains( $lower, 'invalid' ) || str_contains( $lower, 'missing' ) || str_contains( $lower, 'required' ) ) ) {
+        return array(
+            'code'    => 'shippo_bad_zip',
+            'message' => 'The ZIP / postal code on this order looks wrong to Shippo. Ask the buyer to correct it before you buy a label.',
+        );
+    }
+    if ( str_contains( $lower, 'state' ) && ( str_contains( $lower, 'invalid' ) || str_contains( $lower, 'missing' ) || str_contains( $lower, 'required' ) ) ) {
+        return array(
+            'code'    => 'shippo_bad_state',
+            'message' => 'The state / province on this order is missing or invalid. Fix it in the order shipping address, then try again.',
+        );
+    }
+
+    // 4. Parcel weight / dimensions rejected.
+    if ( str_contains( $lower, 'parcel' ) || str_contains( $lower, 'weight' ) || str_contains( $lower, 'dimension' ) ) {
+        return array(
+            'code'    => 'shippo_bad_parcel',
+            'message' => 'Shippo rejected the package weight or dimensions. Update the product\'s shipping profile (weight in oz, length/width/height in inches) and try again.',
+        );
+    }
+
+    // 5. Auth / rate limit / carrier account problems.
+    if ( str_contains( $lower, 'unauthorized' ) || str_contains( $lower, 'forbidden' ) || str_contains( $lower, 'api token' ) ) {
+        return array(
+            'code'    => 'shippo_auth',
+            'message' => 'Shippo rejected the API token. An administrator needs to reconnect the Shippo integration.',
+        );
+    }
+    if ( str_contains( $lower, 'rate limit' ) || str_contains( $lower, 'too many' ) ) {
+        return array(
+            'code'    => 'shippo_rate_limited',
+            'message' => 'Shippo is temporarily rate-limiting requests. Wait a minute and try again.',
+        );
+    }
+    if ( str_contains( $lower, 'no carrier' ) || str_contains( $lower, 'carrier account' ) ) {
+        return array(
+            'code'    => 'shippo_no_carrier',
+            'message' => 'No carrier account can quote this shipment. An administrator needs to check Shippo carrier setup.',
+        );
+    }
+
+    // Fallback: give the seller Shippo's own wording. Never regress to
+    // "Shippo request failed." once we have any raw text at all.
+    return array( 'code' => 'shippo_error', 'message' => 'Shippo: ' . $raw );
 }
 
 /**
@@ -647,14 +758,14 @@ function mnu_labels_rates( WP_REST_Request $request ): array|WP_Error {
         // v3.7.79 — attach the request payload so the shipper knows exactly
         // what we sent to Shippo when the response was a 4xx/5xx.
         $data = $shipment->get_error_data();
-        if ( is_array( $data ) ) {
-            $data['request'] = array(
-                'from'   => $from,
-                'to'     => $to,
-                'parcel' => $parcel,
-            );
-            $shipment->add_data( $data );
+        if ( ! is_array( $data ) ) {
+            $data = array();
         }
+        $data['request'] = array(
+            'from'   => $from,
+            'to'     => $to,
+            'parcel' => $parcel,
+        );
         mnu_labels_record_last_shippo_error(
             'POST', '/shipments/', $shippo_body,
             (int) ( $data['shippo_code'] ?? 0 ),
@@ -662,7 +773,11 @@ function mnu_labels_rates( WP_REST_Request $request ): array|WP_Error {
             '',
             array( 'order_id' => $order->get_id(), 'seller_id' => $seller_id )
         );
-        return $shipment;
+        // v3.7.80 — translate Shippo’s wording into a seller-facing next step.
+        $friendly = mnu_labels_friendly_shippo_error( $shipment->get_error_message() );
+        $data['status']            = 422;
+        $data['shippo_message']    = $shipment->get_error_message();
+        return new WP_Error( $friendly['code'], $friendly['message'], $data );
     }
 
     $rates = mnu_labels_sort_rates( isset( $shipment['rates'] ) && is_array( $shipment['rates'] ) ? $shipment['rates'] : array() );
@@ -832,17 +947,31 @@ function mnu_labels_buy( WP_REST_Request $request ): array|WP_Error {
         'currency' => sanitize_text_field( (string) ( $data['currency'] ?? $order->get_currency() ) ),
     );
 
-    $transaction = mnu_labels_shippo_request(
-        '/transactions/',
-        array(
-            'rate'            => $rate_id,
-            'label_file_type' => 'PDF',
-            'async'           => false,
-            'metadata'        => sprintf( 'MyNest order %s seller %d', $order->get_order_number(), $seller_id ),
-        )
+    $tx_body = array(
+        'rate'            => $rate_id,
+        'label_file_type' => 'PDF',
+        'async'           => false,
+        'metadata'        => sprintf( 'MyNest order %s seller %d', $order->get_order_number(), $seller_id ),
     );
+    $transaction = mnu_labels_shippo_request( '/transactions/', $tx_body );
     if ( is_wp_error( $transaction ) ) {
-        return $transaction;
+        // v3.7.80 — same friendly-error mapping used for /rates so label
+        // purchase failures give the seller a concrete next step.
+        $err_data = $transaction->get_error_data();
+        if ( ! is_array( $err_data ) ) {
+            $err_data = array();
+        }
+        mnu_labels_record_last_shippo_error(
+            'POST', '/transactions/', $tx_body,
+            (int) ( $err_data['shippo_code'] ?? 0 ),
+            $err_data['shippo_body'] ?? array(),
+            '',
+            array( 'order_id' => $order->get_id(), 'seller_id' => $seller_id, 'rate' => $rate_id )
+        );
+        $friendly = mnu_labels_friendly_shippo_error( $transaction->get_error_message() );
+        $err_data['status']         = 422;
+        $err_data['shippo_message'] = $transaction->get_error_message();
+        return new WP_Error( $friendly['code'], $friendly['message'], $err_data );
     }
 
     $label = mnu_labels_store_transaction( $order, $seller_id, $transaction, $selected_rate );
