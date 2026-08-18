@@ -293,7 +293,51 @@ function tnm_notify( int $user_id, int $actor_id, string $type, string $title, s
         ),
         array( '%d', '%d', '%s', '%d', '%s', '%s', '%s', '%s', '%d', '%s' )
     );
-    return (int) $wpdb->insert_id;
+    $notification_id = (int) $wpdb->insert_id;
+
+    // v3.7.100 — every in-app notification also fans out to registered
+    // Expo push tokens for that user. Dispatch on shutdown so the current
+    // request (checkout finalisation, message insert, etc.) is not blocked
+    // by an 8s Expo HTTP call. MNU_Ops::notify_user() short-circuits if
+    // there are no tokens on file, so this is a no-op for signed-out or
+    // web-only users. The 'tnm_notify_push_payload' filter is public so
+    // it can be muted per-type by other code without touching this file.
+    //
+    // The three order-lifecycle types are already pushed directly by
+    // MNU_Ops with their own per-order dedup markers, so let them keep
+    // owning that path instead of double-firing here.
+    $direct_push_types = array( 'new_order', 'order_update', 'order_shipped' );
+    if ( $notification_id > 0 && $user_id > 0 && ! in_array( sanitize_key( $type ), $direct_push_types, true ) ) {
+        $payload = array(
+            'user_id'         => $user_id,
+            'title'           => (string) $title,
+            'body'            => (string) $message,
+            'data'            => array(
+                'type'            => sanitize_key( $type ),
+                'object_id'       => (int) $object_id,
+                'object_type'     => sanitize_key( $object_type ),
+                'actor_id'        => (int) $actor_id,
+                'notification_id' => $notification_id,
+            ),
+        );
+        add_action( 'shutdown', function() use ( $payload ) {
+            if ( ! class_exists( 'MNU_Ops' ) || ! method_exists( 'MNU_Ops', 'notify_user' ) ) {
+                return;
+            }
+            $payload = apply_filters( 'tnm_notify_push_payload', $payload );
+            if ( ! is_array( $payload ) || empty( $payload['user_id'] ) ) {
+                return;
+            }
+            MNU_Ops::notify_user(
+                (int) $payload['user_id'],
+                (string) ( $payload['title'] ?? '' ),
+                (string) ( $payload['body'] ?? '' ),
+                is_array( $payload['data'] ?? null ) ? $payload['data'] : array()
+            );
+        }, 100 );
+    }
+
+    return $notification_id;
 }
 
 function tnm_user_can_use_attachment( int $user_id, int $attachment_id ): bool {
