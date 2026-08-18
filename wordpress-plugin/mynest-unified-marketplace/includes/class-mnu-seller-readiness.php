@@ -115,8 +115,10 @@ final class MNU_Seller_Readiness {
 			? (string) MNU_Connect::account_id( $seller_id )
 			: (string) get_user_meta( $seller_id, 'tnm_stripe_account_id', true );
 		$stripe_connected = ( '' !== $account_id );
+		// v3.7.107 - fresh_status() self-heals when the account.updated webhook
+		// never landed. Rate-limited to once/min per seller.
 		$stripe_cache = class_exists( 'MNU_Connect' )
-			? MNU_Connect::cached_status( $seller_id )
+			? MNU_Connect::fresh_status( $seller_id )
 			: array(
 				'connected'         => $stripe_connected,
 				'charges_enabled'   => (bool) get_user_meta( $seller_id, 'tnm_stripe_charges_enabled', true ),

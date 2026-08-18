@@ -133,7 +133,11 @@ final class TNM_Shortcodes {
         $payouts          = TNM_Payouts::list_for_seller( $seller_id );
         $shipping_profile = function_exists( 'mnu_ship_get_profile' ) ? mnu_ship_get_profile( $seller_id ) : array();
         $label_settings   = function_exists( 'mnu_labels_settings' ) ? mnu_labels_settings() : array( 'shippo_token' => '', 'test_mode' => 1 );
-        $connect          = class_exists( 'MNU_Connect' ) ? MNU_Connect::cached_status( $seller_id ) : null;
+        // v3.7.107 - Use fresh_status() so a seller who finished onboarding in
+        // Stripe still sees "Connected & ready" here even if the account.updated
+        // webhook never made it to us. fresh_status() only hits Stripe when the
+        // cache says onboarding is incomplete, and is rate-limited to once/min.
+        $connect          = class_exists( 'MNU_Connect' ) ? MNU_Connect::fresh_status( $seller_id ) : null;
         $listing_blocked  = tnm_seller_listing_blocked( $seller_id );
 
         ob_start();

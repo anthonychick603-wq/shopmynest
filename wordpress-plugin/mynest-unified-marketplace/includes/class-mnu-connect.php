@@ -105,6 +105,58 @@ final class MNU_Connect {
 	}
 
 	/**
+	 * v3.7.107 — Read cached Connect status, and if the seller is connected but
+	 * cache still shows the account as not-yet-usable (charges/payouts/details
+	 * missing), do a single live GET against Stripe and refresh the cache.
+	 *
+	 * The seller dashboard shortcode renders server-side and previously only
+	 * consulted cached_status(), so if the `account.updated` webhook didn't
+	 * reach the site (misconfigured endpoint, secret mismatch, transient
+	 * network loss during Stripe onboarding), the seller was stuck on
+	 * "Onboarding incomplete" even after Stripe collected every required
+	 * field. This method self-heals that on the next page load.
+	 *
+	 * Rate-limited to once per 60 seconds per user via a transient.
+	 *
+	 * @return array{connected:bool,charges_enabled:bool,payouts_enabled:bool,details_submitted:bool}
+	 */
+	public static function fresh_status( int $user_id ): array {
+		$cached = self::cached_status( $user_id );
+		if ( ! $cached['connected'] ) {
+			return $cached;
+		}
+		if ( $cached['charges_enabled'] && $cached['payouts_enabled'] && $cached['details_submitted'] ) {
+			return $cached;
+		}
+		if ( ! function_exists( 'mnu_native_stripe_get' ) ) {
+			return $cached;
+		}
+		$rate_key = 'mnu_connect_refresh_' . $user_id;
+		if ( false !== get_transient( $rate_key ) ) {
+			return $cached;
+		}
+		set_transient( $rate_key, 1, MINUTE_IN_SECONDS );
+		$account_id = self::account_id( $user_id );
+		$account    = mnu_native_stripe_get( '/accounts/' . rawurlencode( $account_id ) );
+		if ( is_wp_error( $account ) ) {
+			$msg = strtolower( (string) $account->get_error_message() );
+			if ( str_contains( $msg, 'does not have access' )
+				|| str_contains( $msg, 'no such account' )
+				|| str_contains( $msg, 'required permissions for this endpoint' ) ) {
+				self::clear_stale_account( $user_id );
+				return array(
+					'connected'         => false,
+					'charges_enabled'   => false,
+					'payouts_enabled'   => false,
+					'details_submitted' => false,
+				);
+			}
+			return $cached;
+		}
+		return self::refresh_status_cache( $user_id, (array) $account );
+	}
+
+	/**
 	 * Persist the Connect booleans from a Stripe account object into user meta.
 	 *
 	 * @param array<string,mixed> $account
@@ -382,7 +434,7 @@ final class MNU_Connect {
 	 * Wipe a stored Connect account id and the cached capability booleans so a
 	 * seller with a dead/inaccessible id can start onboarding cleanly.
 	 */
-	private static function clear_stale_account( int $user_id ): void {
+	public static function clear_stale_account( int $user_id ): void {
 		delete_user_meta( $user_id, self::META_ACCOUNT );
 		delete_user_meta( $user_id, self::META_CHARGES );
 		delete_user_meta( $user_id, self::META_PAYOUTS );
