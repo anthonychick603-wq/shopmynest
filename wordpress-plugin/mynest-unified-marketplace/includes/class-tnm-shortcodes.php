@@ -602,6 +602,19 @@ final class TNM_Shortcodes {
             }
         } elseif ( 'delete_product' === $action ) {
             $result = TNM_Marketplace::delete_product( $seller_id, absint( $_POST['product_id'] ?? 0 ) );
+        } elseif ( 'duplicate_product' === $action ) {
+            // v3.7.105 (Build #3 web parity) - clone an existing listing as a
+            // fresh draft with " (Copy)" appended. Mirrors the mobile
+            // /the-nest/v1/seller/products/{id}/duplicate endpoint.
+            $duplicate_id = TNM_Marketplace::duplicate_product( $seller_id, absint( $_POST['product_id'] ?? 0 ) );
+            if ( is_wp_error( $duplicate_id ) ) {
+                $result = $duplicate_id;
+            } elseif ( is_int( $duplicate_id ) && $duplicate_id > 0 ) {
+                $edit_url = get_permalink( $duplicate_id );
+                return '<div class="tnm-notice tnm-success">Draft copy created. <a href="' . esc_url( (string) $edit_url ) . '">Open the new draft</a> to edit it before publishing.</div>';
+            } else {
+                $result = new WP_Error( 'duplicate_failed', 'Could not duplicate that product. Refresh and try again.' );
+            }
         } elseif ( 'update_order' === $action ) {
             $result = TNM_Marketplace::update_seller_order_status( $seller_id, absint( $_POST['order_id'] ?? 0 ), sanitize_key( wp_unslash( $_POST['status'] ?? '' ) ), sanitize_text_field( wp_unslash( $_POST['tracking_number'] ?? '' ) ) );
         } elseif ( 'save_shipping_profile' === $action ) {
@@ -728,6 +741,15 @@ final class TNM_Shortcodes {
                 . ' data-height-in="' . esc_attr( (string) ( $shipping['height_in'] ?? '' ) ) . '"'
                 . ' data-package-size="' . esc_attr( (string) ( $shipping['package_size'] ?? 'custom' ) ) . '"'
                 . ' data-processing-time="' . esc_attr( (string) ( $shipping['processing_time'] ?? '' ) ) . '">Edit</button>';
+            // v3.7.105 (Build #3 web parity) - Duplicate button, adjacent to
+            // Edit / Delete. Server clones the listing as a draft copy so the
+            // seller can adjust the copy before publishing.
+            echo '<form method="post" class="tnm-inline-form tnm-duplicate-form">';
+            wp_nonce_field( 'tnm_dashboard', 'tnm_nonce' );
+            echo '<input type="hidden" name="tnm_action" value="duplicate_product">';
+            echo '<input type="hidden" name="product_id" value="' . esc_attr( (string) $pid ) . '">';
+            echo '<button type="submit" class="tnm-small-button tnm-button-secondary">Duplicate</button>';
+            echo '</form>';
             echo '<form method="post" class="tnm-inline-form tnm-delete-form" onsubmit="return confirm(\'Delete this product? This cannot be undone.\');">';
             wp_nonce_field( 'tnm_dashboard', 'tnm_nonce' );
             echo '<input type="hidden" name="tnm_action" value="delete_product">';

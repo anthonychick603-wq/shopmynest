@@ -1,0 +1,344 @@
+/* MyNest Web Parity — palette-aligned styles for the new web-only surfaces.
+ * All color tokens read from CSS custom properties published by
+ * shopmynest-branding (--wp--preset--color--brand, --brand-dark, --accent-warm,
+ * --cream, --paper, --ink). Everything falls back to a safe warm neutral if
+ * the branding plugin is disabled, so this file always renders sanely.
+ */
+
+.mnu-save-alert-wrap {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	margin: 0 0 18px;
+}
+
+.mnu-save-alert-pill {
+	display: inline-flex;
+	align-items: center;
+	gap: 8px;
+	padding: 8px 16px;
+	border-radius: 999px;
+	border: 1px solid var(--wp--preset--color--brand, #3A3D8A);
+	background: var(--wp--preset--color--brand, #3A3D8A);
+	color: #fff;
+	font-weight: 600;
+	cursor: pointer;
+	text-decoration: none;
+	transition: background 0.15s ease, transform 0.05s ease;
+	align-self: flex-start;
+}
+.mnu-save-alert-pill:hover { background: var(--wp--preset--color--brand-dark, #26295F); }
+.mnu-save-alert-pill:active { transform: translateY(1px); }
+.mnu-save-alert-pill.is-saved {
+	background: var(--wp--preset--color--accent-warm, #E27055);
+	border-color: var(--wp--preset--color--accent-warm, #E27055);
+}
+.mnu-save-alert-pill--guest {
+	background: transparent;
+	color: var(--wp--preset--color--brand, #3A3D8A);
+	border-color: var(--wp--preset--color--brand, #3A3D8A);
+}
+.mnu-save-alert-hint {
+	margin: 0;
+	font-size: 0.85em;
+	color: var(--wp--preset--color--ink, #1B1A21);
+	opacity: 0.72;
+}
+
+/* -------------------------------------------------- Rating badges */
+
+.mnu-card-rating {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	margin: 4px 0 6px;
+	font-size: 0.85em;
+	color: var(--wp--preset--color--ink, #1B1A21);
+}
+.mnu-card-rating__star { color: var(--wp--preset--color--accent-warm, #E27055); }
+.mnu-card-rating__count { opacity: 0.7; }
+
+.mnu-single-rating {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	margin: 10px 0 14px;
+	font-size: 1em;
+}
+.mnu-single-rating__count { opacity: 0.75; }
+
+/* --------------------------------------- Favorites / Saved-searches / Blog */
+
+.mnu-parity {
+	max-width: 1080px;
+	margin: 24px auto 48px;
+	padding: 0 16px;
+	color: var(--wp--preset--color--ink, #1B1A21);
+}
+.mnu-parity__header {
+	margin-bottom: 24px;
+}
+.mnu-parity__header h1 {
+	margin: 0 0 6px;
+	font-size: clamp(1.6rem, 2.4vw, 2.2rem);
+}
+.mnu-parity__header p {
+	margin: 0;
+	opacity: 0.75;
+}
+.mnu-parity__loading,
+.mnu-parity__empty {
+	padding: 24px;
+	background: var(--wp--preset--color--paper, #F8F5F0);
+	border-radius: 12px;
+	text-align: center;
+	opacity: 0.85;
+}
+.mnu-parity__button {
+	display: inline-block;
+	padding: 10px 22px;
+	border-radius: 999px;
+	background: var(--wp--preset--color--brand, #3A3D8A);
+	color: #fff;
+	font-weight: 600;
+	text-decoration: none;
+	border: 0;
+	cursor: pointer;
+}
+.mnu-parity--gate {
+	text-align: center;
+	padding: 40px 20px;
+}
+
+.mnu-parity__list {
+	list-style: none;
+	margin: 0;
+	padding: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 12px;
+}
+.mnu-parity__row {
+	display: flex;
+	justify-content: space-between;
+	gap: 16px;
+	align-items: center;
+	padding: 14px 18px;
+	background: var(--wp--preset--color--paper, #F8F5F0);
+	border: 1px solid rgba(27, 26, 33, 0.08);
+	border-radius: 12px;
+}
+.mnu-parity__row-main { flex: 1; min-width: 0; }
+.mnu-parity__row-label {
+	font-weight: 600;
+	color: var(--wp--preset--color--brand, #3A3D8A);
+	text-decoration: none;
+}
+.mnu-parity__row-label:hover { text-decoration: underline; }
+.mnu-parity__row-summary {
+	margin: 4px 0 0;
+	font-size: 0.85em;
+	opacity: 0.72;
+}
+.mnu-parity__row-actions {
+	display: flex;
+	align-items: center;
+	gap: 14px;
+}
+.mnu-toggle {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	font-size: 0.85em;
+	cursor: pointer;
+}
+.mnu-toggle input { accent-color: var(--wp--preset--color--brand, #3A3D8A); }
+.mnu-parity__row-delete {
+	background: transparent;
+	border: 1px solid rgba(27, 26, 33, 0.15);
+	color: var(--wp--preset--color--ink, #1B1A21);
+	padding: 6px 12px;
+	border-radius: 999px;
+	cursor: pointer;
+	font-size: 0.85em;
+}
+.mnu-parity__row-delete:hover {
+	background: var(--wp--preset--color--accent-warm, #E27055);
+	color: #fff;
+	border-color: transparent;
+}
+
+/* ----------------------------------------------------------- Blog feed */
+
+.mnu-blog__grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+	gap: 22px;
+}
+.mnu-blog__card {
+	background: var(--wp--preset--color--paper, #F8F5F0);
+	border: 1px solid rgba(27, 26, 33, 0.06);
+	border-radius: 14px;
+	overflow: hidden;
+	transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+.mnu-blog__card:hover {
+	transform: translateY(-2px);
+	box-shadow: 0 10px 22px rgba(27, 26, 33, 0.08);
+}
+.mnu-blog__card-link {
+	display: block;
+	color: inherit;
+	text-decoration: none;
+}
+.mnu-blog__card-image {
+	display: block;
+	width: 100%;
+	height: 180px;
+	object-fit: cover;
+}
+.mnu-blog__card-body { padding: 14px 16px 18px; }
+.mnu-blog__card-author {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	margin: 0 0 8px;
+	font-size: 0.85em;
+	opacity: 0.85;
+}
+.mnu-blog__card-author img {
+	width: 24px;
+	height: 24px;
+	border-radius: 999px;
+	object-fit: cover;
+}
+.mnu-blog__card-excerpt { margin: 0 0 10px; }
+.mnu-blog__card-meta {
+	margin: 0;
+	font-size: 0.85em;
+	opacity: 0.72;
+}
+
+/* --------------------------------------------------------- Blog single */
+
+.mnu-blog-single {
+	max-width: 780px;
+}
+.mnu-blog-single__back a {
+	color: var(--wp--preset--color--brand, #3A3D8A);
+	text-decoration: none;
+}
+.mnu-blog-single__back a:hover { text-decoration: underline; }
+.mnu-blog-single__image {
+	display: block;
+	width: 100%;
+	max-height: 480px;
+	object-fit: cover;
+	border-radius: 14px;
+	margin: 14px 0 18px;
+}
+.mnu-blog-single__meta {
+	display: flex;
+	align-items: center;
+	gap: 12px;
+	margin-bottom: 16px;
+}
+.mnu-blog-single__avatar {
+	width: 44px;
+	height: 44px;
+	border-radius: 999px;
+	object-fit: cover;
+}
+.mnu-blog-single__date {
+	display: block;
+	font-size: 0.85em;
+	opacity: 0.7;
+}
+.mnu-blog-single__body { font-size: 1.05em; line-height: 1.65; }
+.mnu-blog-single__actions {
+	margin: 22px 0 14px;
+	display: flex;
+	gap: 12px;
+}
+.mnu-blog-fav {
+	display: inline-flex;
+	align-items: center;
+	gap: 8px;
+	padding: 8px 16px;
+	border-radius: 999px;
+	border: 1px solid rgba(27, 26, 33, 0.2);
+	background: #fff;
+	cursor: pointer;
+	font-weight: 600;
+}
+.mnu-blog-fav.is-faved {
+	color: var(--wp--preset--color--accent-warm, #E27055);
+	border-color: var(--wp--preset--color--accent-warm, #E27055);
+	background: rgba(226, 112, 85, 0.08);
+}
+
+/* ---------------------------------------------------- Blog comments */
+
+.mnu-blog-comments {
+	margin-top: 28px;
+	border-top: 1px solid rgba(27, 26, 33, 0.08);
+	padding-top: 20px;
+}
+.mnu-blog-comments h2 {
+	margin: 0 0 14px;
+	font-size: 1.25em;
+}
+.mnu-blog-comments__list {
+	display: flex;
+	flex-direction: column;
+	gap: 14px;
+	margin-bottom: 22px;
+}
+.mnu-blog-comment {
+	display: flex;
+	gap: 12px;
+	background: var(--wp--preset--color--paper, #F8F5F0);
+	padding: 12px 14px;
+	border-radius: 10px;
+}
+.mnu-blog-comment__avatar {
+	width: 36px;
+	height: 36px;
+	border-radius: 999px;
+	object-fit: cover;
+	flex-shrink: 0;
+}
+.mnu-blog-comment__author {
+	margin: 0 0 4px;
+	font-size: 0.9em;
+}
+.mnu-blog-comment__date {
+	font-weight: 400;
+	opacity: 0.6;
+	margin-left: 6px;
+	font-size: 0.85em;
+}
+.mnu-blog-comment__content { margin: 0; white-space: pre-wrap; }
+.mnu-blog-comments__form { display: flex; flex-direction: column; gap: 10px; }
+.mnu-blog-comments__form textarea {
+	width: 100%;
+	padding: 10px 12px;
+	border-radius: 10px;
+	border: 1px solid rgba(27, 26, 33, 0.15);
+	font-family: inherit;
+	font-size: 1em;
+	resize: vertical;
+	min-height: 80px;
+}
+.mnu-blog-comments__form button { align-self: flex-start; }
+
+/* --------------------- Favorites grid uses Woo's product-loop classes */
+.mnu-favorites-grid { list-style: none; padding: 0; }
+
+/* --------------------- Seller dashboard: Duplicate button (v3.7.105) */
+.tnm-duplicate-form { display: inline-flex; margin: 0 6px 0 0; }
+.tnm-duplicate-form .tnm-small-button.tnm-button-secondary {
+	background: var(--wp--preset--color--paper, #F8F5F0);
+	color: var(--wp--preset--color--brand, #3A3D8A);
+	border: 1px solid var(--wp--preset--color--brand, #3A3D8A);
+}
