@@ -51,12 +51,11 @@ final class MNU_Blog {
                 // standard post editor.
                 'show_ui'             => false,
                 'show_in_menu'        => false,
-                // v3.7.96 — enable native WP comments so buyers can discuss
-                // blog posts. `comments` support activates the wp_comments
-                // table for this CPT; the mobile /blog/{id}/comments routes
-                // below re-use TNM_Social's comment_to_array shape so the
-                // client code path is identical to community-post comments.
-                'supports'            => array( 'title', 'editor', 'author', 'thumbnail', 'comments' ),
+                // v3.7.97 — buyer comments flow through the routes below and
+                // sit in the wp_comments table regardless of CPT `supports`,
+                // so we keep supports minimal to avoid an activation-time
+                // capability rebuild on `capability_type => 'post'` CPTs.
+                'supports'            => array( 'title', 'editor', 'author', 'thumbnail' ),
                 'capability_type'     => 'post',
                 'map_meta_cap'        => true,
                 'exclude_from_search' => true,
@@ -137,7 +136,7 @@ final class MNU_Blog {
             )
         );
         return rest_ensure_response( array(
-            'comments' => array_map( array( 'TNM_Social', 'comment_to_array' ), $comments ),
+            'comments' => class_exists( 'TNM_Social' ) ? array_map( array( 'TNM_Social', 'comment_to_array' ), $comments ) : array(),
             'total'    => $total,
             'pages'    => (int) ceil( $total / $per_page ),
         ) );
@@ -188,7 +187,8 @@ final class MNU_Blog {
                 ''
             );
         }
-        return new WP_REST_Response( TNM_Social::comment_to_array( get_comment( $comment_id ) ), 201 );
+        $shape = class_exists( 'TNM_Social' ) ? TNM_Social::comment_to_array( get_comment( $comment_id ) ) : array( 'id' => (int) $comment_id );
+        return new WP_REST_Response( $shape, 201 );
     }
 
     public static function logged_in(): bool|WP_Error {
