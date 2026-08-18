@@ -36,6 +36,19 @@ final class TNM_REST {
 
         register_rest_route( self::NS, '/notifications', array( 'methods' => WP_REST_Server::READABLE, 'callback' => array( __CLASS__, 'notifications' ), 'permission_callback' => array( __CLASS__, 'logged_in' ) ) );
         register_rest_route( self::NS, '/notifications/read', array( 'methods' => WP_REST_Server::CREATABLE, 'callback' => array( __CLASS__, 'notifications_read' ), 'permission_callback' => array( __CLASS__, 'logged_in' ) ) );
+
+        // v3.7.101 — saved searches. GET lists the caller's saved searches;
+        // POST creates one from the current search payload (returns the row so
+        // the client can echo an "Alert saved" confirmation with the label).
+        // PUT toggles notify. DELETE removes.
+        register_rest_route( self::NS, '/saved-searches', array(
+            array( 'methods' => WP_REST_Server::READABLE, 'callback' => array( __CLASS__, 'saved_searches_list' ), 'permission_callback' => array( __CLASS__, 'logged_in' ) ),
+            array( 'methods' => WP_REST_Server::CREATABLE, 'callback' => array( __CLASS__, 'saved_searches_create' ), 'permission_callback' => array( __CLASS__, 'logged_in' ) ),
+        ) );
+        register_rest_route( self::NS, '/saved-searches/(?P<id>\d+)', array(
+            array( 'methods' => WP_REST_Server::EDITABLE, 'callback' => array( __CLASS__, 'saved_searches_update' ), 'permission_callback' => array( __CLASS__, 'logged_in' ) ),
+            array( 'methods' => WP_REST_Server::DELETABLE, 'callback' => array( __CLASS__, 'saved_searches_delete' ), 'permission_callback' => array( __CLASS__, 'logged_in' ) ),
+        ) );
         register_rest_route( self::NS, '/messages', array( array( 'methods' => WP_REST_Server::READABLE, 'callback' => array( __CLASS__, 'conversations' ), 'permission_callback' => array( __CLASS__, 'logged_in' ) ), array( 'methods' => WP_REST_Server::CREATABLE, 'callback' => array( __CLASS__, 'send_message' ), 'permission_callback' => array( __CLASS__, 'logged_in' ) ) ) );
         register_rest_route( self::NS, '/messages/(?P<user_id>\d+)', array( 'methods' => WP_REST_Server::READABLE, 'callback' => array( __CLASS__, 'conversation' ), 'permission_callback' => array( __CLASS__, 'logged_in' ) ) );
         // v3.7.86 — photo attachments in DMs. Upload is multipart; photo
@@ -550,6 +563,54 @@ final class TNM_REST {
     public static function notifications_read( WP_REST_Request $request ): WP_REST_Response {
         $ids = array_map( 'absint', (array) $request->get_param( 'ids' ) );
         return rest_ensure_response( array( 'updated' => TNM_Social::mark_notifications_read( get_current_user_id(), $ids ) ) );
+    }
+
+    // v3.7.101 — saved searches. Thin wrappers around MNU_SavedSearches so the
+    // storage rules (hash, dedup, max per user) live in one class.
+    public static function saved_searches_list(): WP_REST_Response {
+        return rest_ensure_response( array( 'items' => MNU_SavedSearches::list_for_user( get_current_user_id() ) ) );
+    }
+
+    public static function saved_searches_create( WP_REST_Request $request ): WP_REST_Response|WP_Error {
+        $payload = array(
+            'label'        => sanitize_text_field( (string) $request->get_param( 'label' ) ),
+            'search'       => sanitize_text_field( (string) $request->get_param( 'search' ) ),
+            'category'     => absint( $request->get_param( 'category' ) ),
+            'sort'         => sanitize_key( (string) $request->get_param( 'sort' ) ),
+            'min_price'    => sanitize_text_field( (string) $request->get_param( 'min_price' ) ),
+            'max_price'    => sanitize_text_field( (string) $request->get_param( 'max_price' ) ),
+            'pa_condition' => sanitize_text_field( (string) $request->get_param( 'pa_condition' ) ),
+            'pa_size'      => sanitize_text_field( (string) $request->get_param( 'pa_size' ) ),
+            'pa_brand'     => sanitize_text_field( (string) $request->get_param( 'pa_brand' ) ),
+            'seller_id'    => absint( $request->get_param( 'seller_id' ) ),
+        );
+        $row = MNU_SavedSearches::create( get_current_user_id(), $payload );
+        if ( is_wp_error( $row ) ) {
+            return $row;
+        }
+        return rest_ensure_response( $row );
+    }
+
+    public static function saved_searches_update( WP_REST_Request $request ): WP_REST_Response|WP_Error {
+        $id     = absint( $request['id'] );
+        $notify = null;
+        if ( null !== $request->get_param( 'notify' ) ) {
+            $notify = (bool) $request->get_param( 'notify' );
+        }
+        $row = MNU_SavedSearches::update( get_current_user_id(), $id, array( 'notify' => $notify ) );
+        if ( is_wp_error( $row ) ) {
+            return $row;
+        }
+        return rest_ensure_response( $row );
+    }
+
+    public static function saved_searches_delete( WP_REST_Request $request ): WP_REST_Response|WP_Error {
+        $id = absint( $request['id'] );
+        $ok = MNU_SavedSearches::delete( get_current_user_id(), $id );
+        if ( is_wp_error( $ok ) ) {
+            return $ok;
+        }
+        return rest_ensure_response( array( 'success' => (bool) $ok ) );
     }
 
     public static function conversations(): WP_REST_Response {

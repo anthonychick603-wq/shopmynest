@@ -286,6 +286,29 @@ final class MNU_Install {
             KEY seller_status (seller_id,status)
         ) $charset;";
 
+        // v3.7.101 — saved searches. Each row is one "alert me when new listings
+        // match this search" subscription. `query_json` stores the full search
+        // payload (text query + category + attribute filters + price range) so
+        // the cron can replay it. `last_checked_at` moves forward every run so
+        // we only push products created since. `last_matched_product_id` is the
+        // high-water mark used to filter out re-notifications for the same item
+        // if a seller re-publishes it.
+        $queries[] = 'CREATE TABLE ' . tnm_table( 'saved_searches' ) . " (
+            id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+            user_id bigint(20) unsigned NOT NULL,
+            label varchar(200) NOT NULL,
+            query_hash char(40) NOT NULL,
+            query_json longtext NOT NULL,
+            notify tinyint(1) NOT NULL DEFAULT 1,
+            last_checked_at datetime NOT NULL,
+            last_matched_product_id bigint(20) unsigned NOT NULL DEFAULT 0,
+            created_at datetime NOT NULL,
+            updated_at datetime NOT NULL,
+            PRIMARY KEY  (id),
+            UNIQUE KEY user_hash (user_id,query_hash),
+            KEY notify_checked (notify,last_checked_at)
+        ) $charset;";
+
         global $wpdb;
         $queries[] = 'CREATE TABLE ' . $wpdb->prefix . "mnu_import_jobs (
             id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
