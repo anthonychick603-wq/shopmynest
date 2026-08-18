@@ -3,7 +3,7 @@
  * Plugin Name: MyNest Unified Marketplace
  * Plugin URI:  https://shopmynest.com/
  * Description: One complete WooCommerce marketplace plugin for MyNest sellers, fees, payouts, orders, social features, mobile APIs, checkout, and shipping.
- * Version:     3.7.105
+ * Version:     3.7.106
  * Author:      MyNest
  * Text Domain: mynest-unified-marketplace
  * Requires at least: 6.5
@@ -16,7 +16,7 @@
 
 defined( 'ABSPATH' ) || exit;
 
-define( 'MNU_VERSION', '3.7.105' );
+define( 'MNU_VERSION', '3.7.106' );
 define( 'MNU_DB_VERSION', '3.0.13' );
 define( 'MNU_FILE', __FILE__ );
 define( 'MNU_BASENAME', plugin_basename( __FILE__ ) );
@@ -224,12 +224,12 @@ final class MNU_Plugin {
 			MNU_Multi_Roles::init();
 		}
 		// v3.7.105 - Web parity surfaces (shortcodes, save-alert pill,
-		// rating badges). ensure_pages() is only called once per plugin
-		// version to avoid a page lookup on every request.
+		// rating badges). ensure_pages() must NOT run on plugins_loaded
+		// because wp_insert_post -> get_permalink touches $wp_rewrite,
+		// which is only initialized on the 'init' hook. Defer to 'init'.
 		MNU_Web_Parity::init();
 		if ( get_option( 'mnu_web_parity_pages_version', '' ) !== MNU_VERSION ) {
-			MNU_Web_Parity::ensure_pages();
-			update_option( 'mnu_web_parity_pages_version', MNU_VERSION, false );
+			add_action( 'init', array( 'MNU_Web_Parity', 'ensure_pages_once' ), 20 );
 		}
 
 		update_option( 'mnu_last_successful_boot', current_time( 'mysql', true ), false );

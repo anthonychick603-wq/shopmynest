@@ -56,6 +56,19 @@ final class MNU_Web_Parity {
      * Ensures /favorites, /saved-searches, /nest-blog pages exist with the
      * matching shortcode as their content.
      */
+    /**
+     * Version-gated wrapper for ensure_pages(). Bound to the 'init' hook so
+     * WP_Rewrite is already initialized before wp_insert_post -> get_permalink
+     * runs. Runs at most once per plugin version.
+     */
+    public static function ensure_pages_once(): void {
+        if ( get_option( 'mnu_web_parity_pages_version', '' ) === MNU_VERSION ) {
+            return;
+        }
+        self::ensure_pages();
+        update_option( 'mnu_web_parity_pages_version', MNU_VERSION, false );
+    }
+
     public static function ensure_pages(): void {
         $wanted = array(
             'favorites'      => array( 'slug' => 'favorites',      'title' => 'Favorites',      'shortcode' => '[mynest_favorites]' ),
