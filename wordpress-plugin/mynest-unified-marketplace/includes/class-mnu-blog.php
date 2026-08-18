@@ -51,7 +51,12 @@ final class MNU_Blog {
                 // standard post editor.
                 'show_ui'             => false,
                 'show_in_menu'        => false,
-                'supports'            => array( 'title', 'editor', 'author', 'thumbnail' ),
+                // v3.7.96 — enable native WP comments so buyers can discuss
+                // blog posts. `comments` support activates the wp_comments
+                // table for this CPT; the mobile /blog/{id}/comments routes
+                // below re-use TNM_Social's comment_to_array shape so the
+                // client code path is identical to community-post comments.
+                'supports'            => array( 'title', 'editor', 'author', 'thumbnail', 'comments' ),
                 'capability_type'     => 'post',
                 'map_meta_cap'        => true,
                 'exclude_from_search' => true,
@@ -88,6 +93,102 @@ final class MNU_Blog {
             '/blog/moderation/posts/(?P<id>\d+)/reject',
             array( 'methods' => WP_REST_Server::CREATABLE, 'callback' => array( __CLASS__, 'reject' ), 'permission_callback' => array( __CLASS__, 'admin' ) )
         );
+        // v3.7.96 — comments on approved blog posts. GET is public, POST
+        // requires login; the mobile client mirrors the community-post flow.
+        register_rest_route(
+            self::NS,
+            '/blog/posts/(?P<id>\d+)/comments',
+            array(
+                array( 'methods' => WP_REST_Server::READABLE, 'callback' => array( __CLASS__, 'read_comments' ), 'permission_callback' => '__return_true' ),
+                array( 'methods' => WP_REST_Server::CREATABLE, 'callback' => array( __CLASS__, 'create_comment' ), 'permission_callback' => array( __CLASS__, 'logged_in' ) ),
+            )
+        );
+    }
+
+    /**
+     * A published blog post or a 404 WP_Error. Only approved posts (post_status
+     * == publish on the mnu_blog_post CPT) can be commented on.
+     */
+    private static function published_or_error( int $post_id ): WP_Post|WP_Error {
+        $post = get_post( $post_id );
+        if ( ! $post || self::CPT !== $post->post_type || 'publish' !== $post->post_status ) {
+            return tnm_json_error( 'blog_post_not_found', 'Blog post not found.', 404 );
+        }
+        return $post;
+    }
+
+    public static function read_comments( WP_REST_Request $request ): WP_REST_Response|WP_Error {
+        $post_id = absint( $request['id'] );
+        $post    = self::published_or_error( $post_id );
+        if ( is_wp_error( $post ) ) {
+            return $post;
+        }
+        $per_page = max( 1, min( 50, (int) ( $request->get_param( 'per_page' ) ?: 20 ) ) );
+        $page     = max( 1, (int) $request->get_param( 'page' ) );
+        $total    = (int) get_comments( array( 'post_id' => $post_id, 'status' => 'approve', 'count' => true ) );
+        $comments = get_comments(
+            array(
+                'post_id' => $post_id,
+                'status'  => 'approve',
+                'orderby' => 'comment_date_gmt',
+                'order'   => 'ASC',
+                'number'  => $per_page,
+                'offset'  => ( $page - 1 ) * $per_page,
+            )
+        );
+        return rest_ensure_response( array(
+            'comments' => array_map( array( 'TNM_Social', 'comment_to_array' ), $comments ),
+            'total'    => $total,
+            'pages'    => (int) ceil( $total / $per_page ),
+        ) );
+    }
+
+    public static function create_comment( WP_REST_Request $request ): WP_REST_Response|WP_Error {
+        $post_id = absint( $request['id'] );
+        $post    = self::published_or_error( $post_id );
+        if ( is_wp_error( $post ) ) {
+            return $post;
+        }
+        $params  = $request->get_json_params() ?: $request->get_params();
+        $content = trim( sanitize_textarea_field( (string) tnm_array_get( $params, 'content', '' ) ) );
+        if ( '' === $content ) {
+            return tnm_json_error( 'empty_comment', 'Comment cannot be empty.', 400 );
+        }
+        if ( mb_strlen( $content ) > 2000 ) {
+            return tnm_json_error( 'comment_too_long', 'Comment cannot exceed 2,000 characters.', 400 );
+        }
+        $user_id = get_current_user_id();
+        $user    = get_userdata( $user_id );
+        $comment_id = wp_insert_comment(
+            array(
+                'comment_post_ID'      => $post_id,
+                'user_id'              => $user_id,
+                'comment_content'      => $content,
+                'comment_approved'     => 1,
+                'comment_type'         => 'comment',
+                'comment_author'       => $user ? $user->display_name : '',
+                'comment_author_email' => $user ? $user->user_email : '',
+            )
+        );
+        if ( ! $comment_id ) {
+            return tnm_json_error( 'comment_failed', 'Could not save your comment.', 500 );
+        }
+        // Notify the post author of the new comment, unless they are the
+        // commenter themselves.
+        $author_id = (int) $post->post_author;
+        if ( $author_id && $author_id !== $user_id && function_exists( 'tnm_notify' ) ) {
+            tnm_notify(
+                $author_id,
+                $user_id,
+                'blog_post_comment',
+                'New comment on your blog post',
+                (string) get_the_author_meta( 'display_name', $user_id ),
+                $post_id,
+                self::CPT,
+                ''
+            );
+        }
+        return new WP_REST_Response( TNM_Social::comment_to_array( get_comment( $comment_id ) ), 201 );
     }
 
     public static function logged_in(): bool|WP_Error {
@@ -349,6 +450,9 @@ final class MNU_Blog {
                 'avatar' => tnm_user_avatar_url( $author_id, 256 ),
             ),
             'created_at' => mysql_to_rfc3339( $post->post_date_gmt ),
+            // v3.7.96 — comment metadata drives the count badge on the blog
+            // feed card and the comment thread on the detail screen.
+            'comments'   => (int) get_comments_number( $post ),
         );
     }
 
