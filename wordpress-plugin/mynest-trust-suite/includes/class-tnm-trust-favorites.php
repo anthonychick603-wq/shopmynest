@@ -121,6 +121,13 @@ class TNM_Trust_Favorites {
 				array( '%d', '%d' )
 			);
 			$favorited = false;
+			/**
+			 * v1.2.0 - Fires when a buyer un-favorites a product.
+			 *
+			 * Consumed by the unified marketplace for stat rollups. No
+			 * notification is emitted on un-favorite.
+			 */
+			do_action( 'tnm_favorite_removed', $user_id, $product_id );
 		} else {
 			$wpdb->insert(
 				$table,
@@ -132,6 +139,14 @@ class TNM_Trust_Favorites {
 				array( '%d', '%d', '%s' )
 			);
 			$favorited = true;
+			/**
+			 * v1.2.0 - Fires when a buyer favorites a product.
+			 *
+			 * The unified marketplace listens for this and pushes a
+			 * rate-limited "someone favorited your item" notification
+			 * to the seller.
+			 */
+			do_action( 'tnm_favorite_added', $user_id, $product_id );
 		}
 
 		return array(
@@ -150,16 +165,24 @@ class TNM_Trust_Favorites {
 	public static function remove( $user_id, $product_id ) {
 		global $wpdb;
 
-		$table = TNM_Trust_DB::table( 'favorites' );
+		$user_id    = absint( $user_id );
+		$product_id = absint( $product_id );
+		$table      = TNM_Trust_DB::table( 'favorites' );
 
-		$wpdb->delete(
+		$rows = $wpdb->delete(
 			$table,
 			array(
-				'user_id'    => absint( $user_id ),
-				'product_id' => absint( $product_id ),
+				'user_id'    => $user_id,
+				'product_id' => $product_id,
 			),
 			array( '%d', '%d' )
 		);
+
+		// v1.2.0 - Fire only if we actually removed a row so listeners
+		// don't decrement stats that were never incremented.
+		if ( $rows ) {
+			do_action( 'tnm_favorite_removed', $user_id, $product_id );
+		}
 
 		return array(
 			'favorited' => false,

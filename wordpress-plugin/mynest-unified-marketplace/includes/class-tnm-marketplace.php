@@ -851,9 +851,15 @@ final class TNM_Marketplace {
             ),
         );
         if ( $seller_context ) {
-            $data['status'] = $product->get_status();
-            $data['sku']    = $product->get_sku();
-            $data['sales']  = (int) $product->get_total_sales();
+            $data['status']           = $product->get_status();
+            $data['sku']              = $product->get_sku();
+            $data['sales']            = (int) $product->get_total_sales();
+            // v3.7.104 - seller listings show a heart + count so the seller
+            // knows which items are drawing interest. Only in seller context;
+            // buyer-facing product cards don't need it.
+            $data['favorites_count']  = class_exists( 'MNU_Favorites_Listener' )
+                ? (int) ( MNU_Favorites_Listener::counts_for_products( array( $product->get_id() ) )[ $product->get_id() ] ?? 0 )
+                : 0;
         }
         return $data;
     }

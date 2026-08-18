@@ -3,7 +3,7 @@
  * Plugin Name:       MyNest Trust & Growth Suite
  * Plugin URI:        https://shopmynest.com/
  * Description:       Adds buyer protection (disputes), seller performance badges, favorites & personalized feed ranking, bundles & offers, structured product attributes, and listing boosts / Pro Seller tier to The Nest marketplace. Designed as a standalone companion to the "MyNest Unified Marketplace" plugin — reads its data defensively but never depends on it.
- * Version:           1.1.0
+ * Version:           1.2.0
  * Requires at least: 6.5
  * Requires PHP:      8.0
  * Requires Plugins:  woocommerce
@@ -26,7 +26,7 @@ if ( ! defined( 'ABSPATH' ) ) {
  * Constants
  * -----------------------------------------------------------------------
  */
-define( 'TNM_TRUST_VERSION', '1.1.0' );
+define( 'TNM_TRUST_VERSION', '1.2.0' );
 define( 'TNM_TRUST_FILE', __FILE__ );
 define( 'TNM_TRUST_DIR', plugin_dir_path( __FILE__ ) );
 define( 'TNM_TRUST_URL', plugin_dir_url( __FILE__ ) );
