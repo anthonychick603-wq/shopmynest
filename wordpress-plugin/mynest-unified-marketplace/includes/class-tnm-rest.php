@@ -63,6 +63,9 @@ final class TNM_REST {
         register_rest_route( self::NS, '/seller/profile', array( array( 'methods' => WP_REST_Server::READABLE, 'callback' => array( __CLASS__, 'seller_profile_me' ), 'permission_callback' => array( __CLASS__, 'seller' ) ), array( 'methods' => WP_REST_Server::EDITABLE, 'callback' => array( __CLASS__, 'seller_profile_update' ), 'permission_callback' => array( __CLASS__, 'seller' ) ) ) );
         register_rest_route( self::NS, '/seller/products', array( array( 'methods' => WP_REST_Server::READABLE, 'callback' => array( __CLASS__, 'seller_products' ), 'permission_callback' => array( __CLASS__, 'seller' ) ), array( 'methods' => WP_REST_Server::CREATABLE, 'callback' => array( __CLASS__, 'seller_product_create' ), 'permission_callback' => array( __CLASS__, 'seller' ) ) ) );
         register_rest_route( self::NS, '/seller/products/(?P<id>\d+)', array( array( 'methods' => WP_REST_Server::EDITABLE, 'callback' => array( __CLASS__, 'seller_product_update' ), 'permission_callback' => array( __CLASS__, 'seller' ) ), array( 'methods' => WP_REST_Server::DELETABLE, 'callback' => array( __CLASS__, 'seller_product_delete' ), 'permission_callback' => array( __CLASS__, 'seller' ) ) ) );
+        // v3.7.102 (Build #3) — clone an existing listing (as a draft) so the seller
+        // only has to change color/size/photo instead of retyping every field.
+        register_rest_route( self::NS, '/seller/products/(?P<id>\d+)/duplicate', array( 'methods' => WP_REST_Server::CREATABLE, 'callback' => array( __CLASS__, 'seller_product_duplicate' ), 'permission_callback' => array( __CLASS__, 'seller' ) ) );
         register_rest_route( self::NS, '/seller/orders', array( 'methods' => WP_REST_Server::READABLE, 'callback' => array( __CLASS__, 'seller_orders' ), 'permission_callback' => array( __CLASS__, 'seller' ) ) );
         register_rest_route( self::NS, '/seller/orders/(?P<id>\d+)', array( 'methods' => WP_REST_Server::EDITABLE, 'callback' => array( __CLASS__, 'seller_order_update' ), 'permission_callback' => array( __CLASS__, 'seller' ) ) );
         register_rest_route( self::NS, '/seller/earnings', array( 'methods' => WP_REST_Server::READABLE, 'callback' => array( __CLASS__, 'seller_earnings' ), 'permission_callback' => array( __CLASS__, 'seller' ) ) );
@@ -956,6 +959,18 @@ final class TNM_REST {
     public static function seller_product_delete( WP_REST_Request $request ): WP_REST_Response|WP_Error {
         $result = TNM_Marketplace::delete_product( get_current_user_id(), absint( $request['id'] ) );
         return is_wp_error( $result ) ? $result : rest_ensure_response( array( 'success' => (bool) $result ) );
+    }
+
+    public static function seller_product_duplicate( WP_REST_Request $request ): WP_REST_Response|WP_Error {
+        $new_id = TNM_Marketplace::duplicate_product( get_current_user_id(), absint( $request['id'] ) );
+        if ( is_wp_error( $new_id ) ) {
+            return $new_id;
+        }
+        $product = wc_get_product( $new_id );
+        if ( ! $product ) {
+            return tnm_json_error( 'duplicate_missing', 'The duplicated product could not be loaded.', 500 );
+        }
+        return rest_ensure_response( TNM_Marketplace::product_to_array( $product, true ) );
     }
 
     public static function seller_orders( WP_REST_Request $request ): WP_REST_Response {

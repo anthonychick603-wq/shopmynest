@@ -727,6 +727,95 @@ final class TNM_Marketplace {
         return (bool) wp_trash_post( $product_id );
     }
 
+    /**
+     * Duplicate an existing product owned by $seller_id.
+     *
+     * v3.7.102 (Build #3) — powers the mobile "Duplicate this listing" action so
+     * a maker with variant items (e.g. hair bows in eight colors) doesn't have
+     * to retype every field. We deliberately clone as a **draft** with " (Copy)"
+     * appended: the seller lands in the edit form, tweaks the color/size/photo,
+     * and hits publish. That's the whole workflow.
+     *
+     * We bypass create_product() here because it strips gallery, attributes,
+     * and shipping — which are the exact fields duplication needs to preserve.
+     * Instead we clone by hand: WC_Product_Simple → copy scalars → set image /
+     * gallery / categories / attribute terms → clone _mnu_ship_* meta.
+     */
+    public static function duplicate_product( int $seller_id, int $source_id ): int|WP_Error {
+        $source = wc_get_product( $source_id );
+        if ( ! $source ) {
+            return tnm_json_error( 'product_not_found', 'Product not found.', 404 );
+        }
+        if ( tnm_get_product_seller_id( $source ) !== $seller_id && ! tnm_is_admin_or_manager() ) {
+            return tnm_json_error( 'product_permission_denied', 'You cannot duplicate this product.', 403 );
+        }
+
+        // Stripe onboarding gate — same rule as create. A seller who can't list
+        // new products shouldn't be able to duplicate their way around it.
+        if ( ! tnm_is_admin_or_manager() && class_exists( 'MNU_Connect' ) && ! MNU_Connect::seller_can_sell( $seller_id ) ) {
+            return tnm_json_error( 'stripe_onboarding_required', 'You must finish connecting your bank account with Stripe before you can duplicate a listing.', 403 );
+        }
+
+        $copy = new WC_Product_Simple();
+        $copy->set_name( $source->get_name() . ' (Copy)' );
+        $copy->set_description( $source->get_description() );
+        $copy->set_short_description( $source->get_short_description() );
+        $copy->set_regular_price( $source->get_regular_price() );
+        $copy->set_sale_price( $source->get_sale_price() );
+        $copy->set_status( 'draft' );  // Always draft so it doesn't accidentally publish.
+        $copy->set_catalog_visibility( 'visible' );
+        $copy->set_manage_stock( $source->get_manage_stock() );
+        $copy->set_stock_quantity( $source->get_stock_quantity() );
+        $copy->set_stock_status( ( $source->get_stock_quantity() ?: 0 ) > 0 ? 'instock' : 'outofstock' );
+        $copy->set_weight( $source->get_weight() );
+        $copy->set_length( $source->get_length() );
+        $copy->set_width( $source->get_width() );
+        $copy->set_height( $source->get_height() );
+        $copy->set_image_id( $source->get_image_id() );
+        $copy->set_gallery_image_ids( $source->get_gallery_image_ids() );
+        // Attributes clone verbatim; taxonomy terms are set below.
+        $copy->set_attributes( $source->get_attributes() );
+        // Not the SKU — WooCommerce enforces uniqueness and a collision would
+        // reject the save. Leave blank; the seller can retype it if they use SKUs.
+        $copy->update_meta_data( '_tnm_seller_id', $seller_id );
+        $copy->update_meta_data( '_mynest_seller_id', $seller_id );
+        $new_id = $copy->save();
+        if ( ! $new_id || is_wp_error( $new_id ) ) {
+            return tnm_json_error( 'duplicate_failed', 'Could not duplicate the listing. Please try again.', 500 );
+        }
+        wp_update_post( array( 'ID' => $new_id, 'post_author' => $seller_id ) );
+
+        // Categories.
+        $cat_ids = wp_get_object_terms( $source_id, 'product_cat', array( 'fields' => 'ids' ) );
+        if ( is_array( $cat_ids ) && $cat_ids ) {
+            wp_set_object_terms( $new_id, array_map( 'intval', $cat_ids ), 'product_cat' );
+        }
+
+        // Attribute taxonomy terms (pa_condition / pa_size / pa_brand / etc.).
+        foreach ( array( 'pa_condition', 'pa_size', 'pa_brand', 'pa_color', 'pa_material' ) as $taxonomy ) {
+            if ( ! taxonomy_exists( $taxonomy ) ) {
+                continue;
+            }
+            $terms = wp_get_object_terms( $source_id, $taxonomy, array( 'fields' => 'ids' ) );
+            if ( is_array( $terms ) && $terms ) {
+                wp_set_object_terms( $new_id, array_map( 'intval', $terms ), $taxonomy );
+            }
+        }
+
+        // Shipping meta (weight/dims/package_size/processing_time). Live in
+        // _mnu_ship_* keys — copy them across as-is.
+        if ( function_exists( 'mnu_ship_get_product_shipping' ) && function_exists( 'mnu_ship_save_product_shipping' ) ) {
+            $shipping = mnu_ship_get_product_shipping( $source_id );
+            if ( is_array( $shipping ) && $shipping ) {
+                mnu_ship_save_product_shipping( (int) $new_id, $shipping );
+            }
+        }
+
+        do_action( 'tnm_product_duplicated', $new_id, $source_id, $seller_id );
+        do_action( 'tnm_product_created', $new_id, $seller_id, array( 'source_id' => $source_id ) );
+        return (int) $new_id;
+    }
+
     public static function product_to_array( WC_Product $product, bool $seller_context = false ): array {
         $seller_id = tnm_get_product_seller_id( $product );
         $data = array(
