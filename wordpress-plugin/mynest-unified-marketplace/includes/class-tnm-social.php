@@ -690,6 +690,36 @@ final class TNM_Social {
         return $review_id;
     }
 
+    /**
+     * Lightweight per-seller rating aggregate. Kept separate from
+     * seller_reviews() so seller-list endpoints can attach {rating,
+     * review_count} without paying for the full paginated review payload.
+     * Static cache dedups the query when the same seller shows up more than
+     * once (product feed with 20 items from 3 sellers -> 3 queries, not 20).
+     *
+     * @return array{rating: float, review_count: int}
+     */
+    public static function seller_rating_summary( int $seller_id ): array {
+        static $cache = array();
+        if ( isset( $cache[ $seller_id ] ) ) {
+            return $cache[ $seller_id ];
+        }
+        global $wpdb;
+        $row = $wpdb->get_row(
+            $wpdb->prepare(
+                'SELECT COUNT(*) AS total, AVG(rating) AS average FROM ' . tnm_table( 'reviews' ) . " WHERE seller_id=%d AND status='approved'",
+                $seller_id
+            ),
+            ARRAY_A
+        );
+        $summary = array(
+            'rating'       => round( (float) ( $row['average'] ?? 0 ), 2 ),
+            'review_count' => (int) ( $row['total'] ?? 0 ),
+        );
+        $cache[ $seller_id ] = $summary;
+        return $summary;
+    }
+
     public static function seller_reviews( int $seller_id, int $page = 1, int $per_page = 20 ): array {
         global $wpdb;
         $per_page = max( 1, min( 100, $per_page ) );
@@ -790,6 +820,7 @@ final class TNM_Social {
             if ( $product_count < 1 && ! current_user_can( 'manage_woocommerce' ) ) {
                 continue;
             }
+            $rating = self::seller_rating_summary( $sid );
             $items[] = array(
                 'id'             => $sid,
                 'store_name'     => tnm_seller_display_name( $sid ),
@@ -800,6 +831,8 @@ final class TNM_Social {
                 'follower_count' => self::follower_count( $sid ),
                 'is_following'   => $viewer_id ? self::is_following( $viewer_id, $sid ) : false,
                 'product_count'  => $product_count,
+                'rating'         => $rating['rating'],
+                'review_count'   => $rating['review_count'],
                 'shop_url'       => home_url( '/shop-profile/?seller=' . $sid ),
             );
         }
@@ -829,12 +862,15 @@ final class TNM_Social {
             if ( ! $user ) {
                 continue;
             }
+            $rating = self::seller_rating_summary( $sid );
             $items[] = array(
                 'id'             => $sid,
                 'store_name'     => tnm_seller_display_name( $sid ),
                 'avatar'         => tnm_user_avatar_url( $sid, 256 ),
                 'follower_count' => self::follower_count( $sid ),
                 'product_count'  => count_user_posts( $sid, 'product', true ),
+                'rating'         => $rating['rating'],
+                'review_count'   => $rating['review_count'],
                 'shop_url'       => home_url( '/shop-profile/?seller=' . $sid ),
             );
         }

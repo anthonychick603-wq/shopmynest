@@ -833,11 +833,18 @@ final class TNM_Marketplace {
             'image'             => wp_get_attachment_image_url( $product->get_image_id(), 'large' ) ?: wc_placeholder_img_src(),
             'gallery'           => array_values( array_filter( array_map( static fn( $id ) => wp_get_attachment_image_url( $id, 'large' ), $product->get_gallery_image_ids() ) ) ),
             'permalink'         => get_permalink( $product->get_id() ),
-            'seller'            => array(
-                'id'         => $seller_id,
-                'store_name' => tnm_seller_display_name( $seller_id ),
-                'avatar'     => tnm_user_avatar_url( $seller_id, 256 ),
-            ),
+            'seller'            => ( function() use ( $seller_id ) {
+                // v3.7.103 - attach cached rating aggregate so product cards
+                // can render a star badge without a follow-up request.
+                $rating = class_exists( 'TNM_Social' ) ? TNM_Social::seller_rating_summary( $seller_id ) : array( 'rating' => 0.0, 'review_count' => 0 );
+                return array(
+                    'id'           => $seller_id,
+                    'store_name'   => tnm_seller_display_name( $seller_id ),
+                    'avatar'       => tnm_user_avatar_url( $seller_id, 256 ),
+                    'rating'       => $rating['rating'],
+                    'review_count' => $rating['review_count'],
+                );
+            } )(),
             'categories'        => array_map(
                 static fn( $term ) => array( 'id' => $term->term_id, 'name' => $term->name, 'slug' => $term->slug ),
                 get_the_terms( $product->get_id(), 'product_cat' ) ?: array()
