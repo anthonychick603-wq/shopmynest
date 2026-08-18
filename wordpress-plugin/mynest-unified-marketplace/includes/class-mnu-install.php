@@ -257,6 +257,20 @@ final class MNU_Install {
             KEY recipient_read (recipient_id,is_read)
         ) $charset;";
 
+        // v3.7.98 — blog favorites so buyers can heart Fresh from the Nest posts
+        // and find them again in Favorites. Kept separate from the trust-suite
+        // product favorites table to keep the two lists distinct and to avoid
+        // touching the trust-suite plugin.
+        $queries[] = 'CREATE TABLE ' . tnm_table( 'blog_favorites' ) . " (
+            id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+            user_id bigint(20) unsigned NOT NULL,
+            post_id bigint(20) unsigned NOT NULL,
+            created_at datetime NOT NULL,
+            PRIMARY KEY  (id),
+            UNIQUE KEY user_post (user_id,post_id),
+            KEY post_id (post_id)
+        ) $charset;";
+
         $queries[] = 'CREATE TABLE ' . tnm_table( 'reviews' ) . " (
             id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
             reviewer_id bigint(20) unsigned NOT NULL,

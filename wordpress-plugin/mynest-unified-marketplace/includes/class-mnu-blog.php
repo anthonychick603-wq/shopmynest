@@ -102,6 +102,114 @@ final class MNU_Blog {
                 array( 'methods' => WP_REST_Server::CREATABLE, 'callback' => array( __CLASS__, 'create_comment' ), 'permission_callback' => array( __CLASS__, 'logged_in' ) ),
             )
         );
+        // v3.7.98 — heart on Fresh from the Nest posts. Kept in the marketplace
+        // plugin because the blog CPT is owned here; the trust-suite favorites
+        // table stays product-only.
+        register_rest_route(
+            self::NS,
+            '/blog/favorites',
+            array( 'methods' => WP_REST_Server::READABLE, 'callback' => array( __CLASS__, 'list_favorites' ), 'permission_callback' => array( __CLASS__, 'logged_in' ) )
+        );
+        register_rest_route(
+            self::NS,
+            '/blog/posts/(?P<id>\d+)/favorite',
+            array(
+                array( 'methods' => WP_REST_Server::CREATABLE, 'callback' => array( __CLASS__, 'toggle_favorite' ), 'permission_callback' => array( __CLASS__, 'logged_in' ) ),
+                array( 'methods' => WP_REST_Server::DELETABLE, 'callback' => array( __CLASS__, 'remove_favorite' ), 'permission_callback' => array( __CLASS__, 'logged_in' ) ),
+            )
+        );
+        register_rest_route(
+            self::NS,
+            '/blog/posts/(?P<id>\d+)/favorites-count',
+            array( 'methods' => WP_REST_Server::READABLE, 'callback' => array( __CLASS__, 'favorites_count_route' ), 'permission_callback' => '__return_true' )
+        );
+    }
+
+    /* --------------------------------------------------- v3.7.98 favorites */
+
+    /**
+     * True if the given user has favorited the given blog post.
+     */
+    public static function is_favorited( int $user_id, int $post_id ): bool {
+        global $wpdb;
+        if ( ! $user_id || ! $post_id ) return false;
+        $table = tnm_table( 'blog_favorites' );
+        $row   = $wpdb->get_var( $wpdb->prepare( "SELECT id FROM {$table} WHERE user_id = %d AND post_id = %d LIMIT 1", $user_id, $post_id ) );
+        return ! empty( $row );
+    }
+
+    /**
+     * Number of favorites on a blog post.
+     */
+    public static function favorites_count( int $post_id ): int {
+        global $wpdb;
+        if ( ! $post_id ) return 0;
+        $table = tnm_table( 'blog_favorites' );
+        return (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$table} WHERE post_id = %d", $post_id ) );
+    }
+
+    public static function list_favorites( WP_REST_Request $request ): WP_REST_Response {
+        global $wpdb;
+        $user_id  = get_current_user_id();
+        $table    = tnm_table( 'blog_favorites' );
+        $rows     = $wpdb->get_results( $wpdb->prepare( "SELECT post_id, created_at FROM {$table} WHERE user_id = %d ORDER BY created_at DESC", $user_id ), ARRAY_A );
+        $out      = array();
+        foreach ( (array) $rows as $row ) {
+            $post_id = (int) $row['post_id'];
+            $post    = get_post( $post_id );
+            if ( ! $post || self::CPT !== $post->post_type || 'publish' !== $post->post_status ) continue;
+            $out[] = array(
+                'post_id'    => $post_id,
+                'created_at' => mysql_to_rfc3339( $row['created_at'] ),
+                'post'       => self::post_to_array( $post ),
+            );
+        }
+        return rest_ensure_response( array( 'favorites' => $out ) );
+    }
+
+    public static function toggle_favorite( WP_REST_Request $request ): WP_REST_Response|WP_Error {
+        global $wpdb;
+        $post_id = absint( $request['id'] );
+        $post    = self::published_or_error( $post_id );
+        if ( is_wp_error( $post ) ) return $post;
+        $user_id = get_current_user_id();
+        $table   = tnm_table( 'blog_favorites' );
+        $exists  = self::is_favorited( $user_id, $post_id );
+        if ( $exists ) {
+            $wpdb->delete( $table, array( 'user_id' => $user_id, 'post_id' => $post_id ), array( '%d', '%d' ) );
+            $favorited = false;
+        } else {
+            $wpdb->insert(
+                $table,
+                array( 'user_id' => $user_id, 'post_id' => $post_id, 'created_at' => current_time( 'mysql', true ) ),
+                array( '%d', '%d', '%s' )
+            );
+            $favorited = true;
+        }
+        return rest_ensure_response( array(
+            'post_id'         => $post_id,
+            'favorited'       => $favorited,
+            'favorites_count' => self::favorites_count( $post_id ),
+        ) );
+    }
+
+    public static function remove_favorite( WP_REST_Request $request ): WP_REST_Response|WP_Error {
+        global $wpdb;
+        $post_id = absint( $request['id'] );
+        if ( ! $post_id ) return tnm_json_error( 'invalid_post', 'Invalid blog post.', 400 );
+        $user_id = get_current_user_id();
+        $table   = tnm_table( 'blog_favorites' );
+        $wpdb->delete( $table, array( 'user_id' => $user_id, 'post_id' => $post_id ), array( '%d', '%d' ) );
+        return rest_ensure_response( array(
+            'post_id'         => $post_id,
+            'favorited'       => false,
+            'favorites_count' => self::favorites_count( $post_id ),
+        ) );
+    }
+
+    public static function favorites_count_route( WP_REST_Request $request ): WP_REST_Response {
+        $post_id = absint( $request['id'] );
+        return rest_ensure_response( array( 'post_id' => $post_id, 'count' => self::favorites_count( $post_id ) ) );
     }
 
     /**
@@ -434,8 +542,10 @@ final class MNU_Blog {
     public static function post_to_array( WP_Post $post ): array {
         $author_id     = (int) $post->post_author;
         $attachment_id = (int) get_post_thumbnail_id( $post );
+        $post_id       = (int) $post->ID;
+        $viewer        = get_current_user_id();
         return array(
-            'id'         => (int) $post->ID,
+            'id'         => $post_id,
             'status'     => self::state_of( $post ),
             'caption'    => wp_kses_post( $post->post_content ),
             'image_id'   => $attachment_id,
@@ -453,6 +563,11 @@ final class MNU_Blog {
             // v3.7.96 — comment metadata drives the count badge on the blog
             // feed card and the comment thread on the detail screen.
             'comments'   => (int) get_comments_number( $post ),
+            // v3.7.98 — favorite state so the heart on Fresh from the Nest
+            // cards can render filled on the initial payload without an extra
+            // round trip to /blog/favorites.
+            'favorites_count' => self::favorites_count( $post_id ),
+            'is_favorited'    => $viewer ? self::is_favorited( $viewer, $post_id ) : false,
         );
     }
 
