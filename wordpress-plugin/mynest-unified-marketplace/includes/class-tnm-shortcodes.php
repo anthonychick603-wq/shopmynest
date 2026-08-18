@@ -393,20 +393,12 @@ final class TNM_Shortcodes {
                     <p class="tnm-muted" data-tnm-connect-msg hidden></p>
                 </div>
                 <?php endif; ?>
-                <div class="tnm-grid-2">
-                    <div class="tnm-card"><h2>Request payout</h2><p>Minimum payout: <?php echo esc_html( tnm_money( (float) tnm_get_option( 'minimum_payout', 25 ), $balances['currency'] ) ); ?></p>
-                        <form method="post" class="tnm-form">
-                            <?php wp_nonce_field( 'tnm_dashboard', 'tnm_nonce' ); ?>
-                            <input type="hidden" name="tnm_action" value="request_payout">
-                            <input type="hidden" name="amount" value="0">
-                            <p><strong>Available payout:</strong> <?php echo esc_html( tnm_money( $balances['available'], $balances['currency'] ) ); ?><br><span class="tnm-muted">Payout requests use the full available balance so every ledger entry reconciles exactly.</span></p>
-                            <label>Method<select name="method"><option value="manual">Manual payout</option><option value="paypal">PayPal</option></select></label>
-                            <label>PayPal email or payout reference<input type="text" name="destination" value="<?php echo esc_attr( (string) get_user_meta( $seller_id, 'tnm_paypal_email', true ) ); ?>"></label>
-                            <button class="tnm-button" type="submit" <?php disabled( $balances['available'] < (float) tnm_get_option( 'minimum_payout', 25 ) ); ?>>Request payout</button>
-                        </form>
-                    </div>
-                    <div class="tnm-card"><h2>Payout history</h2><?php self::render_payouts_table( $payouts ); ?></div>
-                </div>
+                <?php /* v3.7.107 — Legacy manual/PayPal "Request payout" card removed.
+                   ShopMyNest pays sellers automatically via Stripe Connect (see the
+                   Bank payouts card above). The manual/PayPal form was a holdover
+                   from The Nest Marketplace baseline plugin. Historical payout rows
+                   are still shown so sellers can see any legacy manual entries. */ ?>
+                <div class="tnm-card"><h2>Payout history</h2><?php self::render_payouts_table( $payouts ); ?></div>
             </section>
 
             <section class="tnm-tab-panel" data-tnm-panel="post"><div class="tnm-card tnm-form-card"><h2>Create a Nest post</h2>
@@ -426,8 +418,9 @@ final class TNM_Shortcodes {
                     <input type="hidden" name="tnm_action" value="save_profile">
                     <label>Store name<input type="text" name="store_name" value="<?php echo esc_attr( tnm_seller_display_name( $seller_id ) ); ?>" required></label>
                     <label>Shop tagline <span style="color:#7a6b57;font-weight:400;font-size:.85em">(one short line, shown on the Discover Shops page)</span><input type="text" name="tagline" maxlength="140" value="<?php echo esc_attr( (string) get_user_meta( $seller_id, 'tnm_store_tagline', true ) ); ?>"></label>
-                    <label>About your shop<textarea name="about" rows="7"><?php echo esc_textarea( (string) get_user_meta( $seller_id, 'tnm_store_about', true ) ); ?></textarea></label>
-                    <label>PayPal payout email<input type="email" name="paypal_email" value="<?php echo esc_attr( (string) get_user_meta( $seller_id, 'tnm_paypal_email', true ) ); ?>"></label>
+                    <label>About your shop<textarea name="about" rows="7"><?php echo esc_textarea( (string) get_user_meta( $seller_id, 'tnm_store_about', true ) ); ?></textarea>
+                    <?php /* v3.7.107 — PayPal payout email field removed from seller-facing Profile tab.
+                       Payouts run on Stripe Connect (Bank payouts card on Earnings & payouts tab). */ ?></label>
                     <label class="tnm-form-check"><input type="checkbox" name="email_optout_messages" value="1" <?php checked( '1', (string) get_user_meta( $seller_id, 'tnm_email_optout_messages', true ) ); ?>> Don't email me when I get a new buyer message. (You'll still see unread messages on the dashboard and in the app.)</label>
                     <button class="tnm-button" type="submit">Save profile</button>
                 </form>
@@ -655,17 +648,18 @@ final class TNM_Shortcodes {
         } elseif ( 'request_payout' === $action ) {
             $result = TNM_Payouts::request( $seller_id, (float) ( $_POST['amount'] ?? 0 ), sanitize_key( wp_unslash( $_POST['method'] ?? '' ) ), sanitize_text_field( wp_unslash( $_POST['destination'] ?? '' ) ) );
         } elseif ( 'save_profile' === $action ) {
+            // v3.7.107 — PayPal email removed from seller-facing profile. Payouts
+            // run on Stripe Connect. `tnm_paypal_email` meta is left untouched
+            // to preserve any historical value for admin-side manual payouts.
             $store_name = sanitize_text_field( wp_unslash( $_POST['store_name'] ?? '' ) );
-            $paypal     = sanitize_email( wp_unslash( $_POST['paypal_email'] ?? '' ) );
-            if ( ! $store_name || ( $paypal && ! is_email( $paypal ) ) ) {
-                $result = new WP_Error( 'invalid_profile', 'Enter a store name and a valid payout email.' );
+            if ( ! $store_name ) {
+                $result = new WP_Error( 'invalid_profile', 'Enter a store name.' );
             } else {
                 update_user_meta( $seller_id, 'tnm_store_name', $store_name );
                 $tagline = mb_substr( sanitize_text_field( wp_unslash( $_POST['tagline'] ?? '' ) ), 0, 140 );
                 update_user_meta( $seller_id, 'tnm_store_tagline', $tagline );
                 update_user_meta( $seller_id, 'tnm_store_about', sanitize_textarea_field( wp_unslash( $_POST['about'] ?? '' ) ) );
                 update_user_meta( $seller_id, 'tnm_email_optout_messages', empty( $_POST['email_optout_messages'] ) ? '' : '1' );
-                update_user_meta( $seller_id, 'tnm_paypal_email', $paypal );
             }
         } elseif ( 'create_post' === $action ) {
             $image_id = tnm_upload_image_from_request( 'image' );
