@@ -3,7 +3,7 @@
  * Plugin Name: MyNest Unified Marketplace
  * Plugin URI:  https://shopmynest.com/
  * Description: One complete WooCommerce marketplace plugin for MyNest sellers, fees, payouts, orders, social features, mobile APIs, checkout, and shipping.
- * Version:     3.7.108
+ * Version:     3.7.109
  * Author:      MyNest
  * Text Domain: mynest-unified-marketplace
  * Requires at least: 6.5
@@ -16,7 +16,7 @@
 
 defined( 'ABSPATH' ) || exit;
 
-define( 'MNU_VERSION', '3.7.108' );
+define( 'MNU_VERSION', '3.7.109' );
 define( 'MNU_DB_VERSION', '3.0.13' );
 define( 'MNU_FILE', __FILE__ );
 define( 'MNU_BASENAME', plugin_basename( __FILE__ ) );
@@ -132,6 +132,41 @@ function mnu_install_or_upgrade(): void {
 }
 register_activation_hook( __FILE__, 'mnu_install_or_upgrade' );
 
+/**
+ * v3.7.109 — one-shot auto-approval of the moderation backlog. Flips every
+ * pending WooCommerce product to publish, and every pending community blog
+ * post (mnu_blog_post CPT) to publish. Idempotent: relies on the version
+ * option guard around the caller so it never runs twice.
+ */
+function mnu_auto_approve_pending_backlog(): void {
+	$pending_products = get_posts(
+		array(
+			'post_type'      => 'product',
+			'post_status'    => 'pending',
+			'posts_per_page' => 500,
+			'fields'         => 'ids',
+			'suppress_filters' => true,
+		)
+	);
+	foreach ( (array) $pending_products as $pid ) {
+		wp_update_post( array( 'ID' => (int) $pid, 'post_status' => 'publish' ) );
+	}
+
+	$blog_cpt = class_exists( 'MNU_Blog' ) && defined( 'MNU_Blog::CPT' ) ? MNU_Blog::CPT : 'mnu_blog_post';
+	$pending_posts = get_posts(
+		array(
+			'post_type'      => $blog_cpt,
+			'post_status'    => 'pending',
+			'posts_per_page' => 500,
+			'fields'         => 'ids',
+			'suppress_filters' => true,
+		)
+	);
+	foreach ( (array) $pending_posts as $bpid ) {
+		wp_update_post( array( 'ID' => (int) $bpid, 'post_status' => 'publish' ) );
+	}
+}
+
 function mnu_deactivate_plugin(): void {
 	mnu_load_files();
 	MNU_Install::deactivate();
@@ -195,6 +230,14 @@ final class MNU_Plugin {
 			update_option( 'tnm_settings', $settings, false );
 			update_option( 'mnu_db_version', MNU_DB_VERSION, false );
 			update_option( 'mnu_version', MNU_VERSION, false );
+		}
+
+		// v3.7.109 — auto-approve legacy backlog: publish any pending products
+		// and blog posts once, so the moderation removal covers items already
+		// in the queue at upgrade time. Runs at most once per site.
+		if ( 'done' !== (string) get_option( 'mnu_auto_approve_backlog_v1', '' ) ) {
+			mnu_auto_approve_pending_backlog();
+			update_option( 'mnu_auto_approve_backlog_v1', 'done', false );
 		}
 
 		TNM_Auth::init();

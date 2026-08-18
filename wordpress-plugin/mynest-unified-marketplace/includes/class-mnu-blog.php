@@ -411,10 +411,13 @@ final class MNU_Blog {
             return tnm_json_error( 'blog_caption_required', 'A caption is required.', 422 );
         }
 
+        // v3.7.109 — blog posts auto-approve. Community feed goes live on
+        // submit; admins can still hide/reject via the moderation endpoints
+        // if something needs pulling down.
         $post_id = wp_insert_post(
             array(
                 'post_type'    => self::CPT,
-                'post_status'  => self::STATUSES['pending'],
+                'post_status'  => self::STATUSES['approved'],
                 'post_author'  => $user_id,
                 'post_title'   => sprintf( 'Blog post by %s', get_the_author_meta( 'display_name', $user_id ) ),
                 'post_content' => $caption,
@@ -441,7 +444,8 @@ final class MNU_Blog {
             set_post_thumbnail( $post_id, $attachment_id );
         }
 
-        self::notify_admins( $post_id, $user_id );
+        // Auto-approved: purge cached feed layers so it appears immediately.
+        self::purge_public_feed_cache();
 
         return new WP_REST_Response( self::post_to_array( get_post( $post_id ) ), 201 );
     }

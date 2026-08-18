@@ -566,7 +566,9 @@ final class TNM_Marketplace {
         $price       = wc_format_decimal( (string) tnm_array_get( $data, 'price', '' ) );
         $stock       = max( 0, (int) tnm_array_get( $data, 'stock', 0 ) );
         $sku         = wc_clean( (string) tnm_array_get( $data, 'sku', '' ) );
-        $status      = 'yes' === tnm_get_option( 'seller_can_publish', 'yes' ) || tnm_is_admin_or_manager() ? 'publish' : 'pending';
+        // v3.7.109 — products auto-publish. The Stripe onboarding gate above
+        // is the real-money guardrail; the moderation queue was pure friction.
+        $status      = 'publish';
 
         if ( ! $name || '' === $price || (float) $price < 0 ) {
             return tnm_json_error( 'invalid_product', 'Product name and a valid non-negative price are required.', 422 );
@@ -682,9 +684,8 @@ final class TNM_Marketplace {
                 if ( 'publish' === $status && 'publish' !== $product->get_status() && ! tnm_is_admin_or_manager() && class_exists( 'MNU_Connect' ) && ! MNU_Connect::seller_can_sell( $seller_id ) ) {
                     return tnm_json_error( 'stripe_onboarding_required', 'You must finish connecting your bank account with Stripe before you can publish products. Open your seller dashboard to complete Stripe onboarding.', 403 );
                 }
-                if ( 'publish' === $status && 'yes' !== tnm_get_option( 'seller_can_publish', 'yes' ) && ! tnm_is_admin_or_manager() ) {
-                    $status = 'pending';
-                }
+                // v3.7.109 — no admin moderation gate; the Stripe check above
+                // is the only guard on going live.
                 $product->set_status( $status );
             }
         }
