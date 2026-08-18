@@ -3,7 +3,7 @@
  * Plugin Name: MyNest Unified Marketplace
  * Plugin URI:  https://shopmynest.com/
  * Description: One complete WooCommerce marketplace plugin for MyNest sellers, fees, payouts, orders, social features, mobile APIs, checkout, and shipping.
- * Version:     3.7.107
+ * Version:     3.7.108
  * Author:      MyNest
  * Text Domain: mynest-unified-marketplace
  * Requires at least: 6.5
@@ -16,7 +16,7 @@
 
 defined( 'ABSPATH' ) || exit;
 
-define( 'MNU_VERSION', '3.7.107' );
+define( 'MNU_VERSION', '3.7.108' );
 define( 'MNU_DB_VERSION', '3.0.13' );
 define( 'MNU_FILE', __FILE__ );
 define( 'MNU_BASENAME', plugin_basename( __FILE__ ) );
@@ -103,6 +103,8 @@ function mnu_load_files(): void {
 		'includes/class-mnu-seller-readiness.php',
 		'includes/class-mnu-app-links.php',
 		'includes/class-mnu-favorites-listener.php',
+		'includes/class-tnm-order-review-card.php',
+		'includes/class-tnm-review-nudge.php',
 		// v3.7.105 - Web parity: brings the app-only favorites list, saved
 		// searches, blog, save-alert pill, and seller rating badges to the
 		// browsing site as native WordPress surfaces.
@@ -228,6 +230,8 @@ final class MNU_Plugin {
 		// because wp_insert_post -> get_permalink touches $wp_rewrite,
 		// which is only initialized on the 'init' hook. Defer to 'init'.
 		MNU_Web_Parity::init();
+		TNM_Order_Review_Card::init();
+		TNM_Review_Nudge::init();
 		if ( get_option( 'mnu_web_parity_pages_version', '' ) !== MNU_VERSION ) {
 			add_action( 'init', array( 'MNU_Web_Parity', 'ensure_pages_once' ), 20 );
 		}

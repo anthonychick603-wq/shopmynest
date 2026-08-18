@@ -1,6 +1,6 @@
 # MyNest Trust & Growth Suite
 
-A standalone WordPress/WooCommerce companion plugin for **The Nest** (shopmynest.com) that adds Etsy/Vinted-style buyer protection, seller performance badges, favorites + personalized feed ranking, bundles/offers, structured product attributes, and listing boosts / a Pro Seller tier.
+A standalone WordPress/WooCommerce companion plugin for **The Nest** (shopmynest.com) that adds Etsy/Vinted-style buyer protection, seller performance badges, favorites + personalized feed ranking, structured product attributes, and listing boosts / a Pro Seller tier.
 
 This plugin is designed to install and run **independently** alongside the existing "MyNest Unified Marketplace" plugin. It never modifies that plugin's files or writes to its database tables — it only reads from them, defensively, and degrades gracefully (logs a warning and skips) if a table, function, or class it expects isn't present. **WooCommerce is the only hard dependency.**
 
@@ -13,7 +13,7 @@ This plugin is designed to install and run **independently** alongside the exist
    - Create its own database tables (`wp_tnm_trust_disputes`, `wp_tnm_trust_favorites`, `wp_tnm_trust_offers`, `wp_tnm_trust_boosts`).
    - Register the `pa_condition` (with fixed terms), `pa_size`, and `pa_brand` global WooCommerce attributes.
    - Create a hidden virtual "Listing Boost" WooCommerce product used for boost purchases.
-   - Schedule an hourly WP-Cron event used to auto-expire stale offers and boosts.
+   - Schedule an hourly WP-Cron event used to auto-expire stale boosts.
 5. Configure thresholds and prices under **wp-admin → Nest Trust Suite → Settings**.
 
 If WooCommerce is not active, the plugin will show an admin notice and disable itself safely (no fatal error).
@@ -61,17 +61,9 @@ All write routes require an authenticated WordPress session (cookie + `X-WP-Nonc
 - `GET /wp-json/nest-trust/v1/products/{id}/favorites-count` — **public**.
 - `GET /wp-json/nest-trust/v1/feed?page=1&per_page=20&category=vintage-denim` — **public, NEW endpoint**. Does **not** override the other plugin's existing `/feed` route — **switch your site/app to this URL to get personalization**. Ranks WooCommerce products by a weighted score combining recency, favorites count, whether the requesting user follows the seller (read defensively from the other plugin's `follows` table), seller badge tier (Feature 2), total sales, and active boosts (Feature 6). Weights are filterable — see **Filters this plugin provides** below.
 
-### Bundles + Make an Offer (Feature 4)
+### Bundles + Make an Offer (Feature 4) — REMOVED (v1.2.1)
 
-- `POST /wp-json/nest-trust/v1/offers` — body `{ "type": "bundle", "product_ids": [123, 456], "offer_price": 45.00 }`. All products must share exactly one seller.
-- `GET /wp-json/nest-trust/v1/offers?status=pending` — buyer/seller filtered list.
-- `PUT /wp-json/nest-trust/v1/offers/{id}` — body `{ "action": "accept" }` / `{ "action": "decline" }` / `{ "action": "counter", "counter_price": 40.00 }`. Seller can accept/decline/counter a `pending` offer; buyer can accept/decline a `countered` offer. Accepting generates a single-use checkout token (24h expiry).
-- `POST /wp-json/nest-trust/v1/offers/checkout/start` — body `{ "token": "..." }`. **Browser/session clients only.** Adds the offer's product(s) to the WC cart and flags the session so the negotiated price is applied at checkout (via `woocommerce_before_calculate_totals`). Pair with shortcode `[nest_trust_offer_checkout token="..."]` or `?nest_offer_token=...` on your checkout page. This relies on a PHP session tied to browser cookies, so it will silently fail to apply pricing for native/API clients that don't share a cookie jar across requests (e.g. mobile apps).
-- `POST /wp-json/nest-trust/v1/offers/checkout/order` — body `{ "token": "..." }`. **Native/API clients (e.g. the mobile app).** Creates a real `WC_Order` directly at the negotiated offer price — no cart or session required — and returns `{ "order_id": ..., "checkout_url": "..." }`. Open `checkout_url` in a browser or in-app WebView to complete payment through WooCommerce's normal checkout, the same pattern used for boost purchases (`/boosts`). The offer's checkout token is marked used automatically once the resulting order reaches `processing`/`completed` status.
-- `POST /wp-json/nest-trust/v1/bundle-builder` — body `{ "product_id": 123 }`. Adds a product to the buyer's session-based bundle builder (grouped per seller).
-- `GET /wp-json/nest-trust/v1/bundle-builder` — current session's bundle-builder contents.
-- Offers auto-expire hourly via WP-Cron (`tnm_trust_hourly_event`) when `pending`/`countered` and past `expires_at` (48h from creation by default).
-- Bundle shipping discount: when 2+ items from the same seller are in the cart via an accepted bundle offer, shipping rates are discounted via `woocommerce_package_rates` (first item / additional item discount % configurable under Settings).
+Removed in v1.2.1. Buyers now use "Message shop" to negotiate directly with a seller. The `wp_tnm_trust_offers` table is retained for historical data; all offer endpoints, shortcodes, and UI have been removed.
 
 ### Structured Attributes (Feature 5)
 
@@ -98,8 +90,6 @@ Shortcode `[nest_trust_filters]` renders condition/size/brand checkboxes for sho
 | `[nest_trust_seller_badge id="123"]` | Renders the seller's performance badge (inline SVG, no external assets) with a metrics tooltip. Renders nothing if the seller has no badge. |
 | `[nest_trust_favorite_button product_id="123"]` | Standalone favorite heart button (also auto-injected on shop loop items and single product pages). |
 | `[nest_trust_feed]` | Responsive CSS-grid personalized product feed (consumes `GET /feed` via fetch). |
-| `[nest_trust_make_offer product_id="123"]` | "Make an offer" button/modal + "Add to Bundle" button for a single product page. |
-| `[nest_trust_offer_checkout token="..."]` | Applies an accepted offer's negotiated price to the cart and redirects to checkout. Token can also be passed as `?nest_offer_token=...`. |
 | `[nest_trust_filters]` | Condition / Size / Brand filter checkboxes for shop/category archives. |
 
 ## Filters & hooks this plugin PROVIDES (for the other plugin, or any code, to consume)
@@ -174,7 +164,6 @@ mynest-trust-suite/
 │   ├── class-tnm-trust-seller-badge.php Feature 2 — Seller Performance Badge
 │   ├── class-tnm-trust-favorites.php    Feature 3a — Favorites
 │   ├── class-tnm-trust-feed.php          Feature 3b — Personalized Feed Ranking
-│   ├── class-tnm-trust-offers.php       Feature 4 — Bundles + Make an Offer
 │   ├── class-tnm-trust-attributes.php   Feature 5 — Structured Attributes
 │   ├── class-tnm-trust-boosts.php       Feature 6 — Boosts + Pro Seller Tier
 │   ├── class-tnm-trust-rest.php          REST route registration + callbacks

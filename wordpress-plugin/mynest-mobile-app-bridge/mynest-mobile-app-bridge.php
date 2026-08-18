@@ -559,11 +559,29 @@ final class MyNest_Mobile_App_Bridge {
         // when one of two sellers has shipped. The adapter on mobile uses
         // this to map to the buyer-facing status vocabulary.
         $shipping_status = self::aggregate_shipping_status( $order, array_keys( $seller_ids ), $tracking );
-        $can_review      = false;
+        // v3.7.108 — filter out sellers the buyer has already reviewed on this
+        // order, so the mobile OrderReviewCTA and the web "leave a review" card
+        // stop nagging once every seller on the order has been rated.
+        $can_review            = false;
         $reviewable_seller_ids = array();
         if ( in_array( $order->get_status(), array( 'processing', 'completed' ), true ) ) {
-            foreach ( array_keys( $seller_ids ) as $sid ) {
-                $reviewable_seller_ids[] = (int) $sid;
+            $order_seller_ids = array_map( 'intval', array_keys( $seller_ids ) );
+            $already_reviewed = array();
+            if ( ! empty( $order_seller_ids ) && function_exists( 'tnm_table' ) ) {
+                global $wpdb;
+                $reviews_table    = tnm_table( 'reviews' );
+                $buyer_id         = (int) $order->get_customer_id();
+                $order_id         = (int) $order->get_id();
+                $placeholders     = implode( ',', array_fill( 0, count( $order_seller_ids ), '%d' ) );
+                $params           = array_merge( array( $buyer_id, $order_id ), $order_seller_ids );
+                $sql              = "SELECT DISTINCT seller_id FROM {$reviews_table} WHERE reviewer_id = %d AND order_id = %d AND seller_id IN ({$placeholders})";
+                $already_reviewed = array_map( 'intval', (array) $wpdb->get_col( $wpdb->prepare( $sql, $params ) ) );
+            }
+            foreach ( $order_seller_ids as $sid ) {
+                if ( in_array( $sid, $already_reviewed, true ) ) {
+                    continue;
+                }
+                $reviewable_seller_ids[] = $sid;
             }
             $can_review = ! empty( $reviewable_seller_ids );
         }

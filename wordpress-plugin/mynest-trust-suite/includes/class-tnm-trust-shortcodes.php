@@ -23,8 +23,6 @@ class TNM_Trust_Shortcodes {
 		add_shortcode( 'nest_trust_seller_badge', array( __CLASS__, 'render_seller_badge' ) );
 		add_shortcode( 'nest_trust_favorite_button', array( __CLASS__, 'render_favorite_button' ) );
 		add_shortcode( 'nest_trust_feed', array( __CLASS__, 'render_feed' ) );
-		add_shortcode( 'nest_trust_offer_checkout', array( __CLASS__, 'render_offer_checkout' ) );
-		add_shortcode( 'nest_trust_make_offer', array( __CLASS__, 'render_make_offer_widget' ) );
 		add_shortcode( 'nest_trust_filters', array( __CLASS__, 'render_filters' ) );
 	}
 
@@ -177,76 +175,6 @@ class TNM_Trust_Shortcodes {
 			<p><?php esc_html_e( 'Loading feed…', 'nest-trust' ); ?></p>
 		</div>
 		<button type="button" id="tnm-trust-feed-load-more" class="tnm-trust-btn tnm-trust-feed-load-more" style="display:none;"><?php esc_html_e( 'Load more', 'nest-trust' ); ?></button>
-		<?php
-		return ob_get_clean();
-	}
-
-	/**
-	 * [nest_trust_offer_checkout token="..."] — starts the accepted-offer
-	 * checkout flow, or reads the token from a `?nest_offer_token=` query param.
-	 *
-	 * @param array $atts Shortcode attributes.
-	 */
-	public static function render_offer_checkout( $atts ) {
-		$atts = shortcode_atts( array( 'token' => '' ), $atts );
-		$token = sanitize_text_field( $atts['token'] );
-
-		if ( '' === $token && isset( $_GET['nest_offer_token'] ) ) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- read-only display token, not a state-changing action.
-			$token = sanitize_text_field( wp_unslash( $_GET['nest_offer_token'] ) );
-		}
-
-		if ( '' === $token ) {
-			return '<p class="tnm-trust-notice">' . esc_html__( 'No offer checkout token was supplied.', 'nest-trust' ) . '</p>';
-		}
-
-		if ( ! is_user_logged_in() ) {
-			return '<p class="tnm-trust-notice">' . esc_html__( 'Please log in to complete your accepted offer purchase.', 'nest-trust' ) . '</p>';
-		}
-
-		ob_start();
-		?>
-		<div id="tnm-trust-offer-checkout" class="tnm-trust-panel" data-token="<?php echo esc_attr( $token ); ?>">
-			<p><?php esc_html_e( 'Preparing your accepted-offer checkout…', 'nest-trust' ); ?></p>
-		</div>
-		<?php
-		return ob_get_clean();
-	}
-
-	/**
-	 * [nest_trust_make_offer product_id="123"] — "Make an offer" button/modal.
-	 *
-	 * @param array $atts Shortcode attributes.
-	 */
-	public static function render_make_offer_widget( $atts ) {
-		$atts = shortcode_atts( array( 'product_id' => 0 ), $atts );
-		$product_id = absint( $atts['product_id'] );
-
-		if ( ! $product_id ) {
-			global $product;
-			if ( $product && is_a( $product, 'WC_Product' ) ) {
-				$product_id = $product->get_id();
-			}
-		}
-
-		if ( ! $product_id || ! is_user_logged_in() ) {
-			return '';
-		}
-
-		ob_start();
-		?>
-		<div class="tnm-trust-make-offer-widget" data-product-id="<?php echo esc_attr( $product_id ); ?>">
-			<button type="button" class="tnm-trust-btn tnm-trust-make-offer-btn"><?php esc_html_e( 'Make an Offer', 'nest-trust' ); ?></button>
-			<button type="button" class="tnm-trust-btn tnm-trust-add-to-bundle-btn"><?php esc_html_e( 'Add to Bundle', 'nest-trust' ); ?></button>
-			<div class="tnm-trust-make-offer-modal" hidden>
-				<label>
-					<?php esc_html_e( 'Your offer price', 'nest-trust' ); ?>
-					<input type="number" min="0.01" step="0.01" class="tnm-trust-input tnm-trust-offer-price-input" />
-				</label>
-				<button type="button" class="tnm-trust-btn tnm-trust-submit-offer-btn"><?php esc_html_e( 'Send Offer', 'nest-trust' ); ?></button>
-				<p class="tnm-trust-form-message" aria-live="polite"></p>
-			</div>
-		</div>
-		<div id="tnm-trust-bundle-bar" class="tnm-trust-bundle-bar" hidden></div>
 		<?php
 		return ob_get_clean();
 	}

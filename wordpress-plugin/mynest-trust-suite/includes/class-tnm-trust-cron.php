@@ -1,10 +1,9 @@
 <?php
 /**
  * WP-Cron registration for MyNest Trust & Growth Suite.
- * The actual work (expiring offers/boosts) is hooked directly by
- * TNM_Trust_Offers::init() and TNM_Trust_Boosts::init() onto the
- * shared `tnm_trust_hourly_event` action, which is scheduled on
- * plugin activation in the main plugin file.
+ * The actual work (expiring boosts) is hooked directly by
+ * TNM_Trust_Boosts::init() onto the shared `tnm_trust_hourly_event`
+ * action, which is scheduled on plugin activation in the main plugin file.
  *
  * @package MyNest_Trust_Suite
  */
