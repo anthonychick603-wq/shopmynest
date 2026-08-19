@@ -9,6 +9,8 @@
  *
  * Endpoints (namespace: the-nest/v1):
  *   GET  /admin/stats                        — dashboard counts
+ *   GET  /admin/orders?range=7d|30d|all      — marketplace-wide orders list
+ *                                              (v3.7.117)
  *   GET  /admin/reports?status=...           — moderation queue for user
  *                                              reports (mynest_report CPT)
  *   POST /admin/reports/{id}/resolve         — mark report resolved
@@ -89,6 +91,15 @@ final class MNU_Admin_Console {
         );
         register_rest_route(
             self::NS,
+            '/admin/orders',
+            array(
+                'methods'             => WP_REST_Server::READABLE,
+                'callback'            => array( __CLASS__, 'list_orders' ),
+                'permission_callback' => array( 'MNU_Blog', 'admin' ),
+            )
+        );
+        register_rest_route(
+            self::NS,
             '/admin/reports/(?P<id>\d+)/resolve',
             array(
                 'methods'             => WP_REST_Server::CREATABLE,
@@ -158,6 +169,79 @@ final class MNU_Admin_Console {
                 'refreshed_at'       => current_time( 'c' ),
             )
         );
+    }
+
+    /* --------------------------------------------------------------- orders */
+
+    /**
+     * v3.7.117 — marketplace-wide orders list for the admin drawer's
+     * Orders tile. Filters by created-date range (default last 7 days,
+     * matching the tile label). WooCommerce is expected but optional —
+     * returns an empty list rather than a 500 if shop_order isn't
+     * registered.
+     */
+    public static function list_orders( WP_REST_Request $request ): WP_REST_Response {
+        $range    = (string) $request->get_param( 'range' );
+        $page     = max( 1, (int) ( $request->get_param( 'page' ) ?: 1 ) );
+        $per_page = max( 1, min( 50, (int) ( $request->get_param( 'per_page' ) ?: 20 ) ) );
+
+        if ( ! post_type_exists( 'shop_order' ) ) {
+            return rest_ensure_response( array(
+                'items'       => array(),
+                'page'        => $page,
+                'total'       => 0,
+                'total_pages' => 0,
+                'range'       => $range ?: '7d',
+            ) );
+        }
+
+        $args = array(
+            'post_type'      => 'shop_order',
+            'post_status'    => array( 'wc-processing', 'wc-completed', 'wc-on-hold', 'wc-refunded', 'wc-cancelled', 'wc-failed', 'wc-pending' ),
+            'posts_per_page' => $per_page,
+            'paged'          => $page,
+            'orderby'        => 'date',
+            'order'          => 'DESC',
+            'no_found_rows'  => false,
+        );
+
+        $days = null;
+        if ( '30d' === $range ) { $days = 30; }
+        elseif ( 'all' === $range ) { $days = null; }
+        else { $range = '7d'; $days = 7; }
+
+        if ( null !== $days ) {
+            $args['date_query'] = array(
+                array( 'after' => gmdate( 'Y-m-d H:i:s', strtotime( '-' . $days . ' days' ) ), 'inclusive' => true ),
+            );
+        }
+
+        $q = new WP_Query( $args );
+        $items = array();
+        foreach ( $q->posts as $post ) {
+            $order = function_exists( 'wc_get_order' ) ? wc_get_order( $post->ID ) : null;
+            if ( ! $order ) {
+                continue;
+            }
+            $items[] = array(
+                'id'         => (int) $order->get_id(),
+                'number'     => (string) $order->get_order_number(),
+                'status'     => (string) $order->get_status(),
+                'total'      => (float) $order->get_total(),
+                'currency'   => (string) $order->get_currency(),
+                'item_count' => (int) $order->get_item_count(),
+                'buyer'      => trim( $order->get_billing_first_name() . ' ' . $order->get_billing_last_name() ) ?: $order->get_billing_email(),
+                'created_at' => $order->get_date_created() ? $order->get_date_created()->date( 'c' ) : null,
+            );
+        }
+
+        return rest_ensure_response( array(
+            'items'       => $items,
+            'page'        => $page,
+            'total'       => (int) $q->found_posts,
+            'total_pages' => (int) $q->max_num_pages,
+            'range'       => $range,
+        ) );
     }
 
     /* -------------------------------------------------------------- reports */
