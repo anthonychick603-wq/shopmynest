@@ -102,6 +102,22 @@ final class MNU_Blog {
                 array( 'methods' => WP_REST_Server::CREATABLE, 'callback' => array( __CLASS__, 'create_comment' ), 'permission_callback' => array( __CLASS__, 'logged_in' ) ),
             )
         );
+        // v3.7.112 — author-facing comment edit + delete, plus report-as-reader.
+        // Same permission shape as the post-level actions above: author or admin
+        // can edit/delete, any logged-in non-author can report.
+        register_rest_route(
+            self::NS,
+            '/blog/comments/(?P<id>\d+)',
+            array(
+                array( 'methods' => WP_REST_Server::EDITABLE,  'callback' => array( __CLASS__, 'update_comment' ), 'permission_callback' => array( __CLASS__, 'logged_in' ) ),
+                array( 'methods' => WP_REST_Server::DELETABLE, 'callback' => array( __CLASS__, 'delete_comment' ), 'permission_callback' => array( __CLASS__, 'logged_in' ) ),
+            )
+        );
+        register_rest_route(
+            self::NS,
+            '/blog/comments/(?P<id>\d+)/report',
+            array( 'methods' => WP_REST_Server::CREATABLE, 'callback' => array( __CLASS__, 'report_comment' ), 'permission_callback' => array( __CLASS__, 'logged_in' ) )
+        );
         // v3.7.98 — heart on Fresh from the Nest posts. Kept in the marketplace
         // plugin because the blog CPT is owned here; the trust-suite favorites
         // table stays product-only.
@@ -446,6 +462,154 @@ final class MNU_Blog {
         }
         $shape = class_exists( 'TNM_Social' ) ? TNM_Social::comment_to_array( get_comment( $comment_id ) ) : array( 'id' => (int) $comment_id );
         return new WP_REST_Response( $shape, 201 );
+    }
+
+    /* ---------------------------- v3.7.112 comment edit / delete / report */
+
+    /**
+     * Load a comment attached to an approved blog post, or return an error.
+     *
+     * Comments live in the shared wp_comments table, so we also make sure the
+     * parent post is a published blog CPT before letting anyone act on it.
+     */
+    private static function blog_comment_or_error( int $comment_id ): WP_Comment|WP_Error {
+        $comment = $comment_id ? get_comment( $comment_id ) : null;
+        if ( ! $comment ) {
+            return tnm_json_error( 'blog_comment_not_found', 'Comment not found.', 404 );
+        }
+        $post = get_post( (int) $comment->comment_post_ID );
+        if ( ! $post || self::CPT !== $post->post_type || 'publish' !== $post->post_status ) {
+            return tnm_json_error( 'blog_comment_not_found', 'Comment not found.', 404 );
+        }
+        return $comment;
+    }
+
+    /**
+     * True when the viewer authored the comment, or is an admin/shop manager.
+     */
+    private static function can_manage_comment( WP_Comment $comment, int $viewer ): bool {
+        if ( ! $viewer ) return false;
+        if ( (int) $comment->user_id === $viewer ) return true;
+        return user_can( $viewer, 'manage_options' ) || user_can( $viewer, 'manage_woocommerce' );
+    }
+
+    /**
+     * PUT /blog/comments/{id} — author (or admin) rewrites their comment.
+     */
+    public static function update_comment( WP_REST_Request $request ): WP_REST_Response|WP_Error {
+        $comment = self::blog_comment_or_error( absint( $request['id'] ) );
+        if ( is_wp_error( $comment ) ) {
+            return $comment;
+        }
+        $viewer = get_current_user_id();
+        if ( ! self::can_manage_comment( $comment, $viewer ) ) {
+            return tnm_json_error( 'blog_comment_forbidden', 'You can only edit your own comment.', 403 );
+        }
+        $params  = $request->get_json_params() ?: $request->get_params();
+        $content = trim( sanitize_textarea_field( (string) tnm_array_get( $params, 'content', '' ) ) );
+        if ( '' === $content ) {
+            return tnm_json_error( 'empty_comment', 'Comment cannot be empty.', 400 );
+        }
+        if ( mb_strlen( $content ) > 2000 ) {
+            return tnm_json_error( 'comment_too_long', 'Comment cannot exceed 2,000 characters.', 400 );
+        }
+        $ok = wp_update_comment(
+            array(
+                'comment_ID'      => (int) $comment->comment_ID,
+                'comment_content' => $content,
+            ),
+            true
+        );
+        if ( is_wp_error( $ok ) ) {
+            return $ok;
+        }
+        if ( ! $ok ) {
+            return tnm_json_error( 'blog_comment_update_failed', 'Could not update the comment.', 500 );
+        }
+        $shape = class_exists( 'TNM_Social' )
+            ? TNM_Social::comment_to_array( get_comment( (int) $comment->comment_ID ) )
+            : array( 'id' => (int) $comment->comment_ID, 'content' => $content );
+        return rest_ensure_response( $shape );
+    }
+
+    /**
+     * DELETE /blog/comments/{id} — author (or admin) removes the comment.
+     */
+    public static function delete_comment( WP_REST_Request $request ): WP_REST_Response|WP_Error {
+        $comment = self::blog_comment_or_error( absint( $request['id'] ) );
+        if ( is_wp_error( $comment ) ) {
+            return $comment;
+        }
+        $viewer = get_current_user_id();
+        if ( ! self::can_manage_comment( $comment, $viewer ) ) {
+            return tnm_json_error( 'blog_comment_forbidden', 'You can only delete your own comment.', 403 );
+        }
+        // Force-delete so the row leaves the DB immediately — keeps the
+        // detail screen's "n comments" counter honest after refresh.
+        if ( ! wp_delete_comment( (int) $comment->comment_ID, true ) ) {
+            return tnm_json_error( 'blog_comment_delete_failed', 'Could not delete the comment.', 500 );
+        }
+        return rest_ensure_response( array( 'success' => true, 'id' => (int) $comment->comment_ID ) );
+    }
+
+    /**
+     * POST /blog/comments/{id}/report — any logged-in non-author flags a
+     * comment. Mirrors report_post(): mynest_report CPT + admin email.
+     */
+    public static function report_comment( WP_REST_Request $request ): WP_REST_Response|WP_Error {
+        $comment = self::blog_comment_or_error( absint( $request['id'] ) );
+        if ( is_wp_error( $comment ) ) {
+            return $comment;
+        }
+        $viewer = get_current_user_id();
+        if ( (int) $comment->user_id === $viewer ) {
+            return tnm_json_error( 'blog_report_self', 'You can\'t report your own comment.', 422 );
+        }
+        $reason  = sanitize_text_field( (string) $request->get_param( 'reason' ) );
+        $details = sanitize_textarea_field( (string) $request->get_param( 'details' ) );
+        if ( ! $reason ) {
+            return tnm_json_error( 'blog_report_reason_required', 'Choose a reason for the report.', 422 );
+        }
+
+        $report_id = wp_insert_post(
+            array(
+                'post_type'    => 'mynest_report',
+                'post_status'  => 'pending',
+                'post_author'  => $viewer,
+                'post_title'   => sprintf( 'Blog comment #%d — %s', (int) $comment->comment_ID, $reason ),
+                'post_content' => $details,
+            ),
+            true
+        );
+        if ( is_wp_error( $report_id ) ) {
+            return $report_id;
+        }
+
+        update_post_meta( $report_id, '_mynest_report_kind', 'blog_comment' );
+        update_post_meta( $report_id, '_mynest_blog_comment_id', (int) $comment->comment_ID );
+        update_post_meta( $report_id, '_mynest_blog_post_id', (int) $comment->comment_post_ID );
+        update_post_meta( $report_id, '_mynest_reason', $reason );
+        update_post_meta( $report_id, '_mynest_reporter_id', $viewer );
+
+        $admins = get_users( array( 'role__in' => array( 'administrator', 'shop_manager' ), 'fields' => array( 'user_email' ) ) );
+        foreach ( $admins as $admin ) {
+            if ( is_email( $admin->user_email ) ) {
+                wp_mail(
+                    $admin->user_email,
+                    'New MyNest blog comment report',
+                    sprintf(
+                        "Blog comment #%d on post #%d\nComment author: %s\nReason: %s\nDetails: %s",
+                        (int) $comment->comment_ID,
+                        (int) $comment->comment_post_ID,
+                        get_the_author_meta( 'display_name', (int) $comment->user_id ),
+                        $reason,
+                        $details
+                    )
+                );
+            }
+        }
+
+        return rest_ensure_response( array( 'success' => true, 'report_id' => (int) $report_id ) );
     }
 
     public static function logged_in(): bool|WP_Error {
