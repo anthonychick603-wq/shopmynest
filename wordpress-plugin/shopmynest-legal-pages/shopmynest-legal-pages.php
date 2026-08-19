@@ -3,7 +3,7 @@
  * Plugin Name: ShopMyNest Legal Pages
  * Plugin URI:  https://shopmynest.com/
  * Description: Seeds Terms of Service, Privacy Policy, Return & Refund Policy, and Shipping Policy pages on activation. Provides a settings screen so the legal entity name, business address, contact email, and effective date can be updated without editing page content. Values are substituted at render time via the_content filter.
- * Version:     1.1.2
+ * Version:     1.1.3
  * Author:      MyNest
  * Text Domain: shopmynest-legal-pages
  * Requires at least: 6.5
@@ -14,7 +14,7 @@
 defined( 'ABSPATH' ) || exit;
 
 final class ShopMyNest_Legal_Pages {
-    private const VERSION      = '1.1.1';
+    private const VERSION      = '1.1.3';
     private const OPT          = 'shopmynest_legal_settings';
     private const OPT_PAGE_IDS = 'shopmynest_legal_page_ids';
 
@@ -68,6 +68,38 @@ final class ShopMyNest_Legal_Pages {
         // Prevents duplicate-content SEO issues and ensures a single source
         // of truth when the settings screen updates placeholders.
         add_action( 'template_redirect', array( __CLASS__, 'redirect_legacy_slugs' ), 1 );
+
+        // v1.1.3 — block anyone else (WP core Privacy Policy setting, old SEO
+        // plugins, orphan pages) from redirecting our canonical slugs BACK to
+        // legacy paths. Without this the site can enter a 301 loop between
+        // /privacy/ and /privacy-policy/. Filter runs on every wp_redirect().
+        add_filter( 'wp_redirect', array( __CLASS__, 'block_canonical_reverse_loop' ), 1, 2 );
+    }
+
+    /**
+     * If the CURRENT request path is one of our canonical slugs (/privacy/,
+     * /terms/, /refunds/, /shipping/) and something is trying to 301 us to
+     * one of the legacy paths, drop the redirect. Prevents infinite loops
+     * with WP core's Privacy Policy setting and other plugins that assume a
+     * different canonical slug.
+     *
+     * @param string $location Proposed redirect target.
+     * @param int    $status   HTTP status code.
+     * @return string|false    False cancels the redirect.
+     */
+    public static function block_canonical_reverse_loop( $location, $status ) {
+        $request_uri  = isset( $_SERVER['REQUEST_URI'] ) ? (string) $_SERVER['REQUEST_URI'] : '';
+        $request_path = '/' . trim( strtok( $request_uri, '?' ), '/' );
+        $canonical    = array( '/privacy', '/terms', '/refunds', '/shipping' );
+        if ( ! in_array( $request_path, $canonical, true ) ) {
+            return $location;
+        }
+        $legacy_paths = array_keys( self::legacy_redirects() );
+        $target_path  = '/' . trim( wp_parse_url( (string) $location, PHP_URL_PATH ) ?: '', '/' );
+        if ( in_array( $target_path, $legacy_paths, true ) ) {
+            return false; // Cancel the loop-inducing redirect.
+        }
+        return $location;
     }
 
     /**
