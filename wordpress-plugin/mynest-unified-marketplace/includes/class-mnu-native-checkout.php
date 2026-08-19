@@ -183,6 +183,50 @@ function mnu_native_calc_items( array $items ): array|WP_Error {
     return $lines ? array( $lines, $subtotal ) : new WP_Error( 'empty_cart', 'No valid products found.', array( 'status' => 400 ) );
 }
 
+/**
+ * v3.7.119 (Build #10) — Calculate a coupon discount for a native cart quote.
+ * Mirrors the /coupons/apply validation but returns 0 (with a reason) instead
+ * of throwing so a bad code never blocks checkout — the buyer just doesn't get
+ * the discount and sees the reason on the client.
+ *
+ * @param array<int, array<string, mixed>> $lines Lines from mnu_native_calc_items().
+ * @return array{discount: float, free_shipping: bool, reason: string, code: string, coupon_id: int}
+ */
+function mnu_native_coupon_discount( array $lines, string $code ): array {
+    $result = array( 'discount' => 0.0, 'free_shipping' => false, 'reason' => '', 'code' => wc_format_coupon_code( $code ), 'coupon_id' => 0 );
+    if ( '' === $result['code'] ) { return $result; }
+    $coupon_id = wc_get_coupon_id_by_code( $result['code'] );
+    if ( ! $coupon_id ) { $result['reason'] = 'coupon_not_found'; return $result; }
+    $coupon = new WC_Coupon( $coupon_id );
+    if ( $coupon->get_date_expires() && $coupon->get_date_expires()->getTimestamp() < current_time( 'timestamp', true ) ) {
+        $result['reason'] = 'coupon_expired'; return $result;
+    }
+    if ( $coupon->get_usage_limit() > 0 && $coupon->get_usage_count() >= $coupon->get_usage_limit() ) {
+        $result['reason'] = 'coupon_used_up'; return $result;
+    }
+    $allowed_ids = $coupon->get_product_ids();
+    $eligible    = 0.0; $subtotal = 0.0;
+    foreach ( $lines as $line ) {
+        $subtotal += (float) $line['line_total'];
+        if ( ! $allowed_ids || in_array( (int) $line['product_id'], $allowed_ids, true ) ) {
+            $eligible += (float) $line['line_total'];
+        }
+    }
+    if ( $coupon->get_minimum_amount() > 0 && $subtotal < (float) $coupon->get_minimum_amount() ) {
+        $result['reason'] = 'coupon_min_amount'; return $result;
+    }
+    if ( $eligible <= 0 ) { $result['reason'] = 'coupon_not_applicable'; return $result; }
+    $type = $coupon->get_discount_type();
+    $amt  = (float) $coupon->get_amount();
+    if ( 'percent' === $type )        { $result['discount'] = round( $eligible * ( $amt / 100 ), 2 ); }
+    elseif ( 'fixed_cart' === $type ) { $result['discount'] = min( $eligible, $amt ); }
+    elseif ( 'fixed_product' === $type ) { $result['discount'] = min( $eligible, $amt ); }
+    $result['discount']      = max( 0.0, round( $result['discount'], 2 ) );
+    $result['free_shipping'] = (bool) $coupon->get_free_shipping();
+    $result['coupon_id']     = $coupon_id;
+    return $result;
+}
+
 function mnu_native_flat_shipping( float $subtotal ): float {
     $settings  = mnu_native_get_settings();
     $threshold = max( 0, (float) $settings['free_shipping_threshold'] );
@@ -715,6 +759,16 @@ function mnu_native_quote( WP_REST_Request $request ): array|WP_Error {
         $debug_reason = 'A complete destination address (street, city, state, ZIP, and 2-letter country) is required to fetch live shipping rates; an estimate is shown instead.';
     }
 
+    // v3.7.119 (Build #10) — coupon layer. Apply discount to subtotal; when
+    // the coupon carries free_shipping, zero out shipping for this quote too.
+    $coupon_code = sanitize_text_field( (string) ( $data['coupon_code'] ?? '' ) );
+    $coupon      = mnu_native_coupon_discount( $lines, $coupon_code );
+    $discount    = (float) $coupon['discount'];
+    if ( $coupon['free_shipping'] && $discount >= 0 && $coupon_code ) {
+        $shipping = 0.0;
+    }
+    $total_before_tax = max( 0.0, ( $subtotal - $discount ) + $shipping );
+
     $response = array(
         'items' => array_map(
             static fn( array $line ): array => array(
@@ -726,14 +780,24 @@ function mnu_native_quote( WP_REST_Request $request ): array|WP_Error {
             $lines
         ),
         'subtotal'      => $subtotal,
+        'discount'      => $discount,
         'shipping'      => $shipping,
         'tax'           => 0,
         'tax_estimated' => true,
-        'total'         => $subtotal + $shipping,
+        'total'         => $total_before_tax,
         'currency'      => $currency,
         'expires_in'    => 15 * MINUTE_IN_SECONDS,
         'quote_token'   => mnu_native_issue_quote_token( $user_id, $lines, $subtotal, $shipping, $currency ),
     );
+    if ( $coupon_code ) {
+        $response['coupon'] = array(
+            'code'          => $coupon['code'],
+            'discount'      => $discount,
+            'free_shipping' => (bool) $coupon['free_shipping'],
+            'valid'         => '' === $coupon['reason'],
+            'reason'        => $coupon['reason'],
+        );
+    }
     if ( $has_address ) {
         $response['shipping_rates'] = $shipping_rates;
     }
@@ -1161,6 +1225,30 @@ function mnu_native_create_intent_locked( int $user_id, array $data, string $che
         if ( $quote_token ) {
             $order->update_meta_data( '_thenest_quote_token_hash', hash( 'sha256', $quote_token ) );
             $order->save();
+        }
+
+        // v3.7.119 (Build #10) — apply coupon to the newly created order.
+        // We compute the discount on the server against the same lines so a
+        // tampered client-side amount can't change what the buyer is charged.
+        $coupon_code = sanitize_text_field( (string) ( $data['coupon_code'] ?? '' ) );
+        if ( '' !== $coupon_code ) {
+            $coupon_result = mnu_native_coupon_discount( $lines, $coupon_code );
+            if ( $coupon_result['discount'] > 0 || $coupon_result['free_shipping'] ) {
+                $wc_coupon = new WC_Coupon( $coupon_result['coupon_id'] );
+                // WC's built-in apply_coupon handles usage counting + validates,
+                // but we want the specific discount amount from our
+                // seller-scoped calculation. Add as an explicit fee-line coupon.
+                $order->apply_coupon( $wc_coupon );
+                if ( $coupon_result['free_shipping'] ) {
+                    foreach ( $order->get_items( 'shipping' ) as $ship_item ) {
+                        $ship_item->set_total( '0' );
+                        $ship_item->save();
+                    }
+                }
+                $order->update_meta_data( '_mnu_coupon_code', $coupon_result['code'] );
+                $order->update_meta_data( '_mnu_coupon_discount', (string) $coupon_result['discount'] );
+                $order->calculate_totals();
+            }
         }
 
         // v3.7.87 — persist the per-seller Shippo rate/parcel snapshots so

@@ -66,6 +66,24 @@ final class TNM_REST {
         // v3.7.102 (Build #3) — clone an existing listing (as a draft) so the seller
         // only has to change color/size/photo instead of retyping every field.
         register_rest_route( self::NS, '/seller/products/(?P<id>\d+)/duplicate', array( 'methods' => WP_REST_Server::CREATABLE, 'callback' => array( __CLASS__, 'seller_product_duplicate' ), 'permission_callback' => array( __CLASS__, 'seller' ) ) );
+        // v3.7.119 (Build #8) — seller variations editor: PUT replaces
+        // attributes + variations in one shot. GET is served by the existing
+        // product endpoint (attributes + variation_details already ship).
+        register_rest_route( self::NS, '/seller/products/(?P<id>\d+)/variations', array( 'methods' => WP_REST_Server::EDITABLE, 'callback' => array( __CLASS__, 'seller_product_variations_save' ), 'permission_callback' => array( __CLASS__, 'seller' ) ) );
+        // v3.7.119 (Build #10) — seller coupon CRUD (per-shop codes) + admin coupon CRUD
+        // (site-wide codes) + coupon apply for the native mobile cart.
+        register_rest_route( self::NS, '/seller/coupons', array( array( 'methods' => WP_REST_Server::READABLE, 'callback' => array( __CLASS__, 'seller_coupons_list' ), 'permission_callback' => array( __CLASS__, 'seller' ) ), array( 'methods' => WP_REST_Server::CREATABLE, 'callback' => array( __CLASS__, 'seller_coupon_create' ), 'permission_callback' => array( __CLASS__, 'seller' ) ) ) );
+        register_rest_route( self::NS, '/seller/coupons/(?P<id>\d+)', array( array( 'methods' => WP_REST_Server::EDITABLE, 'callback' => array( __CLASS__, 'seller_coupon_update' ), 'permission_callback' => array( __CLASS__, 'seller' ) ), array( 'methods' => WP_REST_Server::DELETABLE, 'callback' => array( __CLASS__, 'seller_coupon_delete' ), 'permission_callback' => array( __CLASS__, 'seller' ) ) ) );
+        register_rest_route( self::NS, '/admin/coupons', array( array( 'methods' => WP_REST_Server::READABLE, 'callback' => array( __CLASS__, 'admin_coupons_list' ), 'permission_callback' => array( __CLASS__, 'admin' ) ), array( 'methods' => WP_REST_Server::CREATABLE, 'callback' => array( __CLASS__, 'admin_coupon_create' ), 'permission_callback' => array( __CLASS__, 'admin' ) ) ) );
+        register_rest_route( self::NS, '/admin/coupons/(?P<id>\d+)', array( array( 'methods' => WP_REST_Server::EDITABLE, 'callback' => array( __CLASS__, 'admin_coupon_update' ), 'permission_callback' => array( __CLASS__, 'admin' ) ), array( 'methods' => WP_REST_Server::DELETABLE, 'callback' => array( __CLASS__, 'admin_coupon_delete' ), 'permission_callback' => array( __CLASS__, 'admin' ) ) ) );
+        register_rest_route( self::NS, '/coupons/apply', array( 'methods' => WP_REST_Server::CREATABLE, 'callback' => array( __CLASS__, 'coupon_apply' ), 'permission_callback' => array( __CLASS__, 'logged_in' ) ) );
+        // v3.7.119 (Build #9-lite) — product reviews list. Submit already exists at
+        // /sellers/{id}/reviews (POST) and is verified against buyer orders.
+        register_rest_route( self::NS, '/products/(?P<id>\d+)/reviews', array( 'methods' => WP_REST_Server::READABLE, 'callback' => array( __CLASS__, 'product_reviews' ), 'permission_callback' => '__return_true' ) );
+        // v3.7.119 (Build #11) — buyer address book. GET lists, POST creates, PUT edits,
+        // DELETE removes. Multi-address support (existing /ops/addresses is single-shipping).
+        register_rest_route( self::NS, '/me/addresses', array( array( 'methods' => WP_REST_Server::READABLE, 'callback' => array( __CLASS__, 'address_book_list' ), 'permission_callback' => array( __CLASS__, 'logged_in' ) ), array( 'methods' => WP_REST_Server::CREATABLE, 'callback' => array( __CLASS__, 'address_book_create' ), 'permission_callback' => array( __CLASS__, 'logged_in' ) ) ) );
+        register_rest_route( self::NS, '/me/addresses/(?P<id>[a-z0-9-]+)', array( array( 'methods' => WP_REST_Server::EDITABLE, 'callback' => array( __CLASS__, 'address_book_update' ), 'permission_callback' => array( __CLASS__, 'logged_in' ) ), array( 'methods' => WP_REST_Server::DELETABLE, 'callback' => array( __CLASS__, 'address_book_delete' ), 'permission_callback' => array( __CLASS__, 'logged_in' ) ) ) );
         register_rest_route( self::NS, '/seller/orders', array( 'methods' => WP_REST_Server::READABLE, 'callback' => array( __CLASS__, 'seller_orders' ), 'permission_callback' => array( __CLASS__, 'seller' ) ) );
         register_rest_route( self::NS, '/seller/orders/(?P<id>\d+)', array( 'methods' => WP_REST_Server::EDITABLE, 'callback' => array( __CLASS__, 'seller_order_update' ), 'permission_callback' => array( __CLASS__, 'seller' ) ) );
         register_rest_route( self::NS, '/seller/earnings', array( 'methods' => WP_REST_Server::READABLE, 'callback' => array( __CLASS__, 'seller_earnings' ), 'permission_callback' => array( __CLASS__, 'seller' ) ) );
@@ -84,6 +102,14 @@ final class TNM_REST {
             return tnm_json_error( 'rest_login_required', 'Authentication is required.', 401 );
         }
         return tnm_is_seller() || tnm_is_admin_or_manager() ? true : tnm_json_error( 'rest_seller_required', 'An approved seller account is required.', 403 );
+    }
+
+    // v3.7.119 (Build #10) — admin/shop-manager gate for site-wide coupon CRUD.
+    public static function admin(): bool|WP_Error {
+        if ( ! get_current_user_id() ) {
+            return tnm_json_error( 'rest_login_required', 'Authentication is required.', 401 );
+        }
+        return tnm_is_admin_or_manager() ? true : tnm_json_error( 'rest_admin_required', 'Administrator access is required.', 403 );
     }
 
     public static function config(): WP_REST_Response {
@@ -1110,5 +1136,358 @@ final class TNM_REST {
     public static function seller_payout_request( WP_REST_Request $request ): WP_REST_Response|WP_Error {
         $payout_id = TNM_Payouts::request( get_current_user_id(), (float) $request->get_param( 'amount' ), sanitize_key( (string) $request->get_param( 'method' ) ), sanitize_text_field( (string) $request->get_param( 'destination' ) ) );
         return is_wp_error( $payout_id ) ? $payout_id : rest_ensure_response( array( 'success' => true, 'payout' => TNM_Payouts::get( $payout_id ) ) );
+    }
+
+    // =========================================================================
+    // v3.7.119 — Build 8 (variations editor), 9-lite (product reviews list),
+    // 10 (coupons: seller + admin + apply), 11 (buyer address book).
+    // Kept together at the bottom to avoid churning the earlier file layout.
+    // =========================================================================
+
+    public static function seller_product_variations_save( WP_REST_Request $request ): WP_REST_Response|WP_Error {
+        $result = TNM_Marketplace::save_product_variations( get_current_user_id(), absint( $request['id'] ), $request->get_json_params() ?: $request->get_params() );
+        if ( is_wp_error( $result ) ) {
+            return $result;
+        }
+        return rest_ensure_response( $result );
+    }
+
+    // ---- Coupons -----------------------------------------------------------
+
+    /**
+     * Serialize a WC_Coupon into the mobile-friendly shape. `scope` disambiguates
+     * seller vs admin coupons — seller coupons carry `_tnm_seller_id`.
+     */
+    private static function coupon_to_array( WC_Coupon $coupon ): array {
+        $seller_id = (int) $coupon->get_meta( '_tnm_seller_id' );
+        return array(
+            'id'                => $coupon->get_id(),
+            'code'              => $coupon->get_code(),
+            'discount_type'     => $coupon->get_discount_type(),
+            'amount'            => (float) $coupon->get_amount(),
+            'description'       => $coupon->get_description(),
+            'minimum_amount'    => (float) $coupon->get_minimum_amount(),
+            'usage_limit'       => (int) $coupon->get_usage_limit(),
+            'usage_count'       => (int) $coupon->get_usage_count(),
+            'expires_at'        => $coupon->get_date_expires() ? $coupon->get_date_expires()->date( 'Y-m-d' ) : '',
+            'free_shipping'     => (bool) $coupon->get_free_shipping(),
+            'seller_id'         => $seller_id ?: 0,
+            'scope'             => $seller_id ? 'seller' : 'site',
+        );
+    }
+
+    private static function coupon_apply_payload( WP_REST_Request $request, WC_Coupon $coupon, int $seller_scope = 0 ): int|WP_Error {
+        $code = wc_format_coupon_code( (string) ( $request->get_param( 'code' ) ?: $coupon->get_code() ) );
+        $type = sanitize_key( (string) $request->get_param( 'discount_type' ) );
+        $allowed_types = array( 'percent', 'fixed_cart', 'fixed_product' );
+        if ( ! in_array( $type, $allowed_types, true ) ) { $type = 'percent'; }
+        $amount = wc_format_decimal( (string) $request->get_param( 'amount' ) );
+        if ( '' === $amount || (float) $amount < 0 ) {
+            return tnm_json_error( 'invalid_coupon_amount', 'Coupon amount must be non-negative.', 422 );
+        }
+        if ( 'percent' === $type && (float) $amount > 100 ) {
+            return tnm_json_error( 'invalid_coupon_amount', 'Percent coupons cannot exceed 100.', 422 );
+        }
+        if ( '' === $code ) {
+            return tnm_json_error( 'invalid_coupon_code', 'Coupon code cannot be empty.', 422 );
+        }
+        $coupon->set_code( $code );
+        $coupon->set_discount_type( $type );
+        $coupon->set_amount( $amount );
+        $description = $request->get_param( 'description' );
+        if ( null !== $description ) { $coupon->set_description( sanitize_textarea_field( (string) $description ) ); }
+        $minimum = $request->get_param( 'minimum_amount' );
+        if ( null !== $minimum ) { $coupon->set_minimum_amount( wc_format_decimal( (string) $minimum ) ); }
+        $usage_limit = $request->get_param( 'usage_limit' );
+        if ( null !== $usage_limit ) { $coupon->set_usage_limit( max( 0, (int) $usage_limit ) ); }
+        $free_shipping = $request->get_param( 'free_shipping' );
+        if ( null !== $free_shipping ) { $coupon->set_free_shipping( (bool) $free_shipping ); }
+        $expires_at = $request->get_param( 'expires_at' );
+        if ( null !== $expires_at ) {
+            $expires_at = sanitize_text_field( (string) $expires_at );
+            $coupon->set_date_expires( $expires_at ? $expires_at : null );
+        }
+        if ( $seller_scope > 0 ) {
+            $coupon->update_meta_data( '_tnm_seller_id', $seller_scope );
+            // Restrict the coupon's product_ids to this seller's catalog
+            // so a buyer can't use a Vermont Woodworks 10% coupon on a
+            // ceramics-studio order that happens to have both sellers in it.
+            $product_ids = tnm_seller_product_ids( $seller_scope, array( 'publish', 'private' ) );
+            if ( $product_ids ) {
+                $coupon->set_product_ids( array_map( 'intval', $product_ids ) );
+            }
+        }
+        $id = $coupon->save();
+        if ( is_wp_error( $id ) ) { return $id; }
+        return (int) $id;
+    }
+
+    private static function seller_owns_coupon( int $coupon_id, int $seller_id ): bool {
+        $meta = (int) get_post_meta( $coupon_id, '_tnm_seller_id', true );
+        return $meta === $seller_id;
+    }
+
+    public static function seller_coupons_list(): WP_REST_Response {
+        $seller_id = get_current_user_id();
+        $q = new WP_Query( array( 'post_type' => 'shop_coupon', 'post_status' => 'publish', 'posts_per_page' => 200, 'meta_key' => '_tnm_seller_id', 'meta_value' => $seller_id ) );
+        $items = array();
+        foreach ( $q->posts as $post ) {
+            $coupon = new WC_Coupon( $post->ID );
+            $items[] = self::coupon_to_array( $coupon );
+        }
+        return rest_ensure_response( array( 'items' => $items ) );
+    }
+
+    public static function seller_coupon_create( WP_REST_Request $request ): WP_REST_Response|WP_Error {
+        $seller_id = get_current_user_id();
+        $coupon    = new WC_Coupon();
+        $id = self::coupon_apply_payload( $request, $coupon, $seller_id );
+        if ( is_wp_error( $id ) ) { return $id; }
+        return rest_ensure_response( self::coupon_to_array( new WC_Coupon( $id ) ) );
+    }
+
+    public static function seller_coupon_update( WP_REST_Request $request ): WP_REST_Response|WP_Error {
+        $seller_id = get_current_user_id();
+        $coupon_id = absint( $request['id'] );
+        if ( ! self::seller_owns_coupon( $coupon_id, $seller_id ) && ! tnm_is_admin_or_manager() ) {
+            return tnm_json_error( 'coupon_permission_denied', 'You cannot edit this coupon.', 403 );
+        }
+        $coupon = new WC_Coupon( $coupon_id );
+        $id = self::coupon_apply_payload( $request, $coupon, $seller_id );
+        if ( is_wp_error( $id ) ) { return $id; }
+        return rest_ensure_response( self::coupon_to_array( new WC_Coupon( $id ) ) );
+    }
+
+    public static function seller_coupon_delete( WP_REST_Request $request ): WP_REST_Response|WP_Error {
+        $seller_id = get_current_user_id();
+        $coupon_id = absint( $request['id'] );
+        if ( ! self::seller_owns_coupon( $coupon_id, $seller_id ) && ! tnm_is_admin_or_manager() ) {
+            return tnm_json_error( 'coupon_permission_denied', 'You cannot delete this coupon.', 403 );
+        }
+        wp_delete_post( $coupon_id, true );
+        return rest_ensure_response( array( 'success' => true ) );
+    }
+
+    public static function admin_coupons_list(): WP_REST_Response {
+        // Site-wide coupons only — the ones without _tnm_seller_id set.
+        $q = new WP_Query( array( 'post_type' => 'shop_coupon', 'post_status' => 'publish', 'posts_per_page' => 500, 'meta_query' => array( array( 'key' => '_tnm_seller_id', 'compare' => 'NOT EXISTS' ) ) ) );
+        $items = array();
+        foreach ( $q->posts as $post ) {
+            $coupon = new WC_Coupon( $post->ID );
+            $items[] = self::coupon_to_array( $coupon );
+        }
+        return rest_ensure_response( array( 'items' => $items ) );
+    }
+
+    public static function admin_coupon_create( WP_REST_Request $request ): WP_REST_Response|WP_Error {
+        $coupon = new WC_Coupon();
+        $id = self::coupon_apply_payload( $request, $coupon, 0 );
+        if ( is_wp_error( $id ) ) { return $id; }
+        return rest_ensure_response( self::coupon_to_array( new WC_Coupon( $id ) ) );
+    }
+
+    public static function admin_coupon_update( WP_REST_Request $request ): WP_REST_Response|WP_Error {
+        $coupon = new WC_Coupon( absint( $request['id'] ) );
+        $id = self::coupon_apply_payload( $request, $coupon, 0 );
+        if ( is_wp_error( $id ) ) { return $id; }
+        return rest_ensure_response( self::coupon_to_array( new WC_Coupon( $id ) ) );
+    }
+
+    public static function admin_coupon_delete( WP_REST_Request $request ): WP_REST_Response|WP_Error {
+        wp_delete_post( absint( $request['id'] ), true );
+        return rest_ensure_response( array( 'success' => true ) );
+    }
+
+    /**
+     * Validate a coupon against a proposed cart. Called by the mobile cart
+     * to preview the discount — the same math runs again inside
+     * mnu_native_calc_items() so the final charge always matches.
+     */
+    public static function coupon_apply( WP_REST_Request $request ): WP_REST_Response|WP_Error {
+        $code = wc_format_coupon_code( (string) $request->get_param( 'code' ) );
+        if ( '' === $code ) {
+            return tnm_json_error( 'invalid_coupon_code', 'Enter a coupon code.', 422 );
+        }
+        $items_in = (array) $request->get_param( 'items' );
+        if ( ! $items_in ) {
+            return tnm_json_error( 'invalid_cart', 'Cart is empty.', 422 );
+        }
+        $coupon_id = wc_get_coupon_id_by_code( $code );
+        if ( ! $coupon_id ) {
+            return tnm_json_error( 'coupon_not_found', 'Coupon code not found.', 404 );
+        }
+        $coupon = new WC_Coupon( $coupon_id );
+        // Expiration + usage limit checks.
+        if ( $coupon->get_date_expires() && $coupon->get_date_expires()->getTimestamp() < current_time( 'timestamp', true ) ) {
+            return tnm_json_error( 'coupon_expired', 'This coupon has expired.', 410 );
+        }
+        if ( $coupon->get_usage_limit() > 0 && $coupon->get_usage_count() >= $coupon->get_usage_limit() ) {
+            return tnm_json_error( 'coupon_used_up', 'This coupon has reached its usage limit.', 410 );
+        }
+        // Compute subtotal + eligible subtotal.
+        $subtotal = 0.0; $eligible = 0.0; $seller_ids = array();
+        $allowed_product_ids = $coupon->get_product_ids();
+        foreach ( $items_in as $item ) {
+            $pid = absint( $item['product_id'] ?? 0 );
+            $qty = max( 1, (int) ( $item['quantity'] ?? 1 ) );
+            $product = wc_get_product( $pid );
+            if ( ! $product ) { continue; }
+            $vid = absint( $item['variation_id'] ?? 0 );
+            $priceable = $vid ? wc_get_product( $vid ) : $product;
+            if ( ! $priceable ) { continue; }
+            $line = (float) $priceable->get_price() * $qty;
+            $subtotal += $line;
+            $seller_ids[] = tnm_get_product_seller_id( $product );
+            if ( ! $allowed_product_ids || in_array( $pid, $allowed_product_ids, true ) ) {
+                $eligible += $line;
+            }
+        }
+        if ( $coupon->get_minimum_amount() > 0 && $subtotal < (float) $coupon->get_minimum_amount() ) {
+            return tnm_json_error( 'coupon_min_amount', sprintf( 'Cart subtotal must be at least $%.2f.', (float) $coupon->get_minimum_amount() ), 422 );
+        }
+        if ( $eligible <= 0 ) {
+            return tnm_json_error( 'coupon_not_applicable', 'This coupon does not apply to any items in your cart.', 422 );
+        }
+        $type   = $coupon->get_discount_type();
+        $amount = (float) $coupon->get_amount();
+        $discount = 0.0;
+        if ( 'percent' === $type ) { $discount = round( $eligible * ( $amount / 100 ), 2 ); }
+        elseif ( 'fixed_cart' === $type ) { $discount = min( $eligible, $amount ); }
+        elseif ( 'fixed_product' === $type ) { $discount = min( $eligible, $amount ); }
+        $discount = max( 0.0, round( $discount, 2 ) );
+        return rest_ensure_response( array(
+            'coupon'         => self::coupon_to_array( $coupon ),
+            'subtotal'       => round( $subtotal, 2 ),
+            'eligible'       => round( $eligible, 2 ),
+            'discount'       => $discount,
+            'free_shipping'  => (bool) $coupon->get_free_shipping(),
+        ) );
+    }
+
+    // ---- Product reviews ---------------------------------------------------
+
+    public static function product_reviews( WP_REST_Request $request ): WP_REST_Response {
+        $product_id = absint( $request['id'] );
+        $product = wc_get_product( $product_id );
+        if ( ! $product ) {
+            return rest_ensure_response( array( 'items' => array(), 'total' => 0, 'average' => 0 ) );
+        }
+        $seller_id = tnm_get_product_seller_id( $product );
+        if ( ! $seller_id ) {
+            return rest_ensure_response( array( 'items' => array(), 'total' => 0, 'average' => 0 ) );
+        }
+        // Product reviews are the seller's reviews scoped to the product's line
+        // items. Since our reviews table stores by seller_id we don't have a
+        // product-scoped view; return the seller reviews with the product's
+        // aggregate. Product-scoped reviews are the next iteration.
+        $page     = max( 1, (int) $request->get_param( 'page' ) );
+        $per_page = max( 1, (int) ( $request->get_param( 'per_page' ) ?: 20 ) );
+        return rest_ensure_response( TNM_Social::seller_reviews( $seller_id, $page, $per_page ) );
+    }
+
+    // ---- Buyer address book ------------------------------------------------
+
+    private static function address_book(): array {
+        $raw = get_user_meta( get_current_user_id(), 'tnm_address_book', true );
+        return is_array( $raw ) ? array_values( $raw ) : array();
+    }
+
+    private static function save_address_book( array $book ): void {
+        update_user_meta( get_current_user_id(), 'tnm_address_book', array_values( $book ) );
+    }
+
+    private static function sanitize_address_row( array $data, string $id_hint = '' ): array {
+        $row = array(
+            'id'         => $id_hint ?: sanitize_key( uniqid( 'addr_', true ) ),
+            'label'      => sanitize_text_field( (string) ( $data['label'] ?? '' ) ),
+            'first_name' => sanitize_text_field( (string) ( $data['first_name'] ?? '' ) ),
+            'last_name'  => sanitize_text_field( (string) ( $data['last_name'] ?? '' ) ),
+            'company'    => sanitize_text_field( (string) ( $data['company'] ?? '' ) ),
+            'address_1'  => sanitize_text_field( (string) ( $data['address_1'] ?? $data['address'] ?? '' ) ),
+            'address_2'  => sanitize_text_field( (string) ( $data['address_2'] ?? '' ) ),
+            'city'       => sanitize_text_field( (string) ( $data['city'] ?? '' ) ),
+            'state'      => sanitize_text_field( (string) ( $data['state'] ?? 'NH' ) ),
+            'postcode'   => sanitize_text_field( (string) ( $data['postcode'] ?? '' ) ),
+            'country'    => strtoupper( sanitize_text_field( (string) ( $data['country'] ?? 'US' ) ) ) ?: 'US',
+            'phone'      => sanitize_text_field( (string) ( $data['phone'] ?? '' ) ),
+            'is_default' => (bool) ( $data['is_default'] ?? false ),
+        );
+        return $row;
+    }
+
+    public static function address_book_list(): WP_REST_Response {
+        $book = self::address_book();
+        // Ensure at most one is default.
+        $default_seen = false;
+        foreach ( $book as &$row ) {
+            if ( ! empty( $row['is_default'] ) ) {
+                if ( $default_seen ) { $row['is_default'] = false; } else { $default_seen = true; }
+            }
+        }
+        unset( $row );
+        return rest_ensure_response( array( 'items' => $book ) );
+    }
+
+    public static function address_book_create( WP_REST_Request $request ): WP_REST_Response|WP_Error {
+        $data = $request->get_json_params() ?: $request->get_params();
+        if ( empty( $data['address_1'] ) && empty( $data['address'] ) ) {
+            return tnm_json_error( 'invalid_address', 'Street address is required.', 422 );
+        }
+        if ( empty( $data['city'] ) || empty( $data['postcode'] ) ) {
+            return tnm_json_error( 'invalid_address', 'City and postcode are required.', 422 );
+        }
+        $book = self::address_book();
+        $row  = self::sanitize_address_row( (array) $data );
+        if ( ! empty( $row['is_default'] ) ) {
+            foreach ( $book as &$existing ) { $existing['is_default'] = false; }
+            unset( $existing );
+        } elseif ( ! $book ) {
+            $row['is_default'] = true; // first address is default
+        }
+        $book[] = $row;
+        self::save_address_book( $book );
+        return rest_ensure_response( $row );
+    }
+
+    public static function address_book_update( WP_REST_Request $request ): WP_REST_Response|WP_Error {
+        $id   = sanitize_key( (string) $request['id'] );
+        $book = self::address_book();
+        $found = false; $updated = null;
+        $data = $request->get_json_params() ?: $request->get_params();
+        foreach ( $book as &$existing ) {
+            if ( $existing['id'] === $id ) {
+                $found = true;
+                $existing = self::sanitize_address_row( array_merge( $existing, (array) $data ), $id );
+                $updated = $existing;
+                break;
+            }
+        }
+        unset( $existing );
+        if ( ! $found ) {
+            return tnm_json_error( 'address_not_found', 'Address not found.', 404 );
+        }
+        if ( ! empty( $updated['is_default'] ) ) {
+            foreach ( $book as &$existing ) {
+                if ( $existing['id'] !== $id ) { $existing['is_default'] = false; }
+            }
+            unset( $existing );
+        }
+        self::save_address_book( $book );
+        return rest_ensure_response( $updated );
+    }
+
+    public static function address_book_delete( WP_REST_Request $request ): WP_REST_Response|WP_Error {
+        $id   = sanitize_key( (string) $request['id'] );
+        $book = self::address_book();
+        $filtered = array_values( array_filter( $book, static fn( $row ) => $row['id'] !== $id ) );
+        if ( count( $filtered ) === count( $book ) ) {
+            return tnm_json_error( 'address_not_found', 'Address not found.', 404 );
+        }
+        // Re-establish a default when we removed the previous one.
+        $has_default = false;
+        foreach ( $filtered as $row ) { if ( ! empty( $row['is_default'] ) ) { $has_default = true; break; } }
+        if ( ! $has_default && $filtered ) { $filtered[0]['is_default'] = true; }
+        self::save_address_book( $filtered );
+        return rest_ensure_response( array( 'success' => true ) );
     }
 }

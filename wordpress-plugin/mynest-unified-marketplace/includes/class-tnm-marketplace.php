@@ -817,6 +817,205 @@ final class TNM_Marketplace {
         return (int) $new_id;
     }
 
+    /**
+     * v3.7.119 (Build #8) — seller variations editor.
+     *
+     * Overwrites a product's custom (product-level, not taxonomy) attributes
+     * and its child variations in one shot. We deliberately do NOT touch
+     * global taxonomy attributes (pa_size etc.) here so this endpoint stays
+     * a safe superset of what the mobile app renders in the picker: sellers
+     * type option names, we hash them into slugs, and every combination
+     * they set gets a real WC_Product_Variation with its own price + stock.
+     *
+     * $payload shape:
+     *   attributes  => [ { name:string, options:[string,...] }, ... ]
+     *   variations  => [ { attributes:{name:slug,...}, price:num, stock:int, sku?:string }, ... ]
+     *
+     * When the seller submits `attributes = []` we downgrade the product
+     * back to a simple product (all existing variations are deleted) so
+     * they can undo the whole thing without contacting support.
+     */
+    public static function save_product_variations( int $seller_id, int $product_id, array $payload ): array|WP_Error {
+        $product = wc_get_product( $product_id );
+        if ( ! $product ) {
+            return tnm_json_error( 'product_not_found', 'Product not found.', 404 );
+        }
+        if ( tnm_get_product_seller_id( $product ) !== $seller_id && ! tnm_is_admin_or_manager() ) {
+            return tnm_json_error( 'product_permission_denied', 'You cannot edit this product.', 403 );
+        }
+
+        $attributes_in = is_array( $payload['attributes'] ?? null ) ? $payload['attributes'] : array();
+        $variations_in = is_array( $payload['variations'] ?? null ) ? $payload['variations'] : array();
+
+        // Sanitize + de-dupe attributes.
+        $attr_defs = array(); // attr_key => [ 'name'=>display, 'options'=>[ slug=>label, ... ] ]
+        foreach ( $attributes_in as $attr ) {
+            if ( ! is_array( $attr ) ) { continue; }
+            $name = sanitize_text_field( (string) ( $attr['name'] ?? '' ) );
+            if ( '' === $name ) { continue; }
+            $key  = sanitize_title( $name );
+            if ( '' === $key ) { continue; }
+            $opts = array();
+            foreach ( (array) ( $attr['options'] ?? array() ) as $opt ) {
+                $label = sanitize_text_field( (string) $opt );
+                if ( '' === $label ) { continue; }
+                $slug = sanitize_title( $label );
+                if ( '' === $slug || isset( $opts[ $slug ] ) ) { continue; }
+                $opts[ $slug ] = $label;
+            }
+            if ( ! $opts ) { continue; }
+            $attr_defs[ $key ] = array( 'name' => $name, 'options' => $opts );
+        }
+
+        // If the seller cleared attributes, downgrade to simple product and
+        // drop every existing variation.
+        if ( ! $attr_defs ) {
+            self::delete_variations_for( $product_id );
+            wp_set_object_terms( $product_id, array( 'simple' ), 'product_type' );
+            $product = wc_get_product( $product_id );
+            $product->set_attributes( array() );
+            $product->save();
+            return array( 'attributes' => array(), 'variations' => array() );
+        }
+
+        // Promote to variable if not already.
+        if ( 'variable' !== $product->get_type() ) {
+            wp_set_object_terms( $product_id, array( 'variable' ), 'product_type' );
+            $product = wc_get_product( $product_id );
+            if ( ! $product instanceof WC_Product_Variable ) {
+                // WooCommerce couldn't re-hydrate as variable — try one more time.
+                $product = new WC_Product_Variable( $product_id );
+            }
+        }
+
+        // Build attribute objects (product-level, not taxonomy).
+        $wc_attributes = array();
+        $position = 0;
+        foreach ( $attr_defs as $key => $def ) {
+            $attribute = new WC_Product_Attribute();
+            $attribute->set_id( 0 );
+            $attribute->set_name( $def['name'] );
+            $attribute->set_options( array_values( $def['options'] ) );
+            $attribute->set_position( $position++ );
+            $attribute->set_visible( true );
+            $attribute->set_variation( true );
+            $wc_attributes[] = $attribute;
+        }
+        $product->set_attributes( $wc_attributes );
+        $product->save();
+
+        // Track existing variations so we can reuse ids where possible instead
+        // of thrashing rows on every edit — matches Woo's usual behavior.
+        $existing = array();
+        foreach ( $product->get_children() as $vid ) {
+            $existing[ (int) $vid ] = wc_get_product( (int) $vid );
+        }
+
+        // Woo variations use per-attribute meta keys like `attribute_size`.
+        // Build variation attribute maps in that format.
+        $seen_ids   = array();
+        $seen_combo = array();
+        $errors     = array();
+        foreach ( $variations_in as $var ) {
+            if ( ! is_array( $var ) ) { continue; }
+            $picked_raw = is_array( $var['attributes'] ?? null ) ? $var['attributes'] : array();
+            $picked     = array(); // WC meta key => slug
+            $normalized = array(); // display key => slug (for dedup)
+            $missing    = false;
+            foreach ( $attr_defs as $key => $def ) {
+                $raw_slug = sanitize_title( (string) ( $picked_raw[ $key ] ?? $picked_raw[ $def['name'] ] ?? '' ) );
+                if ( '' === $raw_slug || ! isset( $def['options'][ $raw_slug ] ) ) {
+                    $missing = true;
+                    break;
+                }
+                $picked[ 'attribute_' . $key ] = $raw_slug;
+                $normalized[ $key ] = $raw_slug;
+            }
+            if ( $missing ) {
+                $errors[] = 'variation_missing_attribute';
+                continue;
+            }
+            $combo_key = wp_json_encode( $normalized );
+            if ( isset( $seen_combo[ $combo_key ] ) ) {
+                $errors[] = 'duplicate_variation_combo';
+                continue;
+            }
+            $seen_combo[ $combo_key ] = true;
+
+            $price = wc_format_decimal( (string) ( $var['price'] ?? '' ) );
+            if ( '' === $price || (float) $price < 0 ) {
+                $errors[] = 'invalid_variation_price';
+                continue;
+            }
+            $stock = max( 0, (int) ( $var['stock'] ?? 0 ) );
+
+            // Reuse existing id when its attribute combo matches.
+            $target_id = 0;
+            foreach ( $existing as $vid => $variation_obj ) {
+                if ( isset( $seen_ids[ $vid ] ) ) { continue; }
+                if ( ! $variation_obj instanceof WC_Product_Variation ) { continue; }
+                $curr = array();
+                foreach ( $variation_obj->get_attributes() as $k => $v ) {
+                    $curr[ $k ] = (string) $v;
+                }
+                ksort( $curr );
+                $needle = $picked;
+                ksort( $needle );
+                if ( $curr === $needle ) { $target_id = $vid; break; }
+            }
+            $variation = $target_id ? wc_get_product( $target_id ) : new WC_Product_Variation();
+            if ( ! $variation instanceof WC_Product_Variation ) {
+                $variation = new WC_Product_Variation();
+            }
+            $variation->set_parent_id( $product_id );
+            $variation->set_attributes( $picked );
+            $variation->set_regular_price( $price );
+            $variation->set_sale_price( '' );
+            $variation->set_status( 'publish' );
+            $variation->set_manage_stock( true );
+            $variation->set_stock_quantity( $stock );
+            $variation->set_stock_status( $stock > 0 ? 'instock' : 'outofstock' );
+            $sku = isset( $var['sku'] ) ? wc_clean( (string) $var['sku'] ) : '';
+            if ( $sku ) {
+                try { $variation->set_sku( $sku ); } catch ( WC_Data_Exception $exception ) { /* leave sku unset */ }
+            }
+            $vid = $variation->save();
+            if ( $vid ) { $seen_ids[ (int) $vid ] = true; }
+        }
+
+        // Delete variations that weren't retained.
+        foreach ( $existing as $vid => $_v ) {
+            if ( isset( $seen_ids[ $vid ] ) ) { continue; }
+            wp_delete_post( (int) $vid, true );
+        }
+
+        // Rebuild the price cache so front-of-shop price ranges are accurate.
+        if ( class_exists( 'WC_Product_Variable' ) ) {
+            WC_Product_Variable::sync( $product_id );
+        }
+
+        $product = wc_get_product( $product_id );
+        $out = array(
+            'attributes' => $product instanceof WC_Product_Variable ? self::product_attributes_payload( $product ) : array(),
+            'variations' => $product instanceof WC_Product_Variable ? self::product_variations_payload( $product ) : array(),
+        );
+        if ( $errors ) { $out['warnings'] = array_values( array_unique( $errors ) ); }
+        return $out;
+    }
+
+    private static function delete_variations_for( int $product_id ): void {
+        $variations = get_posts( array(
+            'post_parent'    => $product_id,
+            'post_type'      => 'product_variation',
+            'posts_per_page' => -1,
+            'post_status'    => array( 'publish', 'private' ),
+            'fields'         => 'ids',
+        ) );
+        foreach ( $variations as $vid ) {
+            wp_delete_post( (int) $vid, true );
+        }
+    }
+
     public static function product_to_array( WC_Product $product, bool $seller_context = false ): array {
         $seller_id = tnm_get_product_seller_id( $product );
         $data = array(
