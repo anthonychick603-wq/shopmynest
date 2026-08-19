@@ -20,7 +20,9 @@ defined( 'ABSPATH' ) || exit;
 
 final class MNU_App_Links {
 	private const OPT_KEY   = 'mnu_android_applink_sha256';
-	private const PACKAGE   = 'com.thenest.marketplace';
+	// v3.7.122.3: package name flipped from com.thenest.marketplace to
+	// com.shopmynest to match the app.json in mobile v1.0.99+.
+	private const PACKAGE   = 'com.shopmynest';
 	private const ROUTE_URL = '.well-known/assetlinks.json';
 
 	public static function init(): void {
@@ -32,15 +34,17 @@ final class MNU_App_Links {
 
 		// One-shot rewrite flush after this module is first loaded so the
 		// .well-known route resolves without the site owner manually visiting
-		// Settings -> Permalinks.
-		if ( get_option( 'mnu_applink_rewrite_flushed', '' ) !== '1' ) {
+		// Settings -> Permalinks. Sentinel is bumped in v3.7.122.3 because
+		// the original flush ran before the rewrite rule was registered on
+		// this site, leaving /.well-known/assetlinks.json returning HTML 404.
+		if ( get_option( 'mnu_applink_rewrite_flushed', '' ) !== '2' ) {
 			add_action( 'shutdown', array( __CLASS__, 'flush_once' ) );
 		}
 	}
 
 	public static function flush_once(): void {
 		flush_rewrite_rules( false );
-		update_option( 'mnu_applink_rewrite_flushed', '1', false );
+		update_option( 'mnu_applink_rewrite_flushed', '2', false );
 	}
 
 	public static function register_rewrite(): void {
@@ -112,7 +116,21 @@ final class MNU_App_Links {
 				'show_in_rest'      => false,
 			)
 		);
+
+		// v3.7.122.3: seed the fingerprint the first time this module loads
+		// so /.well-known/assetlinks.json returns a real payload before an
+		// admin has visited Settings -> Android App Links. Sentinel-guarded
+		// so an admin edit can never be silently overwritten.
+		if ( get_option( 'mnu_applink_seeded_v1', '' ) !== '1' && '' === (string) get_option( self::OPT_KEY, '' ) ) {
+			update_option( self::OPT_KEY, self::SEED_FINGERPRINT, false );
+			update_option( 'mnu_applink_seeded_v1', '1', false );
+		}
 	}
+
+	// v3.7.122.3 seed value — SHA-256 of the current release upload
+	// keystore (EAS Build Credentials 3UmT3RqB2b). Formatted as the
+	// admin UI expects: colon-separated uppercase hex, one per line.
+	private const SEED_FINGERPRINT = 'EF:C5:9D:54:E9:C9:A9:6D:D4:86:26:E0:DA:1D:8B:30:E0:8C:4C:7D:9E:43:29:B0:C5:4E:C8:83:6E:22:82:1C';
 
 	public static function menu(): void {
 		add_submenu_page(
