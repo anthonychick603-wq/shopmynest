@@ -14,6 +14,10 @@
  * ("hairbow" ↔ "hair bow") match, and expands each token with a small
  * plural/singular rule set.
  *
+ * v3.7.116 — tokens are OR'd instead of AND'd, so "hair clip" matches
+ * products that only contain "hair" or only "clip". Results are
+ * re-ranked so title matches and multi-token hits surface first.
+ *
  * Only active when the caller marks the query with `mnu_keyword_search=1`
  * so we don't affect WordPress admin search or third-party queries.
  *
@@ -32,6 +36,9 @@ class MNU_Keyword_Search {
 	 */
 	public static function init(): void {
 		add_filter( 'posts_search', array( __CLASS__, 'filter_search' ), 10, 2 );
+		// v3.7.116 — re-rank OR'd matches so title hits and products that
+		// match more tokens outrank single-token body matches.
+		add_filter( 'posts_search_orderby', array( __CLASS__, 'filter_orderby' ), 10, 2 );
 		// Also apply to front-end shop searches (WooCommerce product
 		// archive with ?s=…) so the browsing site behaves the same as
 		// the mobile app.
@@ -84,19 +91,15 @@ class MNU_Keyword_Search {
 			return $search;
 		}
 
-		// Each token expands to a set of variants (singular/plural).
-		// All expanded terms for a single token are OR'd together;
-		// tokens themselves are AND'd, so "hair bow" requires both
-		// "hair*" AND "bow*" (each with variants) to appear.
-		$per_token = array();
+		// v3.7.116 — every token (with variants) is OR'd into a single
+		// clause. A product matches if ANY token hits. Ranking is done
+		// by filter_orderby() so multi-token and title matches float
+		// to the top.
+		$or_parts = array();
 		foreach ( $tokens as $tok ) {
-			$variants = self::expand( $tok );
-			$or_parts = array();
-			foreach ( $variants as $variant ) {
-				$like = '%' . $wpdb->esc_like( $variant ) . '%';
-				// Match against title, excerpt, content, AND a
-				// whitespace-stripped copy of the title so "hair bow"
-				// hits a product literally titled "hairbow".
+			foreach ( self::expand( $tok ) as $variant ) {
+				$like    = '%' . $wpdb->esc_like( $variant ) . '%';
+				$compact = '%' . $wpdb->esc_like( str_replace( ' ', '', $variant ) ) . '%';
 				$or_parts[] = $wpdb->prepare(
 					"({$wpdb->posts}.post_title LIKE %s "
 					. "OR {$wpdb->posts}.post_excerpt LIKE %s "
@@ -105,13 +108,60 @@ class MNU_Keyword_Search {
 					$like,
 					$like,
 					$like,
-					'%' . $wpdb->esc_like( str_replace( ' ', '', $variant ) ) . '%'
+					$compact
 				);
 			}
-			$per_token[] = '(' . implode( ' OR ', $or_parts ) . ')';
+		}
+		if ( empty( $or_parts ) ) {
+			return $search;
 		}
 
-		return ' AND (' . implode( ' AND ', $per_token ) . ') ';
+		return ' AND (' . implode( ' OR ', $or_parts ) . ') ';
+	}
+
+	/**
+	 * Re-rank OR'd matches: title hits count 3× body hits, and each
+	 * matched token adds to the score, so a product hit by both "hair"
+	 * and "clip" outranks one hit by only "hair". Ties fall back to
+	 * post_date DESC. Only active when mnu_keyword_search=1.
+	 *
+	 * @since 3.7.116
+	 *
+	 * @param string    $orderby
+	 * @param \WP_Query $wp_query
+	 * @return string
+	 */
+	public static function filter_orderby( string $orderby, \WP_Query $wp_query ): string {
+		if ( ! $wp_query->get( 'mnu_keyword_search' ) ) {
+			return $orderby;
+		}
+		$term = trim( (string) $wp_query->get( 's' ) );
+		if ( $term === '' ) {
+			return $orderby;
+		}
+		$tokens = self::tokenize( $term );
+		if ( empty( $tokens ) ) {
+			return $orderby;
+		}
+
+		global $wpdb;
+		$title_hits = array();
+		$body_hits  = array();
+		foreach ( $tokens as $tok ) {
+			$title_ors = array();
+			$body_ors  = array();
+			foreach ( self::expand( $tok ) as $variant ) {
+				$like    = '%' . $wpdb->esc_like( $variant ) . '%';
+				$compact = '%' . $wpdb->esc_like( str_replace( ' ', '', $variant ) ) . '%';
+				$title_ors[] = $wpdb->prepare( "({$wpdb->posts}.post_title LIKE %s OR REPLACE({$wpdb->posts}.post_title, ' ', '') LIKE %s)", $like, $compact );
+				$body_ors[]  = $wpdb->prepare( "({$wpdb->posts}.post_excerpt LIKE %s OR {$wpdb->posts}.post_content LIKE %s)", $like, $like );
+			}
+			$title_hits[] = 'CASE WHEN (' . implode( ' OR ', $title_ors ) . ') THEN 1 ELSE 0 END';
+			$body_hits[]  = 'CASE WHEN (' . implode( ' OR ', $body_ors ) . ') THEN 1 ELSE 0 END';
+		}
+
+		$score = '((' . implode( ' + ', $title_hits ) . ') * 3 + (' . implode( ' + ', $body_hits ) . '))';
+		return $score . ' DESC, ' . $wpdb->posts . '.post_date DESC';
 	}
 
 	/**
