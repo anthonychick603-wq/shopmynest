@@ -33,13 +33,14 @@ if ( ! class_exists( 'MNU_Redirects' ) ) {
 			'/cart-classic-2'    => '/cart',
 			'/checkout-classic'  => '/checkout',
 
-			// Policy page duplicates. Canonicals are the short slugs owned by
-			// the ShopMyNest Legal Pages plugin (single source of truth with
-			// admin-editable business address / contact / effective date).
-			// v3.7.94 flip: the old direction pointed short -> long, which
-			// looped against the legal plugin's own long -> short redirect and
-			// meant no legal page was reachable on the live site.
-			'/privacy-policy'    => '/privacy',
+			// Policy page duplicates. Canonicals are OWNED by the ShopMyNest
+			// Legal Pages plugin. As of legal-pages v1.1.4 canonical for the
+			// privacy page is /privacy-policy/ (not /privacy/), so this plugin
+			// no longer maps /privacy-policy anywhere — that mapping formed a
+			// new loop against legal-pages and produced 0-byte responses.
+			// v3.7.122.2 removes the /privacy-policy source key and adds
+			// flip_policy_redirects_v2_once() to prune it from the stored
+			// option on upgrade.
 			'/terms-of-service'  => '/terms',
 			'/terms-of-use'      => '/terms',
 			'/refund-policy'     => '/refunds',
@@ -87,12 +88,54 @@ if ( ! class_exists( 'MNU_Redirects' ) ) {
 			'/shipping',
 		);
 
+		/**
+		 * v3.7.122.2: after legal-pages v1.1.4 flipped privacy canonical
+		 * to /privacy-policy/, the stored /privacy-policy => /privacy
+		 * mapping from v3.7.94 formed a new redirect loop against
+		 * legal-pages' /privacy => /privacy-policy canonical. Removing
+		 * it on upgrade breaks the loop and restores the Privacy Policy
+		 * page.
+		 *
+		 * @var string[]
+		 */
+		private const POLICY_FLIP_V2_LEGACY_KEYS = array(
+			'/privacy-policy',
+		);
+
 		public static function init(): void {
 			self::seed_defaults_once();
 			self::purge_removed_keys_once();
 			self::flip_policy_redirects_once();
+			self::flip_policy_redirects_v2_once();
 			self::merge_new_defaults();
 			add_action( 'template_redirect', array( __CLASS__, 'maybe_redirect' ), 1 );
+		}
+
+		/**
+		 * v3.7.122.2 one-shot: remove /privacy-policy from the stored
+		 * option so it no longer loops against legal-pages v1.1.4's
+		 * canonical direction.
+		 */
+		public static function flip_policy_redirects_v2_once(): void {
+			$sentinel = get_option( 'mnu_redirects_policy_flip_v2', 0 );
+			if ( 1 === (int) $sentinel ) {
+				return;
+			}
+			$current = get_option( self::OPTION, array() );
+			if ( ! is_array( $current ) ) {
+				$current = array();
+			}
+			$changed = false;
+			foreach ( self::POLICY_FLIP_V2_LEGACY_KEYS as $lk ) {
+				if ( array_key_exists( $lk, $current ) ) {
+					unset( $current[ $lk ] );
+					$changed = true;
+				}
+			}
+			if ( $changed ) {
+				update_option( self::OPTION, $current, false );
+			}
+			update_option( 'mnu_redirects_policy_flip_v2', 1, false );
 		}
 
 		/**
