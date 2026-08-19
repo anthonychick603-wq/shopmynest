@@ -812,14 +812,11 @@ final class TNM_Social {
             if ( ! $user ) {
                 continue;
             }
-            // v3.7.67 — hide phantom stores from the public directory: any
-            // seller with zero published products just adds noise (duplicate
-            // display names collide visually and the tap-through lands on an
-            // empty shop). Show them in the admin dashboard only.
+            // v3.7.113 — the public directory now lists every seller. Shops
+            // with zero published products still show up so shoppers can find
+            // and follow new sellers before they've listed anything. The item
+            // count on the card already communicates "0 items" clearly.
             $product_count = (int) count_user_posts( $sid, 'product', true );
-            if ( $product_count < 1 && ! current_user_can( 'manage_woocommerce' ) ) {
-                continue;
-            }
             $rating = self::seller_rating_summary( $sid );
             $items[] = array(
                 'id'             => $sid,
