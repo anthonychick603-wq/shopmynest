@@ -3,7 +3,7 @@
  * Plugin Name: MyNest Unified Marketplace
  * Plugin URI:  https://shopmynest.com/
  * Description: One complete WooCommerce marketplace plugin for MyNest sellers, fees, payouts, orders, social features, mobile APIs, checkout, and shipping.
- * Version:     3.7.121
+ * Version:     3.7.122
  * Author:      MyNest
  * Text Domain: mynest-unified-marketplace
  * Requires at least: 6.5
@@ -16,7 +16,7 @@
 
 defined( 'ABSPATH' ) || exit;
 
-define( 'MNU_VERSION', '3.7.121' );
+define( 'MNU_VERSION', '3.7.122' );
 define( 'MNU_DB_VERSION', '3.0.13' );
 define( 'MNU_FILE', __FILE__ );
 define( 'MNU_BASENAME', plugin_basename( __FILE__ ) );
@@ -282,6 +282,12 @@ final class MNU_Plugin {
 		TNM_Review_Nudge::init();
 		if ( get_option( 'mnu_web_parity_pages_version', '' ) !== MNU_VERSION ) {
 			add_action( 'init', array( 'MNU_Web_Parity', 'ensure_pages_once' ), 20 );
+		}
+		// v3.7.122 — one-shot admin_init dedupe of Favorites / Saved Searches /
+		// Nest Blog pages, gated by mnu_web_parity_dedupe_version. Cleans up
+		// duplicate pages the pre-v3.7.122 race condition created.
+		if ( is_admin() && get_option( 'mnu_web_parity_dedupe_version', '' ) !== MNU_VERSION ) {
+			add_action( 'admin_init', array( 'MNU_Web_Parity', 'maybe_dedupe_pages' ), 30 );
 		}
 
 		update_option( 'mnu_last_successful_boot', current_time( 'mysql', true ), false );

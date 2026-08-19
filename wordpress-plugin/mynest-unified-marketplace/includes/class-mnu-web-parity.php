@@ -65,8 +65,56 @@ final class MNU_Web_Parity {
         if ( get_option( 'mnu_web_parity_pages_version', '' ) === MNU_VERSION ) {
             return;
         }
-        self::ensure_pages();
-        update_option( 'mnu_web_parity_pages_version', MNU_VERSION, false );
+        // v3.7.122 — hard-gate all page creation through a DB lock so that
+        // even if init fires on many concurrent requests, only one process
+        // can seed at a time. Prevents the duplicate-page storm we saw
+        // 2026-08-18 (dozens of "Favorites" pages created in 2 minutes).
+        $lock_key = 'mnu_web_parity_ensure_pages_lock';
+        if ( ! self::acquire_lock( $lock_key, 60 ) ) {
+            return;
+        }
+        try {
+            // Re-check under the lock: another process may have finished
+            // while we were waiting.
+            if ( get_option( 'mnu_web_parity_pages_version', '' ) === MNU_VERSION ) {
+                return;
+            }
+            self::ensure_pages();
+            update_option( 'mnu_web_parity_pages_version', MNU_VERSION, false );
+        } finally {
+            self::release_lock( $lock_key );
+        }
+    }
+
+    /**
+     * DB-backed advisory lock via options table. Uses add_option()'s
+     * uniqueness constraint (returns false if the option already exists)
+     * as a compare-and-swap primitive. TTL prevents a dead process from
+     * holding the lock forever.
+     */
+    private static function acquire_lock( string $key, int $ttl_seconds ): bool {
+        global $wpdb;
+        $inserted = add_option( $key, (string) ( time() + $ttl_seconds ), '', 'no' );
+        if ( $inserted ) {
+            return true;
+        }
+        $expires_at = (int) get_option( $key, 0 );
+        if ( $expires_at > 0 && $expires_at < time() ) {
+            $stolen = $wpdb->query(
+                $wpdb->prepare(
+                    "UPDATE {$wpdb->options} SET option_value = %s WHERE option_name = %s AND option_value = %s",
+                    (string) ( time() + $ttl_seconds ),
+                    $key,
+                    (string) $expires_at
+                )
+            );
+            return (bool) $stolen;
+        }
+        return false;
+    }
+
+    private static function release_lock( string $key ): void {
+        delete_option( $key );
     }
 
     public static function ensure_pages(): void {
@@ -76,14 +124,31 @@ final class MNU_Web_Parity {
             'blog'           => array( 'slug' => 'nest-blog',      'title' => 'Nest Blog',      'shortcode' => '[mynest_blog]' ),
         );
         $ids = (array) get_option( self::PAGES_OPTION, array() );
+        global $wpdb;
         foreach ( $wanted as $key => $spec ) {
             $existing_id = isset( $ids[ $key ] ) ? (int) $ids[ $key ] : 0;
             if ( $existing_id && get_post_status( $existing_id ) === 'publish' ) {
                 continue;
             }
-            $page = get_page_by_path( $spec['slug'] );
-            if ( $page && 'page' === $page->post_type ) {
-                $ids[ $key ] = (int) $page->ID;
+            // v3.7.122 — direct DB query for the OLDEST published page with
+            // this title. get_page_by_path() only finds exact slug matches,
+            // so if WP auto-suffixed a duplicate to favorites-2 the old
+            // code fell through and inserted yet another duplicate.
+            $canonical_id = (int) $wpdb->get_var(
+                $wpdb->prepare(
+                    "SELECT ID FROM {$wpdb->posts} WHERE post_type = 'page' AND post_status = 'publish' AND post_title = %s ORDER BY ID ASC LIMIT 1",
+                    $spec['title']
+                )
+            );
+            if ( $canonical_id > 0 ) {
+                $ids[ $key ] = $canonical_id;
+                $current_slug = get_post_field( 'post_name', $canonical_id );
+                if ( $current_slug !== $spec['slug'] ) {
+                    $conflict = get_page_by_path( $spec['slug'] );
+                    if ( ! $conflict ) {
+                        wp_update_post( array( 'ID' => $canonical_id, 'post_name' => $spec['slug'] ) );
+                    }
+                }
                 continue;
             }
             $new_id = wp_insert_post(
@@ -102,6 +167,66 @@ final class MNU_Web_Parity {
             }
         }
         update_option( self::PAGES_OPTION, $ids, false );
+    }
+
+    /**
+     * v3.7.122 — Merge duplicate Favorites/Saved Searches/Nest Blog pages.
+     * Finds all published pages with the target titles, keeps the OLDEST by
+     * ID, and trashes the rest ONLY if their content is empty or exactly
+     * the shortcode. If an admin has edited a duplicate to have real
+     * content, we leave it alone so we never destroy their work.
+     */
+    public static function maybe_dedupe_pages(): void {
+        if ( ! current_user_can( 'manage_options' ) ) {
+            return;
+        }
+        if ( get_option( 'mnu_web_parity_dedupe_version', '' ) === MNU_VERSION ) {
+            return;
+        }
+        $lock_key = 'mnu_web_parity_dedupe_lock';
+        if ( ! self::acquire_lock( $lock_key, 60 ) ) {
+            return;
+        }
+        try {
+            if ( get_option( 'mnu_web_parity_dedupe_version', '' ) === MNU_VERSION ) {
+                return;
+            }
+            global $wpdb;
+            $wanted = array(
+                'Favorites'      => '[mynest_favorites]',
+                'Saved Searches' => '[mynest_saved_searches]',
+                'Nest Blog'      => '[mynest_blog]',
+            );
+            $trashed_count = 0;
+            foreach ( $wanted as $title => $shortcode ) {
+                $rows = $wpdb->get_results(
+                    $wpdb->prepare(
+                        "SELECT ID, post_content FROM {$wpdb->posts} WHERE post_type = 'page' AND post_status = 'publish' AND post_title = %s ORDER BY ID ASC",
+                        $title
+                    )
+                );
+                if ( count( $rows ) <= 1 ) {
+                    continue;
+                }
+                array_shift( $rows );
+                foreach ( $rows as $dup ) {
+                    $content = trim( (string) $dup->post_content );
+                    if ( '' === $content || $content === $shortcode ) {
+                        wp_trash_post( (int) $dup->ID );
+                        $trashed_count++;
+                    }
+                }
+            }
+            update_option( 'mnu_web_parity_dedupe_version', MNU_VERSION, false );
+            if ( $trashed_count > 0 ) {
+                update_option( 'mnu_web_parity_last_dedupe', array(
+                    'when'    => gmdate( 'c' ),
+                    'trashed' => $trashed_count,
+                ), false );
+            }
+        } finally {
+            self::release_lock( $lock_key );
+        }
     }
 
     public static function page_url( string $key ): string {
