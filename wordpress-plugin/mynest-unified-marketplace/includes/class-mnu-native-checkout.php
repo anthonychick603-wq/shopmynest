@@ -139,21 +139,31 @@ function mnu_native_calc_items( array $items ): array|WP_Error {
     $lines    = array();
     $subtotal = 0.0;
     foreach ( $items as $row ) {
-        $product_id = absint( $row['product_id'] ?? ( $row['product']['id'] ?? 0 ) );
-        $quantity   = max( 1, absint( $row['quantity'] ?? 1 ) );
-        $product    = wc_get_product( $product_id );
+        $product_id   = absint( $row['product_id'] ?? ( $row['product']['id'] ?? 0 ) );
+        // v3.7.118 — variation_id support. When present, we price the picked
+        // variation and store both ids so the WC order line carries the
+        // variation reference (needed for stock + per-variation shipping).
+        $variation_id = absint( $row['variation_id'] ?? 0 );
+        $quantity     = max( 1, absint( $row['quantity'] ?? 1 ) );
+        $parent       = wc_get_product( $product_id );
+        $product      = $variation_id ? wc_get_product( $variation_id ) : $parent;
         if ( ! $product || ! $product->is_purchasable() ) {
             return new WP_Error( 'invalid_product', 'One or more products are unavailable.', array( 'status' => 409, 'product_id' => $product_id ) );
         }
+        if ( $variation_id && $product instanceof WC_Product_Variation ) {
+            if ( (int) $product->get_parent_id() !== $product_id ) {
+                return new WP_Error( 'invalid_variation', 'Variation does not belong to this product.', array( 'status' => 400, 'product_id' => $product_id ) );
+            }
+        }
         if ( ! $product->has_enough_stock( $quantity ) ) {
-            return new WP_Error( 'insufficient_stock', $product->get_name() . ' does not have enough stock.', array( 'status' => 409, 'product_id' => $product_id ) );
+            return new WP_Error( 'insufficient_stock', ( $parent ? $parent->get_name() : $product->get_name() ) . ' does not have enough stock.', array( 'status' => 409, 'product_id' => $product_id ) );
         }
         if ( class_exists( 'MNU_Connect' ) ) {
-            $seller_id = (int) tnm_get_product_seller_id( $product );
+            $seller_id = (int) tnm_get_product_seller_id( $parent ?: $product );
             if ( $seller_id > 0 ) {
                 $seller_status = MNU_Connect::cached_status( $seller_id );
                 if ( ! $seller_status['charges_enabled'] || ! $seller_status['payouts_enabled'] ) {
-                    return new WP_Error( 'seller_not_ready', $product->get_name() . ' is temporarily unavailable because its seller has not finished payment setup.', array( 'status' => 409, 'product_id' => $product_id ) );
+                    return new WP_Error( 'seller_not_ready', ( $parent ? $parent->get_name() : $product->get_name() ) . ' is temporarily unavailable because its seller has not finished payment setup.', array( 'status' => 409, 'product_id' => $product_id ) );
                 }
             }
         }
@@ -161,12 +171,13 @@ function mnu_native_calc_items( array $items ): array|WP_Error {
         $line_total = $price * $quantity;
         $subtotal  += $line_total;
         $lines[]    = array(
-            'product'    => $product,
-            'product_id' => $product_id,
-            'quantity'   => $quantity,
-            'price'      => $price,
-            'line_total' => $line_total,
-            'name'       => $product->get_name(),
+            'product'      => $product,
+            'product_id'   => $product_id,
+            'variation_id' => $variation_id,
+            'quantity'     => $quantity,
+            'price'        => $price,
+            'line_total'   => $line_total,
+            'name'         => ( $parent ? $parent->get_name() : $product->get_name() ),
         );
     }
     return $lines ? array( $lines, $subtotal ) : new WP_Error( 'empty_cart', 'No valid products found.', array( 'status' => 400 ) );

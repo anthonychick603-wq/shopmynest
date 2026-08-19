@@ -850,7 +850,15 @@ final class TNM_Marketplace {
                 static fn( $term ) => array( 'id' => $term->term_id, 'name' => $term->name, 'slug' => $term->slug ),
                 get_the_terms( $product->get_id(), 'product_cat' ) ?: array()
             ),
+            // v3.7.118 — expose product type + variation payload so the
+            // mobile app can render size/color pickers and add the picked
+            // variation to cart.
+            'type'              => $product->get_type(),
         );
+        if ( $product->is_type( 'variable' ) && $product instanceof WC_Product_Variable ) {
+            $data['attributes']  = self::product_attributes_payload( $product );
+            $data['variations']  = self::product_variations_payload( $product );
+        }
         if ( $seller_context ) {
             $data['status']           = $product->get_status();
             $data['sku']              = $product->get_sku();
@@ -863,6 +871,69 @@ final class TNM_Marketplace {
                 : 0;
         }
         return $data;
+    }
+
+    /**
+     * v3.7.118 — attribute options list for a variable product.
+     * Returns an array of { name, slug, options[] } tuples used by the
+     * mobile app to render size/color pickers.
+     */
+    public static function product_attributes_payload( WC_Product_Variable $product ): array {
+        $out = array();
+        foreach ( $product->get_attributes() as $attribute ) {
+            if ( ! ( $attribute instanceof WC_Product_Attribute ) ) { continue; }
+            if ( ! $attribute->get_variation() ) { continue; }
+            $name    = $attribute->get_name();
+            $label   = wc_attribute_label( $name, $product );
+            $options = array();
+            if ( $attribute->is_taxonomy() ) {
+                $terms = wc_get_product_terms( $product->get_id(), $name, array( 'fields' => 'all' ) );
+                foreach ( $terms as $term ) {
+                    $options[] = array( 'slug' => $term->slug, 'label' => $term->name );
+                }
+            } else {
+                foreach ( $attribute->get_options() as $opt ) {
+                    $slug = sanitize_title( $opt );
+                    $options[] = array( 'slug' => $slug, 'label' => (string) $opt );
+                }
+            }
+            $out[] = array( 'name' => $name, 'label' => $label, 'options' => $options );
+        }
+        return $out;
+    }
+
+    /**
+     * v3.7.118 — per-variation payload for a variable product. The
+     * `attributes` map keys are attribute taxonomy names (matching
+     * product_attributes_payload) and values are the picked option slug.
+     */
+    public static function product_variations_payload( WC_Product_Variable $product ): array {
+        $out = array();
+        foreach ( $product->get_available_variations() as $var ) {
+            $variation = wc_get_product( (int) $var['variation_id'] );
+            if ( ! $variation instanceof WC_Product_Variation ) { continue; }
+            $attributes = array();
+            foreach ( $variation->get_attributes() as $attr_name => $attr_value ) {
+                if ( '' === $attr_value ) { continue; }
+                $attributes[ $attr_name ] = (string) $attr_value;
+            }
+            $image = '';
+            if ( $variation->get_image_id() ) {
+                $image = wp_get_attachment_image_url( $variation->get_image_id(), 'large' ) ?: '';
+            }
+            $out[] = array(
+                'id'             => $variation->get_id(),
+                'attributes'     => (object) $attributes,
+                'price'          => (float) $variation->get_price(),
+                'regular_price'  => (float) $variation->get_regular_price(),
+                'stock_status'   => $variation->get_stock_status(),
+                'stock_quantity' => $variation->get_stock_quantity(),
+                'image'          => $image,
+                'sku'            => $variation->get_sku(),
+                'is_purchasable' => (bool) $variation->is_purchasable(),
+            );
+        }
+        return $out;
     }
 
     public static function seller_orders( int $seller_id, int $page = 1, int $per_page = 20 ): array {

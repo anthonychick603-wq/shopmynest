@@ -69,6 +69,9 @@ final class TNM_REST {
         register_rest_route( self::NS, '/seller/orders', array( 'methods' => WP_REST_Server::READABLE, 'callback' => array( __CLASS__, 'seller_orders' ), 'permission_callback' => array( __CLASS__, 'seller' ) ) );
         register_rest_route( self::NS, '/seller/orders/(?P<id>\d+)', array( 'methods' => WP_REST_Server::EDITABLE, 'callback' => array( __CLASS__, 'seller_order_update' ), 'permission_callback' => array( __CLASS__, 'seller' ) ) );
         register_rest_route( self::NS, '/seller/earnings', array( 'methods' => WP_REST_Server::READABLE, 'callback' => array( __CLASS__, 'seller_earnings' ), 'permission_callback' => array( __CLASS__, 'seller' ) ) );
+        // v3.7.118 — rolling revenue timeseries + top products + refund rate
+        // powering the seller analytics dashboard on mobile.
+        register_rest_route( self::NS, '/seller/analytics', array( 'methods' => WP_REST_Server::READABLE, 'callback' => array( __CLASS__, 'seller_analytics' ), 'permission_callback' => array( __CLASS__, 'seller' ) ) );
         register_rest_route( self::NS, '/seller/payouts', array( array( 'methods' => WP_REST_Server::READABLE, 'callback' => array( __CLASS__, 'seller_payouts' ), 'permission_callback' => array( __CLASS__, 'seller' ) ), array( 'methods' => WP_REST_Server::CREATABLE, 'callback' => array( __CLASS__, 'seller_payout_request' ), 'permission_callback' => array( __CLASS__, 'seller' ) ) ) );
     }
 
@@ -988,6 +991,116 @@ final class TNM_REST {
 
     public static function seller_earnings( WP_REST_Request $request ): WP_REST_Response {
         return rest_ensure_response( array( 'balances' => TNM_Ledger::balances( get_current_user_id() ), 'ledger' => TNM_Ledger::entries( get_current_user_id(), max( 1, (int) $request->get_param( 'page' ) ), max( 1, (int) ( $request->get_param( 'per_page' ) ?: 30 ) ) ) ) );
+    }
+
+    /**
+     * v3.7.118 — marketplace-scoped seller analytics. Returns:
+     *   - `range`: window used (7 / 30 / 90 days)
+     *   - `revenue`: daily net revenue for the window (gross - fees)
+     *   - `orders_count`: total paid+ orders in the window
+     *   - `refund_rate`: refunded_orders / paid_orders in the window (0–1)
+     *   - `top_products`: 5 highest-gross products in the window
+     *   - `pending_payout`: seller ledger available balance
+     */
+    public static function seller_analytics( WP_REST_Request $request ): WP_REST_Response {
+        $seller_id = get_current_user_id();
+        $range     = (int) ( $request->get_param( 'range' ) ?: 30 );
+        if ( ! in_array( $range, array( 7, 30, 90 ), true ) ) { $range = 30; }
+
+        $since = strtotime( '-' . ( $range - 1 ) . ' days 00:00:00' );
+        $tz    = wp_timezone();
+
+        $days = array();
+        for ( $i = 0; $i < $range; $i++ ) {
+            $d = ( new DateTime( '@' . ( $since + $i * DAY_IN_SECONDS ) ) )->setTimezone( $tz )->format( 'Y-m-d' );
+            $days[ $d ] = 0.0;
+        }
+
+        $query = wc_get_orders( array(
+            'limit'      => -1,
+            'status'     => array( 'wc-processing', 'wc-completed', 'wc-on-hold', 'wc-refunded' ),
+            'date_after' => gmdate( 'Y-m-d H:i:s', $since ),
+            'return'     => 'objects',
+            'meta_query' => array(
+                array(
+                    'key'     => '_tnm_seller_ids',
+                    'value'   => ',' . $seller_id . ',',
+                    'compare' => 'LIKE',
+                ),
+            ),
+        ) );
+
+        $orders_count    = 0;
+        $refunded_orders = 0;
+        $total_gross     = 0.0;
+        $total_fees      = 0.0;
+        $product_gross   = array();
+        $product_names   = array();
+        $product_images  = array();
+
+        foreach ( $query as $order ) {
+            if ( ! tnm_order_contains_seller( $order, $seller_id ) ) {
+                continue;
+            }
+            $orders_count++;
+            if ( 'refunded' === $order->get_status() ) {
+                $refunded_orders++;
+            }
+            $dt = $order->get_date_created();
+            if ( ! $dt ) { continue; }
+            $bucket = $dt->setTimezone( $tz )->format( 'Y-m-d' );
+
+            foreach ( tnm_get_seller_order_items( $order, $seller_id ) as $item ) {
+                $gross = (float) $item->get_total();
+                $fee   = self::resolve_item_platform_fee( $item );
+                $net   = max( 0, $gross - $fee );
+                $total_gross += $gross;
+                $total_fees  += $fee;
+                if ( isset( $days[ $bucket ] ) ) {
+                    $days[ $bucket ] += $net;
+                }
+                $pid = (int) $item->get_product_id();
+                if ( $pid ) {
+                    if ( ! isset( $product_gross[ $pid ] ) ) {
+                        $product_gross[ $pid ] = 0.0;
+                        $product_names[ $pid ] = $item->get_name();
+                        $img = wp_get_attachment_image_url( get_post_thumbnail_id( $pid ), 'medium' );
+                        $product_images[ $pid ] = $img ?: '';
+                    }
+                    $product_gross[ $pid ] += $gross;
+                }
+            }
+        }
+
+        arsort( $product_gross );
+        $top_products = array();
+        foreach ( array_slice( $product_gross, 0, 5, true ) as $pid => $g ) {
+            $top_products[] = array(
+                'id'    => (int) $pid,
+                'name'  => (string) ( $product_names[ $pid ] ?? '' ),
+                'image' => (string) ( $product_images[ $pid ] ?? '' ),
+                'gross' => round( (float) $g, 2 ),
+            );
+        }
+
+        $revenue_series = array();
+        foreach ( $days as $d => $v ) {
+            $revenue_series[] = array( 'date' => $d, 'revenue' => round( (float) $v, 2 ) );
+        }
+
+        $balances = class_exists( 'TNM_Ledger' ) ? TNM_Ledger::balances( $seller_id ) : array();
+
+        return rest_ensure_response( array(
+            'range'          => $range,
+            'revenue'        => $revenue_series,
+            'orders_count'   => $orders_count,
+            'refund_rate'    => $orders_count > 0 ? round( $refunded_orders / $orders_count, 4 ) : 0,
+            'total_gross'    => round( $total_gross, 2 ),
+            'total_fees'     => round( $total_fees, 2 ),
+            'total_net'      => round( max( 0, $total_gross - $total_fees ), 2 ),
+            'top_products'   => $top_products,
+            'pending_payout' => isset( $balances['available'] ) ? (float) $balances['available'] : 0,
+        ) );
     }
 
     public static function seller_payouts(): WP_REST_Response {
