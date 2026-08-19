@@ -3,7 +3,7 @@
  * Plugin Name: ShopMyNest Legal Pages
  * Plugin URI:  https://shopmynest.com/
  * Description: Seeds Terms of Service, Privacy Policy, Return & Refund Policy, and Shipping Policy pages on activation. Provides a settings screen so the legal entity name, business address, contact email, and effective date can be updated without editing page content. Values are substituted at render time via the_content filter.
- * Version:     1.1.3
+ * Version:     1.1.4
  * Author:      MyNest
  * Text Domain: shopmynest-legal-pages
  * Requires at least: 6.5
@@ -14,7 +14,7 @@
 defined( 'ABSPATH' ) || exit;
 
 final class ShopMyNest_Legal_Pages {
-    private const VERSION      = '1.1.3';
+    private const VERSION      = '1.1.4';
     private const OPT          = 'shopmynest_legal_settings';
     private const OPT_PAGE_IDS = 'shopmynest_legal_page_ids';
 
@@ -30,7 +30,13 @@ final class ShopMyNest_Legal_Pages {
                 'file'    => 'terms-of-service.html',
             ),
             'privacy'  => array(
-                'slug'    => 'privacy',
+                // v1.1.4 — canonical slug matches WordPress core's designated
+                // Privacy Policy convention. WP core's redirect_canonical()
+                // treats /privacy-policy/ as authoritative for the site's
+                // designated Privacy Policy page, so aligning with it stops
+                // the /privacy/ <-> /privacy-policy/ 301 loop. Legacy
+                // /privacy/ requests still 301 forward via the map below.
+                'slug'    => 'privacy-policy',
                 'title'   => 'Privacy Policy',
                 'file'    => 'privacy-policy.html',
             ),
@@ -55,6 +61,13 @@ final class ShopMyNest_Legal_Pages {
         // contact_email in the seeded legal pages and lock it to the
         // marketplace's buyer-facing address. Runs once on any admin load.
         add_action( 'admin_init', array( __CLASS__, 'maybe_migrate_contact_email' ) );
+
+        // v1.1.4 — heal the OPT_PAGE_IDS map on any admin load so a plugin
+        // upgrade that changes a canonical slug (e.g. privacy -> privacy-policy)
+        // picks up the correct existing page without needing a manual
+        // deactivate/reactivate. Runs quickly and only rewrites the map when
+        // the current mapping doesn't resolve to a page with the expected slug.
+        add_action( 'admin_init', array( __CLASS__, 'maybe_heal_page_map' ) );
 
         // Substitute [LEGAL ENTITY], [BUSINESS ADDRESS], [CONTACT EMAIL],
         // [EFFECTIVE DATE] at render time, on the seeded pages only.
@@ -90,7 +103,7 @@ final class ShopMyNest_Legal_Pages {
     public static function block_canonical_reverse_loop( $location, $status ) {
         $request_uri  = isset( $_SERVER['REQUEST_URI'] ) ? (string) $_SERVER['REQUEST_URI'] : '';
         $request_path = '/' . trim( strtok( $request_uri, '?' ), '/' );
-        $canonical    = array( '/privacy', '/terms', '/refunds', '/shipping' );
+        $canonical    = array( '/privacy-policy', '/terms', '/refunds', '/shipping' );
         if ( ! in_array( $request_path, $canonical, true ) ) {
             return $location;
         }
@@ -111,7 +124,9 @@ final class ShopMyNest_Legal_Pages {
         return array(
             '/terms-of-service' => 'terms',
             '/terms-of-use'     => 'terms',
-            '/privacy-policy'   => 'privacy',
+            // v1.1.4 — privacy canonical is now /privacy-policy/ (see pages()),
+            // so /privacy/ is the legacy path that redirects forward.
+            '/privacy'          => 'privacy-policy',
             '/refund-policy'    => 'refunds',
             '/returns-refunds'  => 'refunds',
             '/shipping-policy'  => 'shipping',
@@ -139,6 +154,38 @@ final class ShopMyNest_Legal_Pages {
         $target = home_url( '/' . $map[ $request_path ] . '/' );
         wp_safe_redirect( $target, 301 );
         exit;
+    }
+
+    /**
+     * Reconcile OPT_PAGE_IDS with the current canonical slugs from pages().
+     * If a mapped page has a slug that no longer matches the canonical, adopt
+     * whatever page currently owns the canonical slug (or fall back to the
+     * existing mapping if none does). Safe to run on every admin load.
+     */
+    public static function maybe_heal_page_map(): void {
+        if ( ! current_user_can( 'manage_options' ) ) {
+            return;
+        }
+        $ids     = get_option( self::OPT_PAGE_IDS, array() );
+        if ( ! is_array( $ids ) ) {
+            $ids = array();
+        }
+        $changed = false;
+        foreach ( self::pages() as $key => $page ) {
+            $canonical_slug = $page['slug'];
+            $current_post   = isset( $ids[ $key ] ) ? get_post( $ids[ $key ] ) : null;
+            if ( $current_post instanceof WP_Post && $current_post->post_name === $canonical_slug ) {
+                continue;
+            }
+            $adopt = get_page_by_path( $canonical_slug );
+            if ( $adopt instanceof WP_Post ) {
+                $ids[ $key ] = $adopt->ID;
+                $changed     = true;
+            }
+        }
+        if ( $changed ) {
+            update_option( self::OPT_PAGE_IDS, $ids );
+        }
     }
 
     public static function activate(): void {
