@@ -91,6 +91,14 @@ final class TNM_REST {
             array( 'methods' => WP_REST_Server::READABLE, 'callback' => array( __CLASS__, 'me_preferences_get' ), 'permission_callback' => array( __CLASS__, 'logged_in' ) ),
             array( 'methods' => WP_REST_Server::EDITABLE, 'callback' => array( __CLASS__, 'me_preferences_update' ), 'permission_callback' => array( __CLASS__, 'logged_in' ) ),
         ) );
+        // v3.7.121 (Build #18a) — recently viewed products. Small MRU
+        // list stored per-user in user_meta so the home tab can show a
+        // "Keep browsing" row and the buyer gets a dedicated screen.
+        register_rest_route( self::NS, '/me/recently-viewed', array(
+            array( 'methods' => WP_REST_Server::READABLE, 'callback' => array( __CLASS__, 'recently_viewed_get' ), 'permission_callback' => array( __CLASS__, 'logged_in' ) ),
+            array( 'methods' => WP_REST_Server::CREATABLE, 'callback' => array( __CLASS__, 'recently_viewed_track' ), 'permission_callback' => array( __CLASS__, 'logged_in' ) ),
+            array( 'methods' => WP_REST_Server::DELETABLE, 'callback' => array( __CLASS__, 'recently_viewed_clear' ), 'permission_callback' => array( __CLASS__, 'logged_in' ) ),
+        ) );
         register_rest_route( self::NS, '/seller/orders', array( 'methods' => WP_REST_Server::READABLE, 'callback' => array( __CLASS__, 'seller_orders' ), 'permission_callback' => array( __CLASS__, 'seller' ) ) );
         register_rest_route( self::NS, '/seller/orders/(?P<id>\d+)', array( 'methods' => WP_REST_Server::EDITABLE, 'callback' => array( __CLASS__, 'seller_order_update' ), 'permission_callback' => array( __CLASS__, 'seller' ) ) );
         register_rest_route( self::NS, '/seller/earnings', array( 'methods' => WP_REST_Server::READABLE, 'callback' => array( __CLASS__, 'seller_earnings' ), 'permission_callback' => array( __CLASS__, 'seller' ) ) );
@@ -1620,23 +1628,101 @@ final class TNM_REST {
 
     // ---- Buyer alert preferences (v3.7.120) --------------------------------
 
+    // v3.7.121 (Build #17b) — push preferences center. Each category is a
+    // user_meta boolean stored as '0' (off) or '1' (on); anything unset
+    // defaults to on so we don't silently turn off notifications when a
+    // user upgrades the app. MNU_Ops::notify_user() checks these via the
+    // helper below before sending a push.
+    const PREF_CATEGORIES = array( 'orders', 'messages', 'price_drop_alerts', 'follows', 'promos' );
+
+    public static function me_pref_meta_key( string $category ): string {
+        // price_drop_alerts keeps its legacy key so v3.7.120 clients keep
+        // reading the same value; new categories get a mnu_pref_ prefix.
+        if ( 'price_drop_alerts' === $category ) { return MNU_Price_Drop::USER_META_OPT_IN; }
+        return 'mnu_pref_' . $category;
+    }
+
+    public static function me_pref_enabled( int $user_id, string $category ): bool {
+        if ( ! in_array( $category, self::PREF_CATEGORIES, true ) ) { return true; }
+        $raw = (string) get_user_meta( $user_id, self::me_pref_meta_key( $category ), true );
+        return '0' !== $raw; // unset / '1' / legacy → on
+    }
+
     public static function me_preferences_get(): WP_REST_Response {
         $uid = get_current_user_id();
-        // '0' explicitly means off; any other value (unset, '1', legacy) = on.
-        $price_drop = (string) get_user_meta( $uid, MNU_Price_Drop::USER_META_OPT_IN, true );
-        return rest_ensure_response( array(
-            'price_drop_alerts' => '0' !== $price_drop,
-        ) );
+        $out = array();
+        foreach ( self::PREF_CATEGORIES as $cat ) {
+            $out[ $cat ] = self::me_pref_enabled( $uid, $cat );
+        }
+        return rest_ensure_response( $out );
     }
 
     public static function me_preferences_update( WP_REST_Request $request ): WP_REST_Response {
         $uid = get_current_user_id();
-        $raw = $request->get_param( 'price_drop_alerts' );
-        if ( null !== $raw ) {
-            // Accept booleans, ints, and the strings "true"/"1"/"on".
+        foreach ( self::PREF_CATEGORIES as $cat ) {
+            $raw = $request->get_param( $cat );
+            if ( null === $raw ) { continue; }
             $enabled = in_array( $raw, array( true, 1, '1', 'true', 'on' ), true );
-            update_user_meta( $uid, MNU_Price_Drop::USER_META_OPT_IN, $enabled ? '1' : '0' );
+            update_user_meta( $uid, self::me_pref_meta_key( $cat ), $enabled ? '1' : '0' );
         }
         return self::me_preferences_get();
+    }
+
+    // ---- Recently viewed products (v3.7.121 / Build #18a) ------------------
+    //
+    // Stored as user_meta 'mnu_recently_viewed' = array of
+    // [ 'id' => int, 'ts' => unix ] rows, most-recent-first, capped at 20.
+    // We deliberately store timestamps so we can filter out anything stale
+    // when the buyer hasn't opened the app in a long time.
+    const RECENTLY_VIEWED_META = 'mnu_recently_viewed';
+    const RECENTLY_VIEWED_MAX  = 20;
+
+    private static function recently_viewed_load( int $user_id ): array {
+        $raw = get_user_meta( $user_id, self::RECENTLY_VIEWED_META, true );
+        if ( ! is_array( $raw ) ) { return array(); }
+        $out = array();
+        foreach ( $raw as $row ) {
+            if ( ! is_array( $row ) || empty( $row['id'] ) ) { continue; }
+            $out[] = array( 'id' => (int) $row['id'], 'ts' => isset( $row['ts'] ) ? (int) $row['ts'] : 0 );
+        }
+        return $out;
+    }
+
+    public static function recently_viewed_get( WP_REST_Request $request ): WP_REST_Response {
+        $uid = get_current_user_id();
+        $rows = self::recently_viewed_load( $uid );
+        $limit = max( 1, min( self::RECENTLY_VIEWED_MAX, (int) $request->get_param( 'limit' ) ?: self::RECENTLY_VIEWED_MAX ) );
+        $items = array();
+        foreach ( array_slice( $rows, 0, $limit ) as $row ) {
+            $product = wc_get_product( (int) $row['id'] );
+            if ( ! $product || $product->get_status() !== 'publish' ) { continue; }
+            $items[] = TNM_Marketplace::product_to_array( $product );
+        }
+        return rest_ensure_response( array( 'items' => $items ) );
+    }
+
+    public static function recently_viewed_track( WP_REST_Request $request ): WP_REST_Response|WP_Error {
+        $uid = get_current_user_id();
+        $pid = absint( $request->get_param( 'product_id' ) );
+        if ( ! $pid ) { return new WP_Error( 'missing_product_id', 'product_id is required.', array( 'status' => 400 ) ); }
+        $product = wc_get_product( $pid );
+        if ( ! $product || $product->get_status() !== 'publish' ) {
+            return new WP_Error( 'product_not_found', 'Product not found.', array( 'status' => 404 ) );
+        }
+        $rows = self::recently_viewed_load( $uid );
+        // Drop any existing row for this product; MRU is a moving window.
+        $rows = array_values( array_filter( $rows, function( $r ) use ( $pid ) { return (int) $r['id'] !== $pid; } ) );
+        array_unshift( $rows, array( 'id' => $pid, 'ts' => time() ) );
+        if ( count( $rows ) > self::RECENTLY_VIEWED_MAX ) {
+            $rows = array_slice( $rows, 0, self::RECENTLY_VIEWED_MAX );
+        }
+        update_user_meta( $uid, self::RECENTLY_VIEWED_META, $rows );
+        return rest_ensure_response( array( 'ok' => true, 'count' => count( $rows ) ) );
+    }
+
+    public static function recently_viewed_clear(): WP_REST_Response {
+        $uid = get_current_user_id();
+        delete_user_meta( $uid, self::RECENTLY_VIEWED_META );
+        return rest_ensure_response( array( 'ok' => true ) );
     }
 }

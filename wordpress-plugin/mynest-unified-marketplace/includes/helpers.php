@@ -308,12 +308,24 @@ function tnm_notify( int $user_id, int $actor_id, string $type, string $title, s
     // owning that path instead of double-firing here.
     $direct_push_types = array( 'new_order', 'order_update', 'order_shipped' );
     if ( $notification_id > 0 && $user_id > 0 && ! in_array( sanitize_key( $type ), $direct_push_types, true ) ) {
+        // v3.7.121 (Build #17b) — map notification type → push category so
+        // the preferences center can mute whole classes of alerts.
+        $type_key = sanitize_key( $type );
+        $category_map = array(
+            'message'           => 'messages', 'message_new' => 'messages', 'chat' => 'messages',
+            'follow'            => 'follows', 'new_follower' => 'follows',
+            'price_drop'        => 'price_drop_alerts', 'price_drop_alert' => 'price_drop_alerts',
+            'promo'             => 'promos', 'promotion' => 'promos', 'coupon' => 'promos',
+            'order_review_nudge'=> 'orders', 'refund_update' => 'orders',
+        );
+        $category = isset( $category_map[ $type_key ] ) ? $category_map[ $type_key ] : '';
         $payload = array(
             'user_id'         => $user_id,
             'title'           => (string) $title,
             'body'            => (string) $message,
             'data'            => array(
-                'type'            => sanitize_key( $type ),
+                'type'            => $type_key,
+                'category'        => $category,
                 'object_id'       => (int) $object_id,
                 'object_type'     => sanitize_key( $object_type ),
                 'actor_id'        => (int) $actor_id,

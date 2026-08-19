@@ -727,7 +727,8 @@ final class MNU_Ops {
             $user_id,
             'Order updated',
             'Your MyNest order #' . $order->get_order_number() . ' is now ' . wc_get_order_status_name( $new_status ) . '.',
-            array( 'type' => 'order_update', 'order_id' => $order_id, 'status' => $new_status )
+            // v3.7.121 (Build #17b) — tag as "orders" category so buyers can mute in preferences.
+            array( 'type' => 'order_update', 'category' => 'orders', 'order_id' => $order_id, 'status' => $new_status )
         );
         $order->update_meta_data( $marker, current_time( 'mysql', true ) );
         $order->save();
@@ -742,6 +743,14 @@ final class MNU_Ops {
      * a type it does not recognise simply opens the app without navigating.
      */
     public static function notify_user( int $user_id, string $title, string $body, array $data = array() ): bool {
+        // v3.7.121 (Build #17b) — respect the recipient's per-category push
+        // preference. Callers may pass $data['category'] to categorize the
+        // notification (orders, messages, price_drop_alerts, follows,
+        // promos). Uncategorized pushes (system, ops) always go through.
+        if ( ! empty( $data['category'] ) && class_exists( 'TNM_REST' ) ) {
+            $cat = (string) $data['category'];
+            if ( ! TNM_REST::me_pref_enabled( $user_id, $cat ) ) { return false; }
+        }
         $tokens = get_user_meta( $user_id, 'thenest_expo_push_tokens', true );
         if ( ! is_array( $tokens ) || ! $tokens ) {
             return false;

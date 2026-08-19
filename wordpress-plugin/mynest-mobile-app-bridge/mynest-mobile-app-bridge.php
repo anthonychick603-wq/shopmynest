@@ -307,6 +307,18 @@ final class MyNest_Mobile_App_Bridge {
                 'permission_callback' => array( __CLASS__, 'logged_in' ),
             )
         );
+        // v3.7.121 (Build #16) — buyer-initiated cancel. Only the customer
+        // on the order can call this; permission enforced inside the
+        // callback because we need to open the order to check identity.
+        register_rest_route(
+            self::NS,
+            '/orders/(?P<id>\d+)/cancel',
+            array(
+                'methods'             => WP_REST_Server::CREATABLE,
+                'callback'            => array( __CLASS__, 'cancel_order' ),
+                'permission_callback' => array( __CLASS__, 'logged_in' ),
+            )
+        );
         register_rest_route(
             self::NS,
             '/products/(?P<id>\d+)/report',
@@ -492,6 +504,52 @@ final class MyNest_Mobile_App_Bridge {
         return rest_ensure_response( self::order_to_array( $order ) );
     }
 
+    /**
+     * v3.7.121 (Build #16) — buyer-initiated order cancellation. Only
+     * pending / on-hold orders with no shipments can be cancelled outright.
+     * A processing (paid) order is directed to the refund lifecycle so we
+     * don't strand a captured payment. When a seller has already shipped
+     * anything we refuse and leave the buyer to open a dispute instead.
+     */
+    public static function cancel_order( WP_REST_Request $request ): WP_REST_Response|WP_Error {
+        $order = wc_get_order( absint( $request['id'] ) );
+        if ( ! $order ) {
+            return new WP_Error( 'order_not_found', 'Order not found.', array( 'status' => 404 ) );
+        }
+        $user_id = get_current_user_id();
+        if ( (int) $order->get_customer_id() !== $user_id && ! user_can( $user_id, 'manage_woocommerce' ) ) {
+            return new WP_Error( 'order_permission_denied', 'You cannot cancel this order.', array( 'status' => 403 ) );
+        }
+
+        // Reject cancels once anything has shipped — the buyer should open a
+        // dispute in that case, not silently mark the order cancelled.
+        $shipped_any = false;
+        foreach ( $order->get_items() as $item ) {
+            if ( ! $item instanceof WC_Order_Item_Product ) { continue; }
+            $seller_id = function_exists( 'tnm_get_order_item_seller_id' ) ? (int) tnm_get_order_item_seller_id( $item ) : 0;
+            if ( ! $seller_id ) { continue; }
+            $seller_status = (string) $order->get_meta( '_tnm_seller_status_' . $seller_id, true );
+            if ( 'shipped' === $seller_status || 'completed' === $seller_status ) { $shipped_any = true; break; }
+        }
+        if ( $shipped_any ) {
+            return new WP_Error( 'order_already_shipped', 'This order has already shipped. Open a dispute for a refund.', array( 'status' => 409 ) );
+        }
+
+        $status = $order->get_status();
+        if ( in_array( $status, array( 'processing', 'completed' ), true ) ) {
+            return new WP_Error( 'order_paid_use_refund', 'This order is paid. Please request a refund instead of a cancellation.', array( 'status' => 409 ) );
+        }
+        if ( in_array( $status, array( 'cancelled', 'refunded', 'failed' ), true ) ) {
+            return new WP_Error( 'order_already_closed', 'This order is already closed.', array( 'status' => 409 ) );
+        }
+
+        $reason = sanitize_text_field( (string) $request->get_param( 'reason' ) );
+        $note   = $reason !== '' ? sprintf( 'Buyer cancelled: %s', $reason ) : 'Buyer cancelled from mobile app.';
+        $order->update_status( 'cancelled', $note );
+
+        return rest_ensure_response( self::order_to_array( wc_get_order( $order->get_id() ) ) );
+    }
+
     public static function order_to_array( WC_Order $order ): array {
         $items      = array();
         $tracking   = array();
@@ -586,6 +644,28 @@ final class MyNest_Mobile_App_Bridge {
             $can_review = ! empty( $reviewable_seller_ids );
         }
 
+        // v3.7.121 (Build #16) — timeline block. The mobile order screen
+        // already renders a Placed → Paid → Shipped → Delivered progress
+        // bar; give it per-step timestamps so the buyer can see WHEN each
+        // step happened without opening the tracking card. shipped_at is
+        // the earliest ship timestamp across all sellers (the order enters
+        // the "Shipped" state as soon as any seller has shipped).
+        $shipped_at = null;
+        foreach ( $tracking as $row ) {
+            $ts = isset( $row['shipped_at'] ) ? (string) $row['shipped_at'] : '';
+            if ( '' === $ts ) { continue; }
+            if ( null === $shipped_at || strtotime( $ts ) < strtotime( $shipped_at ) ) {
+                $shipped_at = $ts;
+            }
+        }
+
+        // v3.7.121 (Build #16) — buyer-side cancel eligibility. Buyers can
+        // request cancellation while the order is pending/on-hold and no
+        // seller has shipped yet. Once payment is captured (processing) we
+        // route the buyer to the refund flow instead so we don't strand
+        // money in an authorised-then-cancelled state.
+        $cancellable_by_buyer = in_array( $order->get_status(), array( 'pending', 'on-hold' ), true ) && 'awaiting' === $shipping_status;
+
         return array(
             'id'              => $order->get_id(),
             'number'          => $order->get_order_number(),
@@ -594,6 +674,14 @@ final class MyNest_Mobile_App_Bridge {
             'date_created'    => $order->get_date_created() ? $order->get_date_created()->date( DATE_ATOM ) : null,
             'date_paid'       => $order->get_date_paid() ? $order->get_date_paid()->date( DATE_ATOM ) : null,
             'date_completed'  => $order->get_date_completed() ? $order->get_date_completed()->date( DATE_ATOM ) : null,
+            // v3.7.121 (Build #16)
+            'timeline'        => array(
+                'placed'    => $order->get_date_created() ? $order->get_date_created()->date( DATE_ATOM ) : null,
+                'paid'      => $order->get_date_paid() ? $order->get_date_paid()->date( DATE_ATOM ) : null,
+                'shipped'   => $shipped_at,
+                'delivered' => $order->get_date_completed() ? $order->get_date_completed()->date( DATE_ATOM ) : null,
+            ),
+            'cancellable'     => $cancellable_by_buyer,
             'currency'        => $order->get_currency(),
             'subtotal'        => (float) $order->get_subtotal(),
             'shipping_total'  => (float) $order->get_shipping_total(),

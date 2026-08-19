@@ -106,6 +106,7 @@ final class TNM_Review_Nudge {
 				$body,
 				array(
 					'type'     => 'review_prompt',
+					'category' => 'orders', // v3.7.121 (Build #17b)
 					'order_id' => (int) $order->get_id(),
 				)
 			);

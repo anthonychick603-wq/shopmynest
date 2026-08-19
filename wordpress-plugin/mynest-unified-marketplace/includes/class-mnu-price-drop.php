@@ -140,6 +140,7 @@ final class MNU_Price_Drop {
 			if ( class_exists( 'MNU_Ops' ) && method_exists( 'MNU_Ops', 'notify_user' ) ) {
 				MNU_Ops::notify_user( $buyer_id, $title, $body, array(
 					'type'       => 'price_drop',
+					'category'   => 'price_drop_alerts', // v3.7.121 (Build #17b)
 					'product_id' => $product_id,
 					'deep_link'  => '/product/' . $product_id,
 				) );
