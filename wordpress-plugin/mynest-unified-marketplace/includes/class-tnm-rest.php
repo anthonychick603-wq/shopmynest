@@ -315,6 +315,7 @@ final class TNM_REST {
             'posts_per_page' => $per_page,
             'paged'          => $page,
             's'              => sanitize_text_field( (string) $request->get_param( 'search' ) ),
+            'mnu_keyword_search' => 1,
             'orderby'        => 'date',
             'order'          => 'DESC',
             'tax_query'      => array(

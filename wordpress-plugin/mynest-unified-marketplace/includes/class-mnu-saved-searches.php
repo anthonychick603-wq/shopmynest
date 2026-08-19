@@ -319,6 +319,7 @@ final class MNU_SavedSearches {
             'post_type'      => 'product',
             'post_status'    => 'publish',
             's'              => (string) ( $q['search'] ?? '' ),
+            'mnu_keyword_search' => 1,
             'tax_query'      => array(
                 array( 'taxonomy' => 'product_visibility', 'field' => 'name', 'terms' => array( 'exclude-from-catalog' ), 'operator' => 'NOT IN' ),
                 array( 'taxonomy' => 'product_visibility', 'field' => 'name', 'terms' => array( 'outofstock' ), 'operator' => 'NOT IN' ),
