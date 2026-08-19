@@ -123,6 +123,155 @@ final class MNU_Blog {
             '/blog/posts/(?P<id>\d+)/favorites-count',
             array( 'methods' => WP_REST_Server::READABLE, 'callback' => array( __CLASS__, 'favorites_count_route' ), 'permission_callback' => '__return_true' )
         );
+        // v3.7.110 — author-only edit + delete, plus report-as-reader.
+        // These power the 3-dot menu on the mobile Fresh from the Nest cards
+        // and detail screen. Author checks live inside the handlers so the
+        // 403 message is specific ("Only the author can delete" vs generic
+        // rest_forbidden). Report mirrors report_product() in the mobile
+        // bridge: writes a mynest_report CPT + emails admins.
+        register_rest_route(
+            self::NS,
+            '/blog/posts/(?P<id>\d+)',
+            array(
+                array( 'methods' => WP_REST_Server::EDITABLE,  'callback' => array( __CLASS__, 'update_post' ), 'permission_callback' => array( __CLASS__, 'logged_in' ) ),
+                array( 'methods' => WP_REST_Server::DELETABLE, 'callback' => array( __CLASS__, 'delete_post' ), 'permission_callback' => array( __CLASS__, 'logged_in' ) ),
+            )
+        );
+        register_rest_route(
+            self::NS,
+            '/blog/posts/(?P<id>\d+)/report',
+            array( 'methods' => WP_REST_Server::CREATABLE, 'callback' => array( __CLASS__, 'report_post' ), 'permission_callback' => array( __CLASS__, 'logged_in' ) )
+        );
+    }
+
+    /* ---------------------------------------- v3.7.110 author-facing edit / delete / report */
+
+    /**
+     * True when the current user owns the given blog post OR is an admin.
+     */
+    private static function can_manage_post( WP_Post $post ): bool {
+        $viewer = get_current_user_id();
+        if ( ! $viewer ) return false;
+        if ( (int) $post->post_author === (int) $viewer ) return true;
+        return current_user_can( 'manage_options' ) || current_user_can( 'edit_others_posts' );
+    }
+
+    public static function update_post( WP_REST_Request $request ): WP_REST_Response|WP_Error {
+        $post_id = absint( $request['id'] );
+        $post    = get_post( $post_id );
+        if ( ! $post || $post->post_type !== self::CPT ) {
+            return tnm_json_error( 'blog_post_not_found', 'Post not found.', 404 );
+        }
+        if ( ! self::can_manage_post( $post ) ) {
+            return tnm_json_error( 'blog_edit_forbidden', 'Only the author can edit this post.', 403 );
+        }
+
+        $caption_raw = $request->get_param( 'caption' );
+        if ( null !== $caption_raw ) {
+            $caption = wp_kses_post( (string) $caption_raw );
+            if ( '' === trim( wp_strip_all_tags( $caption ) ) ) {
+                return tnm_json_error( 'blog_caption_required', 'A caption is required.', 422 );
+            }
+            wp_update_post( array( 'ID' => $post_id, 'post_content' => $caption ) );
+        }
+
+        // Optional image replacement. Same helper as submit(); an empty
+        // upload leaves the existing thumbnail alone. Client can send
+        // remove_image=1 to clear it entirely.
+        if ( ! empty( $_FILES['image'] ) ) {
+            $attachment_id = tnm_upload_image_from_request( 'image' );
+            if ( is_wp_error( $attachment_id ) ) {
+                return $attachment_id;
+            }
+            if ( $attachment_id ) {
+                if ( ! wp_attachment_is_image( $attachment_id ) ) {
+                    wp_delete_attachment( $attachment_id, true );
+                    return tnm_json_error( 'blog_invalid_image', 'The uploaded file must be an image.', 422 );
+                }
+                $old = get_post_thumbnail_id( $post_id );
+                wp_update_post( array( 'ID' => $attachment_id, 'post_parent' => $post_id, 'post_author' => (int) $post->post_author ) );
+                set_post_thumbnail( $post_id, $attachment_id );
+                if ( $old ) wp_delete_attachment( (int) $old, true );
+            }
+        } elseif ( (bool) $request->get_param( 'remove_image' ) ) {
+            $old = get_post_thumbnail_id( $post_id );
+            if ( $old ) wp_delete_attachment( (int) $old, true );
+            delete_post_thumbnail( $post_id );
+        }
+
+        self::purge_public_feed_cache();
+        return rest_ensure_response( array( 'success' => true, 'post' => self::post_to_array( get_post( $post_id ) ) ) );
+    }
+
+    public static function delete_post( WP_REST_Request $request ): WP_REST_Response|WP_Error {
+        $post_id = absint( $request['id'] );
+        $post    = get_post( $post_id );
+        if ( ! $post || $post->post_type !== self::CPT ) {
+            return tnm_json_error( 'blog_post_not_found', 'Post not found.', 404 );
+        }
+        if ( ! self::can_manage_post( $post ) ) {
+            return tnm_json_error( 'blog_delete_forbidden', 'Only the author can delete this post.', 403 );
+        }
+
+        // Force-delete: attachment + post + associated meta. Comments live
+        // in a custom table (see class-mnu-blog-comments.php pattern) but
+        // wp_delete_post handles the wp_comments fallback too.
+        $thumb = get_post_thumbnail_id( $post_id );
+        if ( $thumb ) wp_delete_attachment( (int) $thumb, true );
+        wp_delete_post( $post_id, true );
+
+        self::purge_public_feed_cache();
+        return rest_ensure_response( array( 'success' => true, 'id' => $post_id ) );
+    }
+
+    public static function report_post( WP_REST_Request $request ): WP_REST_Response|WP_Error {
+        $post_id = absint( $request['id'] );
+        $post    = get_post( $post_id );
+        if ( ! $post || $post->post_type !== self::CPT ) {
+            return tnm_json_error( 'blog_post_not_found', 'Post not found.', 404 );
+        }
+        $viewer = get_current_user_id();
+        if ( (int) $post->post_author === (int) $viewer ) {
+            return tnm_json_error( 'blog_report_self', 'You can\'t report your own post.', 422 );
+        }
+
+        $reason  = sanitize_text_field( (string) $request->get_param( 'reason' ) );
+        $details = sanitize_textarea_field( (string) $request->get_param( 'details' ) );
+        if ( ! $reason ) {
+            return tnm_json_error( 'blog_report_reason_required', 'Choose a reason for the report.', 422 );
+        }
+
+        $report_id = wp_insert_post(
+            array(
+                'post_type'    => 'mynest_report',
+                'post_status'  => 'pending',
+                'post_author'  => $viewer,
+                'post_title'   => sprintf( 'Blog post #%d — %s', $post_id, $reason ),
+                'post_content' => $details,
+            ),
+            true
+        );
+        if ( is_wp_error( $report_id ) ) {
+            return $report_id;
+        }
+
+        update_post_meta( $report_id, '_mynest_report_kind', 'blog_post' );
+        update_post_meta( $report_id, '_mynest_blog_post_id', $post_id );
+        update_post_meta( $report_id, '_mynest_reason', $reason );
+        update_post_meta( $report_id, '_mynest_reporter_id', $viewer );
+
+        $admins = get_users( array( 'role__in' => array( 'administrator', 'shop_manager' ), 'fields' => array( 'user_email' ) ) );
+        foreach ( $admins as $admin ) {
+            if ( is_email( $admin->user_email ) ) {
+                wp_mail(
+                    $admin->user_email,
+                    'New MyNest blog post report',
+                    sprintf( "Blog post #%d\nAuthor: %s\nReason: %s\nDetails: %s", $post_id, get_the_author_meta( 'display_name', (int) $post->post_author ), $reason, $details )
+                );
+            }
+        }
+
+        return rest_ensure_response( array( 'success' => true, 'report_id' => (int) $report_id ) );
     }
 
     /* --------------------------------------------------- v3.7.98 favorites */
