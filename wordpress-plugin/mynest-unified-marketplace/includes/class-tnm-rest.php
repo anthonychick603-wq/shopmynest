@@ -84,12 +84,24 @@ final class TNM_REST {
         // DELETE removes. Multi-address support (existing /ops/addresses is single-shipping).
         register_rest_route( self::NS, '/me/addresses', array( array( 'methods' => WP_REST_Server::READABLE, 'callback' => array( __CLASS__, 'address_book_list' ), 'permission_callback' => array( __CLASS__, 'logged_in' ) ), array( 'methods' => WP_REST_Server::CREATABLE, 'callback' => array( __CLASS__, 'address_book_create' ), 'permission_callback' => array( __CLASS__, 'logged_in' ) ) ) );
         register_rest_route( self::NS, '/me/addresses/(?P<id>[a-z0-9-]+)', array( array( 'methods' => WP_REST_Server::EDITABLE, 'callback' => array( __CLASS__, 'address_book_update' ), 'permission_callback' => array( __CLASS__, 'logged_in' ) ), array( 'methods' => WP_REST_Server::DELETABLE, 'callback' => array( __CLASS__, 'address_book_delete' ), 'permission_callback' => array( __CLASS__, 'logged_in' ) ) ) );
+        // v3.7.120 (Build #14) — buyer alert preferences. Currently only
+        // exposes the price-drop toggle; other per-buyer alert prefs will
+        // grow into this endpoint over time.
+        register_rest_route( self::NS, '/me/preferences', array(
+            array( 'methods' => WP_REST_Server::READABLE, 'callback' => array( __CLASS__, 'me_preferences_get' ), 'permission_callback' => array( __CLASS__, 'logged_in' ) ),
+            array( 'methods' => WP_REST_Server::EDITABLE, 'callback' => array( __CLASS__, 'me_preferences_update' ), 'permission_callback' => array( __CLASS__, 'logged_in' ) ),
+        ) );
         register_rest_route( self::NS, '/seller/orders', array( 'methods' => WP_REST_Server::READABLE, 'callback' => array( __CLASS__, 'seller_orders' ), 'permission_callback' => array( __CLASS__, 'seller' ) ) );
         register_rest_route( self::NS, '/seller/orders/(?P<id>\d+)', array( 'methods' => WP_REST_Server::EDITABLE, 'callback' => array( __CLASS__, 'seller_order_update' ), 'permission_callback' => array( __CLASS__, 'seller' ) ) );
         register_rest_route( self::NS, '/seller/earnings', array( 'methods' => WP_REST_Server::READABLE, 'callback' => array( __CLASS__, 'seller_earnings' ), 'permission_callback' => array( __CLASS__, 'seller' ) ) );
         // v3.7.118 — rolling revenue timeseries + top products + refund rate
         // powering the seller analytics dashboard on mobile.
         register_rest_route( self::NS, '/seller/analytics', array( 'methods' => WP_REST_Server::READABLE, 'callback' => array( __CLASS__, 'seller_analytics' ), 'permission_callback' => array( __CLASS__, 'seller' ) ) );
+        // v3.7.120 (Build #15) — CSV export of the seller's orders inside
+        // the analytics window. Returns a JSON envelope carrying the CSV
+        // string so the mobile client can write it to a file and use the
+        // native share sheet (no direct file download in RN).
+        register_rest_route( self::NS, '/seller/analytics/export', array( 'methods' => WP_REST_Server::READABLE, 'callback' => array( __CLASS__, 'seller_analytics_export' ), 'permission_callback' => array( __CLASS__, 'seller' ) ) );
         register_rest_route( self::NS, '/seller/payouts', array( array( 'methods' => WP_REST_Server::READABLE, 'callback' => array( __CLASS__, 'seller_payouts' ), 'permission_callback' => array( __CLASS__, 'seller' ) ), array( 'methods' => WP_REST_Server::CREATABLE, 'callback' => array( __CLASS__, 'seller_payout_request' ), 'permission_callback' => array( __CLASS__, 'seller' ) ) ) );
     }
 
@@ -1034,6 +1046,10 @@ final class TNM_REST {
         if ( ! in_array( $range, array( 7, 30, 90 ), true ) ) { $range = 30; }
 
         $since = strtotime( '-' . ( $range - 1 ) . ' days 00:00:00' );
+        // v3.7.120 (Build #15) — previous period window for compare deltas.
+        // The prior window is the same length ending the day before $since.
+        $prev_since = $since - ( $range * DAY_IN_SECONDS );
+        $prev_until = $since - 1;
         $tz    = wp_timezone();
 
         $days = array();
@@ -1042,10 +1058,14 @@ final class TNM_REST {
             $days[ $d ] = 0.0;
         }
 
+        // Load orders back to the start of the PREVIOUS period so we can
+        // compute both the current window and the compare baseline in one
+        // wc_get_orders call. Costs the same as fetching only the current
+        // window for a busy seller.
         $query = wc_get_orders( array(
             'limit'      => -1,
             'status'     => array( 'wc-processing', 'wc-completed', 'wc-on-hold', 'wc-refunded' ),
-            'date_after' => gmdate( 'Y-m-d H:i:s', $since ),
+            'date_after' => gmdate( 'Y-m-d H:i:s', $prev_since ),
             'return'     => 'objects',
             'meta_query' => array(
                 array(
@@ -1063,20 +1083,39 @@ final class TNM_REST {
         $product_gross   = array();
         $product_names   = array();
         $product_images  = array();
+        // v3.7.120 — previous period accumulators (compare baseline).
+        $prev_orders_count = 0;
+        $prev_total_gross  = 0.0;
 
         foreach ( $query as $order ) {
             if ( ! tnm_order_contains_seller( $order, $seller_id ) ) {
                 continue;
             }
-            $orders_count++;
-            if ( 'refunded' === $order->get_status() ) {
-                $refunded_orders++;
-            }
             $dt = $order->get_date_created();
             if ( ! $dt ) { continue; }
+            $ts = $dt->getTimestamp();
+            // Bucket the order into current vs previous window. Anything
+            // older than $prev_since was pulled in by rounding — skip.
+            $is_current = ( $ts >= $since );
+            $is_prev    = ( ! $is_current && $ts >= $prev_since && $ts <= $prev_until );
+            if ( ! $is_current && ! $is_prev ) {
+                continue;
+            }
+            if ( $is_current ) {
+                $orders_count++;
+                if ( 'refunded' === $order->get_status() ) {
+                    $refunded_orders++;
+                }
+            } else {
+                $prev_orders_count++;
+            }
             $bucket = $dt->setTimezone( $tz )->format( 'Y-m-d' );
 
             foreach ( tnm_get_seller_order_items( $order, $seller_id ) as $item ) {
+                if ( $is_prev ) {
+                    $prev_total_gross += (float) $item->get_total();
+                    continue;
+                }
                 $gross = (float) $item->get_total();
                 $fee   = self::resolve_item_platform_fee( $item );
                 $net   = max( 0, $gross - $fee );
@@ -1116,6 +1155,15 @@ final class TNM_REST {
 
         $balances = class_exists( 'TNM_Ledger' ) ? TNM_Ledger::balances( $seller_id ) : array();
 
+        // v3.7.120 (Build #15) — compare block. Deltas are computed as a
+        // pure difference and a percentage of the previous window. When the
+        // previous window is empty we return null for pct_change so the
+        // client can render "—" instead of a bogus infinite gain.
+        $delta_gross     = $total_gross - $prev_total_gross;
+        $delta_orders    = $orders_count - $prev_orders_count;
+        $pct_gross       = $prev_total_gross > 0 ? round( ( $delta_gross / $prev_total_gross ) * 100, 1 ) : null;
+        $pct_orders      = $prev_orders_count > 0 ? round( ( $delta_orders / $prev_orders_count ) * 100, 1 ) : null;
+
         return rest_ensure_response( array(
             'range'          => $range,
             'revenue'        => $revenue_series,
@@ -1126,6 +1174,85 @@ final class TNM_REST {
             'total_net'      => round( max( 0, $total_gross - $total_fees ), 2 ),
             'top_products'   => $top_products,
             'pending_payout' => isset( $balances['available'] ) ? (float) $balances['available'] : 0,
+            'compare'        => array(
+                'prev_total_gross'  => round( $prev_total_gross, 2 ),
+                'prev_orders_count' => $prev_orders_count,
+                'delta_gross'       => round( $delta_gross, 2 ),
+                'delta_orders'      => $delta_orders,
+                'pct_gross'         => $pct_gross,
+                'pct_orders'        => $pct_orders,
+            ),
+        ) );
+    }
+
+    /**
+     * v3.7.120 (Build #15) — CSV export of the current seller's orders
+     * over the same 7/30/90-day window that seller_analytics reports.
+     * We return the CSV inline in a JSON envelope; the mobile client
+     * writes it to expo-file-system and hands it to the OS share sheet.
+     * Doing it that way keeps auth headers attached (a raw text/csv
+     * response over the REST client would need a separate download
+     * pathway) and avoids leaking the CSV to any device browser.
+     */
+    public static function seller_analytics_export( WP_REST_Request $request ): WP_REST_Response {
+        $seller_id = get_current_user_id();
+        $range     = (int) ( $request->get_param( 'range' ) ?: 30 );
+        if ( ! in_array( $range, array( 7, 30, 90 ), true ) ) { $range = 30; }
+        $since = strtotime( '-' . ( $range - 1 ) . ' days 00:00:00' );
+
+        $orders = wc_get_orders( array(
+            'limit'      => -1,
+            'status'     => array( 'wc-processing', 'wc-completed', 'wc-on-hold', 'wc-refunded' ),
+            'date_after' => gmdate( 'Y-m-d H:i:s', $since ),
+            'return'     => 'objects',
+            'meta_query' => array(
+                array( 'key' => '_tnm_seller_ids', 'value' => ',' . $seller_id . ',', 'compare' => 'LIKE' ),
+            ),
+        ) );
+
+        $rows = array();
+        $rows[] = array( 'order_id', 'date', 'status', 'buyer', 'product', 'sku', 'qty', 'gross', 'platform_fee', 'net' );
+        foreach ( $orders as $order ) {
+            if ( ! tnm_order_contains_seller( $order, $seller_id ) ) { continue; }
+            $date = $order->get_date_created();
+            $date_s = $date ? $date->format( 'Y-m-d H:i:s' ) : '';
+            $buyer  = trim( $order->get_billing_first_name() . ' ' . $order->get_billing_last_name() ) ?: '(guest)';
+            foreach ( tnm_get_seller_order_items( $order, $seller_id ) as $item ) {
+                $gross = (float) $item->get_total();
+                $fee   = self::resolve_item_platform_fee( $item );
+                $net   = max( 0, $gross - $fee );
+                $sku   = '';
+                $pid   = (int) $item->get_product_id();
+                if ( $pid ) {
+                    $product = wc_get_product( $pid );
+                    if ( $product ) { $sku = $product->get_sku(); }
+                }
+                $rows[] = array(
+                    (string) $order->get_id(),
+                    $date_s,
+                    (string) $order->get_status(),
+                    $buyer,
+                    (string) $item->get_name(),
+                    (string) $sku,
+                    (string) $item->get_quantity(),
+                    number_format( $gross, 2, '.', '' ),
+                    number_format( $fee, 2, '.', '' ),
+                    number_format( $net, 2, '.', '' ),
+                );
+            }
+        }
+
+        $handle = fopen( 'php://temp', 'w+' );
+        foreach ( $rows as $row ) { fputcsv( $handle, $row ); }
+        rewind( $handle );
+        $csv = stream_get_contents( $handle );
+        fclose( $handle );
+
+        return rest_ensure_response( array(
+            'range'    => $range,
+            'filename' => sprintf( 'shopmynest-orders-%dd-%s.csv', $range, gmdate( 'Y-m-d' ) ),
+            'csv'      => (string) $csv,
+            'rows'     => count( $rows ) - 1,
         ) );
     }
 
@@ -1489,5 +1616,27 @@ final class TNM_REST {
         if ( ! $has_default && $filtered ) { $filtered[0]['is_default'] = true; }
         self::save_address_book( $filtered );
         return rest_ensure_response( array( 'success' => true ) );
+    }
+
+    // ---- Buyer alert preferences (v3.7.120) --------------------------------
+
+    public static function me_preferences_get(): WP_REST_Response {
+        $uid = get_current_user_id();
+        // '0' explicitly means off; any other value (unset, '1', legacy) = on.
+        $price_drop = (string) get_user_meta( $uid, MNU_Price_Drop::USER_META_OPT_IN, true );
+        return rest_ensure_response( array(
+            'price_drop_alerts' => '0' !== $price_drop,
+        ) );
+    }
+
+    public static function me_preferences_update( WP_REST_Request $request ): WP_REST_Response {
+        $uid = get_current_user_id();
+        $raw = $request->get_param( 'price_drop_alerts' );
+        if ( null !== $raw ) {
+            // Accept booleans, ints, and the strings "true"/"1"/"on".
+            $enabled = in_array( $raw, array( true, 1, '1', 'true', 'on' ), true );
+            update_user_meta( $uid, MNU_Price_Drop::USER_META_OPT_IN, $enabled ? '1' : '0' );
+        }
+        return self::me_preferences_get();
     }
 }
