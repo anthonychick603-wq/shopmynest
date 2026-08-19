@@ -389,6 +389,7 @@ function tnm_seller_application_status( int $user_id ): string {
 
 function tnm_rest_user_data( WP_User $user ): array {
     $is_seller = tnm_is_seller( $user->ID );
+    $is_admin  = tnm_is_admin_or_manager( $user->ID );
     return array(
         'id'           => $user->ID,
         'username'     => $user->user_login,
@@ -397,9 +398,13 @@ function tnm_rest_user_data( WP_User $user ): array {
         'avatar'       => tnm_user_avatar_url( $user->ID, 256 ),
         'roles'        => array_values( $user->roles ),
         'is_seller'    => $is_seller,
+        // v3.7.115 — explicit admin flag so the mobile app can surface the
+        // admin drawer independently of is_approved_seller (which is also
+        // true for regular sellers).
+        'is_admin'     => $is_admin,
         // Mirrors the seller() REST permission gate, so the app only shows
         // seller-only UI to accounts the seller routes will actually accept.
-        'is_approved_seller' => $is_seller || tnm_is_admin_or_manager( $user->ID ),
+        'is_approved_seller' => $is_seller || $is_admin,
         'store_name'   => tnm_seller_display_name( $user->ID ),
         // null, not 0, for non-sellers: the app treats any present value as a
         // real seller id and would fetch store "0".
