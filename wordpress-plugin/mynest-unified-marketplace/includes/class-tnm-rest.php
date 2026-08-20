@@ -1125,7 +1125,7 @@ final class TNM_REST {
                     continue;
                 }
                 $gross = (float) $item->get_total();
-                $fee   = self::resolve_item_platform_fee( $item );
+                $fee   = TNM_Marketplace::resolve_item_platform_fee( $item );
                 $net   = max( 0, $gross - $fee );
                 $total_gross += $gross;
                 $total_fees  += $fee;
@@ -1227,7 +1227,7 @@ final class TNM_REST {
             $buyer  = trim( $order->get_billing_first_name() . ' ' . $order->get_billing_last_name() ) ?: '(guest)';
             foreach ( tnm_get_seller_order_items( $order, $seller_id ) as $item ) {
                 $gross = (float) $item->get_total();
-                $fee   = self::resolve_item_platform_fee( $item );
+                $fee   = TNM_Marketplace::resolve_item_platform_fee( $item );
                 $net   = max( 0, $gross - $fee );
                 $sku   = '';
                 $pid   = (int) $item->get_product_id();
