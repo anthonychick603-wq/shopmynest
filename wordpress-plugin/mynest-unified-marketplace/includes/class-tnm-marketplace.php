@@ -1183,6 +1183,18 @@ final class TNM_Marketplace {
             if ( ! tnm_order_contains_seller( $order, $seller_id ) ) {
                 continue;
             }
+            // v3.7.122.14 — if the seller is also the buyer on this order
+            // (a seller-buyer account who purchased from another seller and
+            // somehow has their own id on the `_tnm_seller_ids` CSV, or a
+            // seller who bought their own listing) the seller-orders list
+            // must not include it. Otherwise the buyer's order screen
+            // short-circuits to the seller-framed view because getSellerOrders
+            // returns a match for the same order id. Anthony saw #3529
+            // render as a seller screen even though he bought the items
+            // from Jo.
+            if ( (int) $order->get_customer_id() === $seller_id ) {
+                continue;
+            }
             $orders[] = self::seller_order_to_array( $order, $seller_id );
         }
         return array(

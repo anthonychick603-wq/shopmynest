@@ -3,7 +3,7 @@
  * Plugin Name: MyNest Mobile App Bridge
  * Plugin URI:  https://shopmynest.com/
  * Description: Adds mobile buyer endpoints, moderated community posts for the home feed, an app permissions endpoint, reliable bearer-token authentication, and safe Stripe Tax sandbox checkout compatibility for The Nest Android app.
- * Version:     1.2.3
+ * Version:     1.2.4
  * Author:      MyNest
  * Text Domain: mynest-mobile-app-bridge
  * Requires at least: 6.5
@@ -670,6 +670,14 @@ final class MyNest_Mobile_App_Bridge {
             'id'              => $order->get_id(),
             'number'          => $order->get_order_number(),
             'status'          => $order->get_status(),
+            // v1.2.4 — buyer identity on the order so a seller-buyer
+            // account viewing their own purchase in the app can be forced
+            // into the buyer-framed screen even if the order somehow
+            // matched the seller-orders list. Anthony bought #3529 from
+            // Jo but saw the seller view because a stale `_tnm_seller_ids`
+            // stamp put his uid on the CSV. This lets the mobile client
+            // gate on identity, not just on "appears in my seller list".
+            'customer_id'     => (int) $order->get_customer_id(),
             'shipping_status' => $shipping_status,
             'date_created'    => $order->get_date_created() ? $order->get_date_created()->date( DATE_ATOM ) : null,
             'date_paid'       => $order->get_date_paid() ? $order->get_date_paid()->date( DATE_ATOM ) : null,
