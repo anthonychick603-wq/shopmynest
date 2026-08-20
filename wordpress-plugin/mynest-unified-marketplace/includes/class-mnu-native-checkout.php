@@ -1738,3 +1738,57 @@ function mnu_native_webhook( WP_REST_Request $request ): array|WP_Error {
     }
     return array( 'received' => true );
 }
+
+/**
+ * v3.7.122.5 — auto-cancel native-app checkout drafts that were never paid.
+ *
+ * Every native /checkout/create-intent call opens a wc-pending order. If the
+ * buyer bails (backgrounds the app, force-quits, closes the sheet) the order
+ * lingers forever. It also shows up on the seller's dashboard as a "sold"
+ * order that isn't real. This cron sweeps native-app orders older than
+ * MNU_NATIVE_PENDING_TTL and marks them wc-cancelled so:
+ *   - the seller_orders filter (v3.7.122.5) never surfaces them again
+ *   - stock levels release back to the listing
+ *   - the buyer's cart is still intact — the token-scoped attempt in
+ *     app/(tabs)/cart.tsx opens a fresh order on the next Pay tap.
+ *
+ * Wired to the hourly WP cron; on hosts without alt-cron this still catches
+ * up on the next real request.
+ */
+const MNU_NATIVE_PENDING_TTL = 45 * MINUTE_IN_SECONDS;
+
+function mnu_native_cleanup_stale_pending(): void {
+    if ( ! function_exists( 'wc_get_orders' ) ) {
+        return;
+    }
+    $cutoff = gmdate( 'Y-m-d H:i:s', time() - MNU_NATIVE_PENDING_TTL );
+    // wc_get_orders' 'created_via' filter works under both HPOS (column) and
+    // legacy post-meta storage, so we don't have to branch on the storage
+    // engine. We DO NOT sweep pending orders coming from the classic Woo
+    // checkout, the Woo Stripe Gateway, or admin-created holds.
+    $orders = wc_get_orders( array(
+        'limit'       => 50,
+        'status'      => array( 'pending' ),
+        'date_before' => $cutoff,
+        'return'      => 'objects',
+        'created_via' => 'the-nest-native-app',
+    ) );
+    if ( ! $orders ) {
+        return;
+    }
+    foreach ( $orders as $order ) {
+        $order->update_status(
+            'cancelled',
+            'Auto-cancelled: native app checkout draft was never paid within ' . (int) ( MNU_NATIVE_PENDING_TTL / MINUTE_IN_SECONDS ) . ' minutes.'
+        );
+    }
+}
+
+add_action( 'mnu_native_cleanup_stale_pending', 'mnu_native_cleanup_stale_pending' );
+
+function mnu_native_schedule_cleanup(): void {
+    if ( ! wp_next_scheduled( 'mnu_native_cleanup_stale_pending' ) ) {
+        wp_schedule_event( time() + 300, 'hourly', 'mnu_native_cleanup_stale_pending' );
+    }
+}
+add_action( 'init', 'mnu_native_schedule_cleanup' );

@@ -1136,6 +1136,15 @@ final class TNM_Marketplace {
     }
 
     public static function seller_orders( int $seller_id, int $page = 1, int $per_page = 20 ): array {
+        // v3.7.122.5 — sellers should only see orders that actually earn them
+        // money. wc-pending, wc-failed, and wc-cancelled all mean the buyer
+        // never completed payment. Internal tester Jo saw a phantom #3509
+        // "Pending" row on her seller dashboard next to the real paid #3510
+        // because the native checkout had opened a draft order she never
+        // paid on. wc-refunded stays in the list so sellers can still
+        // reference orders that were paid then reversed. wc-checkout-draft
+        // (from other Woo flows) is likewise excluded.
+        $seller_visible_statuses = array( 'wc-processing', 'wc-completed', 'wc-on-hold', 'wc-refunded' );
         $query = wc_get_orders(
             array(
                 'limit'    => max( 1, min( 100, $per_page ) ),
@@ -1143,7 +1152,7 @@ final class TNM_Marketplace {
                 'paginate' => true,
                 'orderby'  => 'date',
                 'order'    => 'DESC',
-                'status'   => array_keys( wc_get_order_statuses() ),
+                'status'   => $seller_visible_statuses,
                 'return'   => 'objects',
                 'meta_query' => array(
                     array(
