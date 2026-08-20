@@ -284,6 +284,10 @@ final class TNM_Social {
             $row['actor_id']  = (int) $row['actor_id'];
             $row['object_id'] = (int) $row['object_id'];
             $row['is_read']   = (bool) $row['is_read'];
+            // v3.7.122.13 — mobile client reads `read`, not `is_read`. Keep
+            // is_read for backwards compatibility with any web consumer; add
+            // `read` as the canonical field going forward.
+            $row['read']      = $row['is_read'];
             $row['actor']     = $row['actor_id'] ? array(
                 'display_name' => get_the_author_meta( 'display_name', $row['actor_id'] ),
                 'avatar'       => tnm_user_avatar_url( (int) $row['actor_id'], 128 ),
