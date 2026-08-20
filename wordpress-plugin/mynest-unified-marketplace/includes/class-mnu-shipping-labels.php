@@ -922,12 +922,19 @@ function mnu_labels_store_transaction( WC_Order $order, int $seller_id, array $t
 
     if ( 'success' === $status && $label ) {
         $already_finalized = (bool) $order->get_meta( '_mnu_label_finalized_' . $seller_id, true );
-        $order->update_meta_data( '_tnm_seller_status_' . $seller_id, 'shipped' );
-        // v3.7.95 - match manual mark_shipped so the buyer order screen has
-        // a real "Shipped" timestamp per seller regardless of whether the
-        // label was auto-bought or the seller pasted a tracking number.
-        if ( ! $order->get_meta( '_tnm_seller_shipped_at' . $suffix, true ) ) {
-            $order->update_meta_data( '_tnm_seller_shipped_at' . $suffix, current_time( 'mysql', true ) );
+        // v3.7.122.7 — label purchase no longer flips seller status to
+        // 'shipped'. Per product rule, "shipped" only means the carrier
+        // has scanned the package into the mailstream. See the Shippo
+        // track_updated webhook (MNU_Shippo_Tracking) for the first-scan
+        // handler that stamps `_tnm_seller_shipped_at*` and notifies the
+        // buyer. The seller can still manually mark shipped from their
+        // dashboard if the scanner is slow or misses (see MNU_Ops::mark_shipped).
+        //
+        // We DO stamp a separate "label created" timestamp so the buyer's
+        // order screen can show "Label created — awaiting carrier scan"
+        // and the seller sees when their label was purchased.
+        if ( ! $order->get_meta( '_tnm_seller_label_at' . $suffix, true ) ) {
+            $order->update_meta_data( '_tnm_seller_label_at' . $suffix, current_time( 'mysql', true ) );
         }
 
         // v3.7.81/82 — postage recovery. Marketplace pays Shippo only when the
@@ -962,14 +969,18 @@ function mnu_labels_store_transaction( WC_Order $order, int $seller_id, array $t
             $order->update_meta_data( '_mnu_label_finalized_' . $seller_id, current_time( 'mysql', true ) );
         }
 
+        // v3.7.122.7 — the buyer notification is now sent by the Shippo
+        // track_updated webhook on first TRANSIT scan instead of at label
+        // creation. What we send now is a softer "label ready" notice so
+        // the buyer knows a tracking number exists and can be watched.
         $customer_id = (int) $order->get_customer_id();
         if ( $customer_id && ! $order->get_meta( '_mnu_label_buyer_notice_' . $seller_id, true ) ) {
             tnm_notify(
                 $customer_id,
                 $seller_id,
-                'order_shipped',
-                'Order #' . $order->get_order_number() . ' shipped',
-                $tracking ? 'Tracking number: ' . $tracking : 'The seller created a shipping label for your order.',
+                'order_label_created',
+                'Order #' . $order->get_order_number() . ' label created',
+                $tracking ? 'The seller purchased a shipping label. Tracking number: ' . $tracking . '. You\'ll get another notification once the carrier scans the package.' : 'The seller purchased a shipping label for your order.',
                 $order->get_id(),
                 'shop_order',
                 $order->get_view_order_url()
@@ -977,10 +988,10 @@ function mnu_labels_store_transaction( WC_Order $order, int $seller_id, array $t
             if ( class_exists( 'MNU_Ops' ) ) {
                 MNU_Ops::notify_user(
                     $customer_id,
-                    'Order shipped',
-                    'Your MyNest order #' . $order->get_order_number() . ' has shipped.',
+                    'Shipping label created',
+                    'A shipping label was created for MyNest order #' . $order->get_order_number() . '. We\'ll notify you when the carrier scans it in.',
                     array(
-                        'type'      => 'order_shipped',
+                        'type'      => 'order_label_created',
                         'category'  => 'orders', // v3.7.121 (Build #17b)
                         'order_id'  => $order->get_id(),
                         'seller_id' => $seller_id,
