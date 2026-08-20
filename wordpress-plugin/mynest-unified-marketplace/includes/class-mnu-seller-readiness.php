@@ -191,6 +191,22 @@ final class MNU_Seller_Readiness {
 			'detail'       => $ship_ok ? '' : sprintf( 'Missing: %s', $missing_ship ),
 		);
 
+		// 6.5) Shippo connected (v3.7.122.9). Required to list new products.
+		// See class-tnm-marketplace.php create_product() for the enforcement.
+		$shippo_connected = function_exists( 'mnu_shippo_read_token' )
+			? ( '' !== mnu_shippo_read_token( $seller_id ) )
+			: false;
+		$steps[] = array(
+			'key'          => 'shippo_connected',
+			'label'        => 'Connect Shippo',
+			'description'  => 'ShopMyNest uses Shippo for shipping labels. Sign up free at Shippo (or paste your existing token) so postage bills directly to you.',
+			'ok'           => $shippo_connected,
+			'blocking'     => true,
+			'action_url'   => '/(tabs)/(more)/seller/shippo',
+			'action_label' => $shippo_connected ? 'Manage' : 'Connect',
+			'detail'       => '',
+		);
+
 		// 7) First product published.
 		$has_product = self::has_published_product( $seller_id );
 		$steps[] = array(
