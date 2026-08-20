@@ -1790,5 +1790,14 @@ function mnu_native_schedule_cleanup(): void {
     if ( ! wp_next_scheduled( 'mnu_native_cleanup_stale_pending' ) ) {
         wp_schedule_event( time() + 300, 'hourly', 'mnu_native_cleanup_stale_pending' );
     }
+    // v3.7.122.6 — run cleanup once immediately after upgrade so existing
+    // stale drafts (e.g. tester Jo's #3509 phantom) disappear on the next
+    // request instead of waiting up to an hour for the scheduled sweep.
+    // Keyed to the plugin version so we don't re-run it every request.
+    $ran_for = (string) get_option( 'mnu_native_cleanup_bootstrap_version', '' );
+    if ( defined( 'MNU_VERSION' ) && MNU_VERSION !== $ran_for ) {
+        mnu_native_cleanup_stale_pending();
+        update_option( 'mnu_native_cleanup_bootstrap_version', MNU_VERSION, false );
+    }
 }
 add_action( 'init', 'mnu_native_schedule_cleanup' );
