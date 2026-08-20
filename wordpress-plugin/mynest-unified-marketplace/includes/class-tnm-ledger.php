@@ -554,31 +554,55 @@ final class TNM_Ledger {
 
     public static function balances( int $seller_id ): array {
         global $wpdb;
+        // v3.7.122.6 — group by type as well so we can split the postage debit
+        // out of `available`. The postage row is inserted with negative net and
+        // status='available' so it naturally nets off the next transfer, but
+        // rendering that raw sum as "Available to withdraw" produces a
+        // negative dollar figure the seller reads as "you owe us."
         $rows = $wpdb->get_results(
             $wpdb->prepare(
-                'SELECT status, currency, SUM(net) AS amount FROM ' . tnm_table( 'ledger' ) . ' WHERE seller_id=%d GROUP BY status,currency',
+                'SELECT status, type, currency, SUM(net) AS amount FROM ' . tnm_table( 'ledger' ) . ' WHERE seller_id=%d GROUP BY status,type,currency',
                 $seller_id
             ),
             ARRAY_A
         );
         $balances = array(
-            'pending'   => 0.0,
-            'available' => 0.0,
-            'reserved'  => 0.0,
-            'paid'      => 0.0,
-            'currency'  => get_woocommerce_currency(),
+            'pending'       => 0.0,
+            'available'     => 0.0,
+            'reserved'      => 0.0,
+            'paid'          => 0.0,
+            // New surface: absolute value of postage debits still riding on the
+            // seller's earnings. Positive number that the UI can render as
+            // "Shipping owed" or "Postage due". When the next paid order lands,
+            // create_seller_transfers() nets it off automatically.
+            'shipping_owed' => 0.0,
+            'currency'      => get_woocommerce_currency(),
         );
         foreach ( $rows as $row ) {
             $status = $row['status'];
-            if ( array_key_exists( $status, $balances ) ) {
-                $balances[ $status ] += (float) $row['amount'];
+            $type   = $row['type'];
+            $amount = (float) $row['amount'];
+            if ( 'available' === $status && 'postage' === $type ) {
+                // Postage is always inserted as a negative net. Track it as
+                // a positive "owed" figure separate from the withdraw pool.
+                $balances['shipping_owed'] += -$amount;
+            } elseif ( array_key_exists( $status, $balances ) ) {
+                $balances[ $status ] += $amount;
             }
             $balances['currency'] = $row['currency'] ?: $balances['currency'];
         }
-        $balances['pending']   = round( $balances['pending'], wc_get_price_decimals() );
-        $balances['available'] = round( $balances['available'], wc_get_price_decimals() );
-        $balances['reserved']  = round( $balances['reserved'], wc_get_price_decimals() );
-        $balances['paid']      = round( $balances['paid'], wc_get_price_decimals() );
+        // Postage debits are still riding on the seller's earnings pool: the
+        // real withdrawable amount is (earnings available - postage owed),
+        // clamped to ≥ 0. `shipping_owed` remains visible as-is so the UI
+        // can explain the gap. When create_seller_transfers() runs on the
+        // next earning, SUM(net) will net the two together automatically.
+        $withdrawable          = $balances['available'] - $balances['shipping_owed'];
+        $balances['available'] = max( 0.0, $withdrawable );
+        $balances['pending']       = round( $balances['pending'], wc_get_price_decimals() );
+        $balances['available']     = round( $balances['available'], wc_get_price_decimals() );
+        $balances['reserved']      = round( $balances['reserved'], wc_get_price_decimals() );
+        $balances['paid']          = round( $balances['paid'], wc_get_price_decimals() );
+        $balances['shipping_owed'] = round( $balances['shipping_owed'], wc_get_price_decimals() );
         return $balances;
     }
 
