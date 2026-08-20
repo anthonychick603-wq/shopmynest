@@ -422,6 +422,12 @@ function tnm_rest_user_data( WP_User $user ): array {
         // real seller id and would fetch store "0".
         'seller_id'    => $is_seller ? $user->ID : null,
         'seller_status' => tnm_seller_application_status( $user->ID ),
+        // v3.7.122.9 — Shippo onboarding surfacing for the mobile app.
+        // `shippo_required` is a policy flag so we can flip it off remotely
+        // without shipping an app update. `shippo_connected` is the actual
+        // state and drives banners + "can I list?" logic on the client.
+        'shippo_required'  => $is_seller ? (bool) apply_filters( 'mnu_shippo_required_for_sellers', true, $user->ID ) : false,
+        'shippo_connected' => $is_seller && function_exists( 'mnu_shippo_read_token' ) ? ( '' !== mnu_shippo_read_token( $user->ID ) ) : false,
         // Convenience counters so mobile / web can badge the Messages icon
         // without a separate request.
         'unread_messages' => class_exists( 'TNM_Social' ) ? TNM_Social::unread_message_count( $user->ID ) : 0,

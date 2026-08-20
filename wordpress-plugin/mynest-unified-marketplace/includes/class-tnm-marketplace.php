@@ -561,6 +561,16 @@ final class TNM_Marketplace {
             return tnm_json_error( 'stripe_onboarding_required', 'You must finish connecting your bank account with Stripe before you can list new products. Open your seller dashboard to complete Stripe onboarding.', 403 );
         }
 
+        // v3.7.122.9 — sellers must connect their own Shippo account before
+        // they can list products. This makes the marketplace's cost story
+        // clean (postage bills to the seller's Shippo balance, not the
+        // platform) and forces sellers to see the shipping-label workflow
+        // during onboarding instead of after their first order.
+        $skip_shippo_gate = (bool) apply_filters( 'mnu_skip_shippo_onboarding_gate', false, $seller_id, $data );
+        if ( ! $skip_shippo_gate && ! tnm_is_admin_or_manager() && function_exists( 'mnu_shippo_read_token' ) && '' === mnu_shippo_read_token( $seller_id ) ) {
+            return tnm_json_error( 'shippo_onboarding_required', 'You must connect a Shippo account before you can list new products. Open your seller dashboard → Shipping (Shippo) to connect — you can create a free Shippo account there in under a minute.', 403 );
+        }
+
         $name        = sanitize_text_field( (string) tnm_array_get( $data, 'name', '' ) );
         $description = wp_kses_post( (string) tnm_array_get( $data, 'description', '' ) );
         $price       = wc_format_decimal( (string) tnm_array_get( $data, 'price', '' ) );
@@ -683,6 +693,11 @@ final class TNM_Marketplace {
                 // not finished Stripe onboarding; editing other fields is allowed.
                 if ( 'publish' === $status && 'publish' !== $product->get_status() && ! tnm_is_admin_or_manager() && class_exists( 'MNU_Connect' ) && ! MNU_Connect::seller_can_sell( $seller_id ) ) {
                     return tnm_json_error( 'stripe_onboarding_required', 'You must finish connecting your bank account with Stripe before you can publish products. Open your seller dashboard to complete Stripe onboarding.', 403 );
+                }
+                // v3.7.122.9 — same guardrail for Shippo. A seller who has
+                // a legacy draft can’t flip it live without connecting Shippo.
+                if ( 'publish' === $status && 'publish' !== $product->get_status() && ! tnm_is_admin_or_manager() && function_exists( 'mnu_shippo_read_token' ) && '' === mnu_shippo_read_token( $seller_id ) ) {
+                    return tnm_json_error( 'shippo_onboarding_required', 'You must connect a Shippo account before you can publish products. Open your seller dashboard → Shipping (Shippo) to connect.', 403 );
                 }
                 // v3.7.109 — no admin moderation gate; the Stripe check above
                 // is the only guard on going live.
