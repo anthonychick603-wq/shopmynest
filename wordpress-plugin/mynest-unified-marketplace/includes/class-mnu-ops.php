@@ -39,6 +39,19 @@ final class MNU_Ops {
             return;
         }
 
+        // v3.7.122.8 — Shippo tracking webhook actions
+        if ( isset( $_POST['mnu_shippo_track_register'] ) ) {
+            check_admin_referer( 'thenest_ops_save' );
+            if ( class_exists( 'MNU_Shippo_Tracking' ) ) {
+                $result = \MNU_Shippo_Tracking::force_register();
+                if ( ! empty( $result['ok'] ) ) {
+                    echo '<div class="notice notice-success"><p>' . esc_html( sprintf( __( 'Shippo tracking webhook registered (id %s).', 'mynest-unified-marketplace' ), $result['webhook_id'] ?? '' ) ) . '</p></div>';
+                } else {
+                    echo '<div class="notice notice-error"><p>' . esc_html( sprintf( __( 'Shippo webhook registration failed: %s', 'mynest-unified-marketplace' ), $result['error'] ?? 'unknown error' ) ) . '</p></div>';
+                }
+            }
+        }
+
         if ( isset( $_POST['thenest_ops_save'] ) ) {
             check_admin_referer( 'thenest_ops_save' );
 
@@ -100,6 +113,44 @@ final class MNU_Ops {
                 <?php submit_button( __( 'Save settings', 'mynest-unified-marketplace' ), 'primary', 'thenest_ops_save' ); ?>
             </form>
 
+            <h2><?php esc_html_e( 'Shippo tracking webhook', 'mynest-unified-marketplace' ); ?></h2>
+            <?php
+            if ( class_exists( 'MNU_Shippo_Tracking' ) ) :
+                $track_status = \MNU_Shippo_Tracking::status();
+                ?>
+                <p><?php esc_html_e( 'When a carrier physically scans a package, Shippo POSTs to this URL and MyNest flips the order to "Shipped" and notifies the buyer. This is separate from the label-purchase step — label purchase alone no longer marks the order shipped.', 'mynest-unified-marketplace' ); ?></p>
+                <table class="form-table">
+                    <tr>
+                        <th scope="row"><?php esc_html_e( 'Webhook URL', 'mynest-unified-marketplace' ); ?></th>
+                        <td>
+                            <input type="text" readonly value="<?php echo esc_attr( $track_status['url'] ); ?>" class="large-text code" onclick="this.select();">
+                            <p class="description"><?php esc_html_e( 'Registered automatically with Shippo when you save a token. You can also copy this into Shippo’s dashboard manually if needed.', 'mynest-unified-marketplace' ); ?></p>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th scope="row"><?php esc_html_e( 'Registration status', 'mynest-unified-marketplace' ); ?></th>
+                        <td>
+                            <?php if ( $track_status['registered'] ) : ?>
+                                <p><strong style="color:#0a7c2f;">✓ <?php esc_html_e( 'Registered', 'mynest-unified-marketplace' ); ?></strong><br>
+                                <code><?php echo esc_html( $track_status['webhook_id'] ); ?></code></p>
+                            <?php else : ?>
+                                <p><strong style="color:#c00;">✗ <?php esc_html_e( 'Not registered', 'mynest-unified-marketplace' ); ?></strong></p>
+                            <?php endif; ?>
+                            <?php if ( ! empty( $track_status['error'] ) ) : ?>
+                                <p class="description" style="color:#c00;"><?php echo esc_html( $track_status['error'] ); ?></p>
+                            <?php endif; ?>
+                            <?php if ( $track_status['last_sync'] ) : ?>
+                                <p class="description"><?php echo esc_html( sprintf( __( 'Last sync attempt: %s UTC', 'mynest-unified-marketplace' ), gmdate( 'Y-m-d H:i:s', $track_status['last_sync'] ) ) ); ?></p>
+                            <?php endif; ?>
+                            <form method="post" style="margin-top:10px;">
+                                <?php wp_nonce_field( 'thenest_ops_save' ); ?>
+                                <button type="submit" name="mnu_shippo_track_register" class="button button-secondary"><?php esc_html_e( 'Register / re-sync now', 'mynest-unified-marketplace' ); ?></button>
+                            </form>
+                        </td>
+                    </tr>
+                </table>
+            <?php endif; ?>
+
             <h2><?php esc_html_e( 'Health endpoint', 'mynest-unified-marketplace' ); ?></h2>
             <code><?php echo esc_html( rest_url( self::NS . '/health' ) ); ?></code>
         </div>
@@ -118,6 +169,7 @@ final class MNU_Ops {
                         'version'                  => self::VERSION,
                         'google_places_configured' => (bool) get_option( self::OPTION_GOOGLE_KEY, '' ),
                         'shippo_configured'        => (bool) get_option( self::OPTION_SHIPPO_KEY, '' ),
+                        'shippo_track_registered'   => class_exists( 'MNU_Shippo_Tracking' ) ? (bool) get_option( 'mnu_shippo_track_webhook_id', '' ) : false,
                         'label_mode'                => get_option( self::OPTION_LABEL_MODE, 'test' ),
                     );
                 },
