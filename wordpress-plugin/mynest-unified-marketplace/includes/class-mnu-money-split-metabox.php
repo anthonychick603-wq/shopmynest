@@ -12,6 +12,9 @@
  *
  * @package MyNest_Unified_Marketplace
  * @since 3.7.122.10
+ *
+ * v3.7.122.12 — show Stripe refund keep-fee (30¢) on refund rows so the true
+ * platform loss is visible per refund.
  */
 
 declare( strict_types = 1 );
@@ -150,6 +153,9 @@ final class MNU_Money_Split_Metabox {
 							</td>
 							<td class="mnu-ms-val mnu-ms-neg">−<?php echo esc_html( self::money( $r['amount_cents'] ) ); ?></td>
 						</tr>
+						<?php if ( ! empty( $r['stripe_keep_cents'] ) ) : ?>
+							<tr class="mnu-ms-sub"><td>&nbsp;&nbsp;Stripe refund keep-fee</td><td class="mnu-ms-val mnu-ms-warn">−<?php echo esc_html( self::money( (int) $r['stripe_keep_cents'] ) ); ?></td></tr>
+						<?php endif; ?>
 						<?php if ( ! empty( $r['status_line'] ) ) : ?>
 							<tr class="mnu-ms-sub"><td colspan="2"><?php echo esc_html( $r['status_line'] ); ?></td></tr>
 						<?php endif; ?>
@@ -262,22 +268,26 @@ final class MNU_Money_Split_Metabox {
 		$recovered     = is_array( $recovered ) ? $recovered : array();
 
 		foreach ( $order->get_refunds() as $wc_refund ) {
-			$rid = (string) $wc_refund->get_refund_id();
+			$rid    = (string) $wc_refund->get_refund_id();
+			$cents  = (int) round( abs( (float) $wc_refund->get_amount() ) * 100 );
 			$refund_rows[] = array(
-				'id'               => 'WC #' . $rid,
-				'amount_cents'     => (int) round( abs( (float) $wc_refund->get_amount() ) * 100 ),
-				'origin_label'     => 'via plugin',
-				'origin_tag_class' => 'mnu-ms-tag-good',
-				'status_line'      => (string) $wc_refund->get_reason(),
+				'id'                => 'WC #' . $rid,
+				'amount_cents'      => $cents,
+				'stripe_keep_cents' => self::stripe_refund_keep_fee_cents( $cents ),
+				'origin_label'      => 'via plugin',
+				'origin_tag_class'  => 'mnu-ms-tag-good',
+				'status_line'       => (string) $wc_refund->get_reason(),
 			);
 		}
 		foreach ( $recovered as $refund_id => $entry ) {
+			$cents = (int) ( $entry['refund_cents'] ?? $entry['fee_refund_cents'] ?? 0 );
 			$refund_rows[] = array(
-				'id'               => (string) $refund_id,
-				'amount_cents'     => (int) ( $entry['refund_cents'] ?? $entry['fee_refund_cents'] ?? 0 ),
-				'origin_label'     => 'dashboard · guardrail',
-				'origin_tag_class' => 'mnu-ms-tag-bad',
-				'status_line'      => (string) ( $entry['status'] ?? '' ),
+				'id'                => (string) $refund_id,
+				'amount_cents'      => $cents,
+				'stripe_keep_cents' => self::stripe_refund_keep_fee_cents( $cents ),
+				'origin_label'      => 'dashboard · guardrail',
+				'origin_tag_class'  => 'mnu-ms-tag-bad',
+				'status_line'       => (string) ( $entry['status'] ?? '' ),
 			);
 		}
 
@@ -346,6 +356,30 @@ final class MNU_Money_Split_Metabox {
 
 	private static function stripe_intent_url( string $intent_id ): string {
 		return 'https://dashboard.stripe.com/payments/' . rawurlencode( $intent_id );
+	}
+
+	/**
+	 * Estimate Stripe's non-refundable keep-fee on a refund.
+	 *
+	 * As of 2023 Stripe returns the 2.9% percentage portion of the original
+	 * processing fee on refund but keeps the 30¢ fixed portion. Platform
+	 * eats that 30¢ per refunded charge. Filterable via
+	 * `mnu_stripe_refund_keep_fee_cents` so we can adjust without a
+	 * redeploy if Stripe's terms change.
+	 *
+	 * @param int $refund_cents Amount refunded to the buyer, in cents.
+	 * @return int Cents Stripe keeps as the refund fee.
+	 */
+	private static function stripe_refund_keep_fee_cents( int $refund_cents ): int {
+		$keep = $refund_cents > 0 ? 30 : 0;
+		/**
+		 * Filter Stripe's refund keep-fee estimate.
+		 *
+		 * @param int $keep_cents  Default 30¢ per refunded charge.
+		 * @param int $refund_cents Refund amount in cents.
+		 */
+		$keep = (int) apply_filters( 'mnu_stripe_refund_keep_fee_cents', $keep, $refund_cents );
+		return max( 0, $keep );
 	}
 }
 
