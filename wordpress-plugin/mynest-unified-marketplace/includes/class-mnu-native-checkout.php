@@ -1114,11 +1114,43 @@ function mnu_native_connect_intent_params( WC_Order $order ): array {
         return array();
     }
 
-    $application_fee_cents = (int) round( $seller_fees[ $seller_id ] * 100 );
+    // v3.7.122.10 — seller eats the Stripe processing fee. Add the estimated
+    // Stripe fee on the FULL charge total (product + shipping + tax) to the
+    // platform's 8% so the seller's net transfer is reduced accordingly.
+    // Stamp both components on the order so ledger + refund guardrail can
+    // read exact numbers instead of re-estimating.
+    $order_total_cents         = mnu_native_cents( $order->get_total() );
+    $stripe_fee_cents_estimate = mnu_native_estimate_stripe_fee_cents( $order_total_cents );
+    $platform_fee_cents        = (int) round( $seller_fees[ $seller_id ] * 100 );
+    $application_fee_cents     = $platform_fee_cents + $stripe_fee_cents_estimate;
+
+    $order->update_meta_data( '_mnu_stripe_fee_estimate_cents', (string) $stripe_fee_cents_estimate );
+    $order->update_meta_data( '_mnu_platform_fee_cents',        (string) $platform_fee_cents );
+    $order->update_meta_data( '_mnu_application_fee_cents',     (string) $application_fee_cents );
+    $order->save();
+
     return array(
         'transfer_data[destination]' => $seller_account,
         'application_fee_amount'     => (string) $application_fee_cents,
     );
+}
+
+/**
+ * Estimate the Stripe processing fee for a charge in cents. Defaults to the
+ * US card rate (2.9% + 30¢). Filterable via `mnu_stripe_processing_fee_estimate`
+ * so we can tune per-country or per-payment-method later without another
+ * plugin release.
+ *
+ * @since 3.7.122.10
+ */
+function mnu_native_estimate_stripe_fee_cents( int $total_cents ): int {
+    if ( $total_cents <= 0 ) {
+        return 0;
+    }
+    // ceil() ensures we don't systematically under-charge; a small over-estimate
+    // is fine because the delta shows up as platform gain that averages to ~zero.
+    $fee = (int) ceil( $total_cents * 0.029 ) + 30;
+    return (int) apply_filters( 'mnu_stripe_processing_fee_estimate', $fee, $total_cents );
 }
 
 function mnu_native_create_intent_locked( int $user_id, array $data, string $checkout_token ): array|WP_Error {
@@ -1446,15 +1478,50 @@ function mnu_native_issue_seller_transfers( WC_Order $order, string $charge_id )
         return; // Single-seller carts already routed via destination charge.
     }
 
+    // v3.7.122.10 — seller eats the Stripe processing fee. Compute the fee
+    // on the FULL charge total (product + shipping + tax) and pro-rate it
+    // across sellers by gross share so each seller's transfer is reduced
+    // accordingly. Stamp the estimate + per-seller share on the order so
+    // the refund guardrail can subtract it correctly on reversals.
+    $order_total_cents         = mnu_native_cents( $order->get_total() );
+    $stripe_fee_cents_estimate = mnu_native_estimate_stripe_fee_cents( $order_total_cents );
+    $total_gross_cents         = 0;
+    foreach ( $splits as $row ) {
+        $total_gross_cents += (int) $row['gross_cents'];
+    }
+    $seller_stripe_fee_share = array();
+    $allocated               = 0;
+    $seller_ids              = array_keys( $splits );
+    foreach ( $seller_ids as $idx => $sid ) {
+        if ( $idx === count( $seller_ids ) - 1 ) {
+            // Last seller absorbs any rounding delta so shares sum exactly.
+            $share = max( 0, $stripe_fee_cents_estimate - $allocated );
+        } else {
+            $share = $total_gross_cents > 0
+                ? (int) round( $stripe_fee_cents_estimate * ( $splits[ $sid ]['gross_cents'] / $total_gross_cents ) )
+                : 0;
+        }
+        $seller_stripe_fee_share[ (string) $sid ] = $share;
+        $allocated += $share;
+    }
+    $order->update_meta_data( '_mnu_stripe_fee_estimate_cents', (string) $stripe_fee_cents_estimate );
+    $order->update_meta_data( '_mnu_stripe_fee_seller_shares', wp_json_encode( $seller_stripe_fee_share ) );
+    $order->save();
+
     $settings = mnu_native_get_settings();
     $currency = strtolower( (string) $settings['currency'] );
     $transfers = array();
 
     foreach ( $splits as $seller_id => $row ) {
+        // Deduct this seller's share of the Stripe processing fee so the
+        // platform recovers what Stripe took off the top of the charge.
+        $stripe_share_cents = (int) ( $seller_stripe_fee_share[ (string) $seller_id ] ?? 0 );
+        $original_net_cents = (int) $row['net_cents'];
+        $row['net_cents']   = max( 0, $original_net_cents - $stripe_share_cents );
         $seller_account = MNU_Connect::account_id( $seller_id );
         if ( '' === $seller_account || ! MNU_Connect::seller_can_sell( $seller_id ) ) {
             $order->add_order_note( sprintf( 'Skipped Stripe transfer to seller #%d: no connected account or onboarding incomplete. Platform is holding $%.2f owed to this seller.', $seller_id, $row['net_cents'] / 100 ) );
-            $transfers[ (string) $seller_id ] = array( 'status' => 'held', 'net_cents' => $row['net_cents'] );
+            $transfers[ (string) $seller_id ] = array( 'status' => 'held', 'net_cents' => $row['net_cents'], 'stripe_fee_share_cents' => $stripe_share_cents );
             continue;
         }
         $result = mnu_native_stripe_request(
@@ -1472,14 +1539,15 @@ function mnu_native_issue_seller_transfers( WC_Order $order, string $charge_id )
         );
         if ( is_wp_error( $result ) ) {
             $order->add_order_note( sprintf( 'Stripe transfer to seller #%d failed: %s. Retrying later.', $seller_id, $result->get_error_message() ) );
-            $transfers[ (string) $seller_id ] = array( 'status' => 'failed', 'error' => $result->get_error_message(), 'net_cents' => $row['net_cents'] );
+            $transfers[ (string) $seller_id ] = array( 'status' => 'failed', 'error' => $result->get_error_message(), 'net_cents' => $row['net_cents'], 'stripe_fee_share_cents' => $stripe_share_cents );
             continue;
         }
         $transfer_id_str = (string) ( $result['id'] ?? '' );
         $transfers[ (string) $seller_id ] = array(
-            'status'      => 'sent',
-            'transfer_id' => $transfer_id_str,
-            'net_cents'   => $row['net_cents'],
+            'status'                 => 'sent',
+            'transfer_id'            => $transfer_id_str,
+            'net_cents'              => $row['net_cents'],           // net actually transferred (already minus stripe share)
+            'stripe_fee_share_cents' => $stripe_share_cents,          // recovered by platform on capture, NOT returned on refund reversal
         );
         // Write the transfer id back onto every earning ledger row for this
         // order+seller so downstream refund reversals (record_refund →
@@ -1701,6 +1769,18 @@ function mnu_native_webhook( WP_REST_Request $request ): array|WP_Error {
     if ( 0 === strpos( $event_type, 'refund.' ) || 'charge.refund.updated' === $event_type ) {
         if ( class_exists( 'MNU_Refund_Lifecycle' ) ) {
             MNU_Refund_Lifecycle::handle_stripe_refund_event( (array) ( $event['data']['object'] ?? array() ) );
+        }
+        return array( 'received' => true );
+    }
+
+    // v3.7.122.10 — Dashboard-initiated refunds skip Woo's process_refund path
+    // entirely (no metadata[wc_order_id], no transfer_reversal). The
+    // guardrail listens for charge.refunded and issues the missing seller
+    // transfer reversal + application fee refund so the platform doesn't eat
+    // the seller's payout.
+    if ( 'charge.refunded' === $event_type ) {
+        if ( class_exists( 'MNU_Refund_Guardrail' ) ) {
+            MNU_Refund_Guardrail::handle_charge_refunded( (array) ( $event['data']['object'] ?? array() ) );
         }
         return array( 'received' => true );
     }

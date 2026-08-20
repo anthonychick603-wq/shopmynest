@@ -100,6 +100,10 @@ function mnu_load_files(): void {
 		'includes/class-mnu-multi-roles.php',
 		'includes/class-mnu-reconciliation.php',
 		'includes/class-mnu-refund-lifecycle.php',
+		// v3.7.122.10 — recovers seller transfer reversals + app-fee refunds
+		// when refunds are issued from the Stripe Dashboard (bypasses Woo's
+		// process_refund path).
+		'includes/class-mnu-refund-guardrail.php',
 		'includes/class-mnu-tax-posture.php',
 		'includes/class-mnu-seller-ownership.php',
 		'includes/class-mnu-seller-readiness.php',
