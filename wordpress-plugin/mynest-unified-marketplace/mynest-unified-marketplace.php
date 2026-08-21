@@ -3,7 +3,7 @@
  * Plugin Name: MyNest Unified Marketplace
  * Plugin URI:  https://shopmynest.com/
  * Description: One complete WooCommerce marketplace plugin for MyNest sellers, fees, payouts, orders, social features, mobile APIs, checkout, and shipping.
- * Version:     3.9.0
+ * Version:     3.9.1
  * Author:      MyNest
  * Text Domain: mynest-unified-marketplace
  * Requires at least: 6.5
@@ -16,7 +16,7 @@
 
 defined( 'ABSPATH' ) || exit;
 
-define( 'MNU_VERSION', '3.9.0' );
+define( 'MNU_VERSION', '3.9.1' );
 define( 'MNU_DB_VERSION', '3.0.15' );
 define( 'MNU_FILE', __FILE__ );
 define( 'MNU_BASENAME', plugin_basename( __FILE__ ) );
@@ -254,6 +254,18 @@ final class MNU_Plugin {
 		if ( 'done' !== (string) get_option( 'mnu_auto_approve_backlog_v1', '' ) ) {
 			mnu_auto_approve_pending_backlog();
 			update_option( 'mnu_auto_approve_backlog_v1', 'done', false );
+		}
+
+		// v3.9.1 — bump stored platform fee from 8% to 10% one time.
+		// Only rewrites the stored setting if it is still the legacy 8;
+		// a merchant who has already customised the value is left alone.
+		if ( 'done' !== (string) get_option( 'mnu_fee_bump_10pct_v1', '' ) ) {
+			$settings = (array) get_option( 'tnm_settings', array() );
+			if ( isset( $settings['fee_percent'] ) && (float) $settings['fee_percent'] === 8.0 ) {
+				$settings['fee_percent'] = 10;
+				update_option( 'tnm_settings', $settings, false );
+			}
+			update_option( 'mnu_fee_bump_10pct_v1', 'done', false );
 		}
 
 		TNM_Auth::init();

@@ -103,7 +103,7 @@ final class TNM_Admin {
                 <input type="hidden" name="action" value="tnm_save_settings">
                 <h2>Marketplace</h2>
                 <table class="form-table" role="presentation">
-                    <?php self::number_row( 'Platform fee percentage', 'fee_percent', $settings, 8, '0.01', '0', '100', 'Applied to each product line after discounts, excluding tax and shipping.' ); ?>
+                    <?php self::number_row( 'Platform fee percentage', 'fee_percent', $settings, 10, '0.01', '0', '100', 'Applied to each product line after discounts, excluding tax and shipping.' ); ?>
                     <?php self::text_row( 'Fee label', 'fee_label', $settings, 'Nest Service Fee', 'Shown in seller transaction breakdowns.' ); ?>
                     <?php self::number_row( 'Holding period (days)', 'holding_days', $settings, 7, '1', '0', '180', 'Completed-order earnings become available after this period.' ); ?>
                     <?php self::number_row( 'Minimum payout', 'minimum_payout', $settings, 25, '0.01', '0', '', 'A seller cannot request less than this available balance.' ); ?>
@@ -186,7 +186,7 @@ final class TNM_Admin {
         check_admin_referer( 'tnm_save_settings' );
         $old = get_option( 'tnm_settings', array() );
         $new = array(
-            'fee_percent'              => max( 0, min( 100, (float) ( $_POST['fee_percent'] ?? 8 ) ) ),
+            'fee_percent'              => max( 0, min( 100, (float) ( $_POST['fee_percent'] ?? 10 ) ) ),
             'fee_label'                => sanitize_text_field( wp_unslash( $_POST['fee_label'] ?? 'Nest Service Fee' ) ),
             'holding_days'             => max( 0, min( 180, absint( $_POST['holding_days'] ?? 7 ) ) ),
             'minimum_payout'           => max( 0, (float) ( $_POST['minimum_payout'] ?? 25 ) ),

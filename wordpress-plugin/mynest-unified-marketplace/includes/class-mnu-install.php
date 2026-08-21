@@ -89,7 +89,7 @@ final class MNU_Install {
 
     public static function set_defaults(): void {
         $defaults = array(
-            'fee_percent'              => 8,
+            'fee_percent'              => 10,
             'fee_label'                => 'Nest Service Fee',
             'holding_days'             => 7,
             'minimum_payout'           => 25,

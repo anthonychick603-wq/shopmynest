@@ -145,7 +145,7 @@ final class TNM_Ledger {
             if ( $is_v380_model ) {
                 // v3.8.0 — hard-lock platform cut at 10% of the seller's
                 // product subtotal. The item snapshot may have been stamped
-                // with a legacy percent (e.g. 8%) at product-add time; use
+                // with an older percent at product-add time; use
                 // that value only for reference and overwrite the ledger
                 // row fee to the new fixed 10% so seller_net is always
                 // product * 0.90 for new-model orders.

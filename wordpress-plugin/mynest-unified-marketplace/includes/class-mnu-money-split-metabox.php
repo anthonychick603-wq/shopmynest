@@ -101,7 +101,7 @@ final class MNU_Money_Split_Metabox {
 					<td>Application fee (platform)</td>
 					<td class="mnu-ms-val mnu-ms-pos">+<?php echo esc_html( self::money( $data['app_fee_cents'] ) ); ?></td>
 				</tr>
-				<tr class="mnu-ms-sub"><td>&nbsp;&nbsp;of which platform 8%</td><td class="mnu-ms-val"><?php echo esc_html( self::money( $data['platform_fee_cents'] ) ); ?></td></tr>
+				<tr class="mnu-ms-sub"><td>&nbsp;&nbsp;of which platform 10%</td><td class="mnu-ms-val"><?php echo esc_html( self::money( $data['platform_fee_cents'] ) ); ?></td></tr>
 				<tr class="mnu-ms-sub"><td>&nbsp;&nbsp;of which Stripe fee recovery</td><td class="mnu-ms-val"><?php echo esc_html( self::money( $data['stripe_fee_recovered_cents'] ) ); ?></td></tr>
 
 				<tr class="mnu-ms-total">

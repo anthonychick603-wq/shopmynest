@@ -1434,13 +1434,13 @@ function mnu_native_complete( WP_REST_Request $request ): array|WP_Error {
  * seller_id, values in cents:
  *
  *   array(
- *     123 => array( 'gross_cents' => 4500, 'fee_cents' => 360, 'net_cents' => 4140 ),
- *     456 => array( 'gross_cents' => 1200, 'fee_cents' => 96,  'net_cents' => 1104 ),
+ *     123 => array( 'gross_cents' => 4500, 'fee_cents' => 450, 'net_cents' => 4050 ),
+ *     456 => array( 'gross_cents' => 1200, 'fee_cents' => 120, 'net_cents' => 1080 ),
  *   )
  *
  * `fee_cents` comes from _tnm_platform_fee stamped by stamp_item_snapshot() at
- * cart time (the 8% marketplace fee). If a line is missing the fee meta we
- * fall back to 8% of gross.
+ * cart time (the 10% marketplace fee). If a line is missing the fee meta we
+ * fall back to 10% of gross.
  *
  * @return array<int, array<string, int>>
  */

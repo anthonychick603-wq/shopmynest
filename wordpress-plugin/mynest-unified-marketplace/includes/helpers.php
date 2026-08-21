@@ -58,7 +58,7 @@ function tnm_update_option( string $key, mixed $value ): void {
 }
 
 function tnm_fee_percent(): float {
-    return max( 0.0, min( 100.0, (float) tnm_get_option( 'fee_percent', 8 ) ) );
+    return max( 0.0, min( 100.0, (float) tnm_get_option( 'fee_percent', 10 ) ) );
 }
 
 function tnm_fee_label(): string {
