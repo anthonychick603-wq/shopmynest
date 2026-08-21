@@ -145,15 +145,20 @@ final class MNU_Refund_Guardrail {
 	}
 
 	/**
-	 * Single-seller destination-charge recovery. The charge was issued with
-	 * transfer_data[destination] + application_fee_amount. To reverse the
-	 * seller's transfer and refund the platform fee we call
-	 * `/application_fees/{fee}/refunds` — Stripe automatically reverses the
-	 * associated destination transfer proportionally.
+	 * [LEGACY / pre-v3.8.0] Single-seller destination-charge recovery.
 	 *
-	 * If the refund is partial we scale the fee refund to the same
-	 * fraction. Stripe reverses the transfer for the (refund_amount − fee)
-	 * portion.
+	 * Pre-v3.8.0 charges were issued with transfer_data[destination] +
+	 * application_fee_amount, so reversing the seller's transfer and refunding
+	 * the platform fee ran through `/application_fees/{fee}/refunds`, which
+	 * automatically reverses the associated destination transfer proportionally.
+	 *
+	 * Under v3.8.0 the platform captures 100% of the charge with no destination
+	 * / application_fee at all — refunds just call `/refunds` on the parent
+	 * charge and the seller ledger is adjusted directly (see TNM_Ledger). This
+	 * function still exists for pre-cutover orders that carry an application_fee.
+	 *
+	 * If the refund is partial we scale the fee refund to the same fraction.
+	 * Stripe reverses the transfer for the (refund_amount − fee) portion.
 	 */
 	private static function recover_destination_charge( WC_Order $order, string $refund_id, int $refund_cents, array $charge ): void {
 		$fee_id = (string) ( $charge['application_fee'] ?? '' );

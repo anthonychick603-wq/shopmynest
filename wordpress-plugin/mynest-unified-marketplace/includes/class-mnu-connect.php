@@ -1,19 +1,18 @@
 <?php
 /**
- * Stripe Connect Standard onboarding for sellers.
+ * [DEPRECATED] Stripe Connect onboarding for sellers.
  *
- * The platform's Stripe Connect profile uses the "Platform" business model, so
- * sellers are onboarded as Standard connected accounts: they own their Stripe
- * account, manage their own capabilities/dashboard, and bear their own loss
- * liability.
+ * v3.8.0 retired seller Stripe Connect entirely. New sellers save a routing +
+ * account number via MNU_Bank_Account and are paid via manual ACH from the
+ * platform's business checking account after the 7-day holding window. The
+ * v3.8.0 money-model branch in TNM_Ledger and mnu_native_issue_seller_transfers
+ * both no-op the Stripe transfer path for new-model orders.
  *
- * Funds flow uses the "separate charges and transfers" pattern (compatible with
- * Standard accounts): the platform charges the buyer in full at checkout, then
- * transfers each seller's net earnings to their connected account when the
- * ledger row becomes available (see TNM_Ledger::create_seller_transfers) — which
- * is why the account still requests the `transfers` capability. This class owns
- * onboarding, status, and the dashboard link, plus the cached account state used
- * to gate selling and checkout.
+ * This class stays alive only to service any pre-cutover balances still owed
+ * to sellers who onboarded to Standard connected accounts before v3.8.0. Once
+ * those balances drain (planned Phase 4, ~2 weeks post-launch) the whole class
+ * will be deleted along with `tnm_stripe_*` user meta and the /nest-connect/v1
+ * REST namespace. Do not add new call sites.
  */
 
 defined( 'ABSPATH' ) || exit;

@@ -1009,8 +1009,14 @@ function mnu_labels_store_transaction( WC_Order $order, int $seller_id, array $t
 /**
  * v3.7.81 — write a single postage-debit row into the marketplace ledger
  * so the amount the marketplace paid Shippo is netted off the seller’s
- * next Stripe Connect transfer. Idempotent via the unique key
- * (order_id, order_item_id, type) with order_item_id=0, type='postage'.
+ * next payout. Idempotent via the unique key (order_id, order_item_id,
+ * type) with order_item_id=0, type='postage'.
+ *
+ * v3.9.3 note: under the v3.8.0 money model the platform keeps 100% of
+ * the shipping line and pays Shippo out of its own balance, so postage
+ * rows are effectively cosmetic for v3.8.0 orders (they still net to
+ * zero against the shipping portion the platform kept). The row is
+ * preserved because pre-v3.8.0 orders may still hit this path.
  *
  * The row is written status='available' with available_at=NOW so it
  * participates in the very next transfer for this order.
