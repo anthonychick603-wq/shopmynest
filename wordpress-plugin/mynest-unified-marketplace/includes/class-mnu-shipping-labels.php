@@ -1041,6 +1041,13 @@ function mnu_labels_write_postage_ledger_row( WC_Order $order, int $seller_id, f
     if ( $seller_id <= 0 || $amount <= 0 || ! function_exists( 'tnm_table' ) ) {
         return;
     }
+    // v3.7.124 — for orders under the new fee model, the platform kept the
+    // buyer-paid shipping at charge time and is paying for the label itself.
+    // No clawback row needed — the seller never got the shipping money to
+    // claw back. Legacy orders (meta absent) still get the debit row.
+    if ( '' !== (string) $order->get_meta( '_mnu_platform_shipping_kept_cents', true ) ) {
+        return;
+    }
     global $wpdb;
     $now  = current_time( 'mysql', true );
     $note = sprintf(

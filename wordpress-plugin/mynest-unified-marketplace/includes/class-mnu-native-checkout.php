@@ -1114,19 +1114,38 @@ function mnu_native_connect_intent_params( WC_Order $order ): array {
         return array();
     }
 
-    // v3.7.122.10 — seller eats the Stripe processing fee. Add the estimated
-    // Stripe fee on the FULL charge total (product + shipping + tax) to the
-    // platform's 8% so the seller's net transfer is reduced accordingly.
-    // Stamp both components on the order so ledger + refund guardrail can
-    // read exact numbers instead of re-estimating.
-    $order_total_cents         = mnu_native_cents( $order->get_total() );
-    $stripe_fee_cents_estimate = mnu_native_estimate_stripe_fee_cents( $order_total_cents );
+    // v3.7.124 — platform keeps 100% of buyer-paid shipping (platform pays
+    // for Shippo labels out of that). The seller eats the Stripe processing
+    // fee only on the PRODUCT portion of the charge; the platform absorbs
+    // Stripe's cut on the shipping portion. Stamp the components on the
+    // order so ledger + refund guardrail can read exact numbers.
+    // Compute the seller's true product subtotal (in cents) from the item
+    // snapshot so we're not reverse-engineering it from the fee.
+    $product_cents = 0;
+    foreach ( $order->get_items() as $item ) {
+        if ( ! $item instanceof WC_Order_Item_Product ) { continue; }
+        if ( (int) $item->get_meta( '_tnm_seller_id', true ) !== $seller_id ) { continue; }
+        $product_cents += mnu_native_cents( (float) $item->get_total() + (float) $item->get_subtotal_tax() );
+    }
+    $shipping_cents            = mnu_native_cents( (float) $order->get_shipping_total() );
+    $total_cents               = mnu_native_cents( $order->get_total() );
+    // Stripe processing fee: bill the seller for the fee on the product
+    // portion only. Platform absorbs the fee on the shipping portion.
+    $stripe_fee_product_cents  = mnu_native_estimate_stripe_fee_cents( $product_cents );
+    $stripe_fee_total_cents    = mnu_native_estimate_stripe_fee_cents( $total_cents );
+    $stripe_fee_shipping_cents = max( 0, $stripe_fee_total_cents - $stripe_fee_product_cents );
     $platform_fee_cents        = (int) round( $seller_fees[ $seller_id ] * 100 );
-    $application_fee_cents     = $platform_fee_cents + $stripe_fee_cents_estimate;
+    // Platform keeps: 8% + Stripe fee on product + full shipping. Platform
+    // separately absorbs Stripe fee on shipping (comes out of platform's
+    // shipping revenue, not withheld from the seller).
+    $application_fee_cents     = $platform_fee_cents + $stripe_fee_product_cents + $shipping_cents;
 
-    $order->update_meta_data( '_mnu_stripe_fee_estimate_cents', (string) $stripe_fee_cents_estimate );
-    $order->update_meta_data( '_mnu_platform_fee_cents',        (string) $platform_fee_cents );
-    $order->update_meta_data( '_mnu_application_fee_cents',     (string) $application_fee_cents );
+    $order->update_meta_data( '_mnu_stripe_fee_estimate_cents',          (string) ( $stripe_fee_product_cents + $stripe_fee_shipping_cents ) );
+    $order->update_meta_data( '_mnu_stripe_fee_product_cents',           (string) $stripe_fee_product_cents );
+    $order->update_meta_data( '_mnu_stripe_fee_shipping_cents',          (string) $stripe_fee_shipping_cents );
+    $order->update_meta_data( '_mnu_platform_fee_cents',                 (string) $platform_fee_cents );
+    $order->update_meta_data( '_mnu_platform_shipping_kept_cents',       (string) $shipping_cents );
+    $order->update_meta_data( '_mnu_application_fee_cents',              (string) $application_fee_cents );
     $order->save();
 
     return array(
@@ -1478,34 +1497,40 @@ function mnu_native_issue_seller_transfers( WC_Order $order, string $charge_id )
         return; // Single-seller carts already routed via destination charge.
     }
 
-    // v3.7.122.10 — seller eats the Stripe processing fee. Compute the fee
-    // on the FULL charge total (product + shipping + tax) and pro-rate it
-    // across sellers by gross share so each seller's transfer is reduced
-    // accordingly. Stamp the estimate + per-seller share on the order so
-    // the refund guardrail can subtract it correctly on reversals.
+    // v3.7.124 — seller eats the Stripe processing fee on the PRODUCT
+    // portion only. Platform absorbs the fee on the shipping portion.
+    // Compute each seller's Stripe fee share directly from their product
+    // gross_cents so the fixed $0.30 lands proportionally without needing
+    // to pro-rate a whole-order estimate. Stamp the estimate + per-seller
+    // share on the order so the refund guardrail can subtract it correctly.
     $order_total_cents         = mnu_native_cents( $order->get_total() );
-    $stripe_fee_cents_estimate = mnu_native_estimate_stripe_fee_cents( $order_total_cents );
     $total_gross_cents         = 0;
     foreach ( $splits as $row ) {
         $total_gross_cents += (int) $row['gross_cents'];
     }
+    $stripe_fee_on_products_cents = mnu_native_estimate_stripe_fee_cents( $total_gross_cents );
+    $stripe_fee_on_total_cents    = mnu_native_estimate_stripe_fee_cents( $order_total_cents );
+    $stripe_fee_cents_estimate    = $stripe_fee_on_total_cents; // for meta parity
     $seller_stripe_fee_share = array();
     $allocated               = 0;
     $seller_ids              = array_keys( $splits );
     foreach ( $seller_ids as $idx => $sid ) {
         if ( $idx === count( $seller_ids ) - 1 ) {
             // Last seller absorbs any rounding delta so shares sum exactly.
-            $share = max( 0, $stripe_fee_cents_estimate - $allocated );
+            $share = max( 0, $stripe_fee_on_products_cents - $allocated );
         } else {
             $share = $total_gross_cents > 0
-                ? (int) round( $stripe_fee_cents_estimate * ( $splits[ $sid ]['gross_cents'] / $total_gross_cents ) )
+                ? (int) round( $stripe_fee_on_products_cents * ( $splits[ $sid ]['gross_cents'] / $total_gross_cents ) )
                 : 0;
         }
         $seller_stripe_fee_share[ (string) $sid ] = $share;
         $allocated += $share;
     }
-    $order->update_meta_data( '_mnu_stripe_fee_estimate_cents', (string) $stripe_fee_cents_estimate );
-    $order->update_meta_data( '_mnu_stripe_fee_seller_shares', wp_json_encode( $seller_stripe_fee_share ) );
+    $order->update_meta_data( '_mnu_stripe_fee_estimate_cents',   (string) $stripe_fee_cents_estimate );
+    $order->update_meta_data( '_mnu_stripe_fee_product_cents',    (string) $stripe_fee_on_products_cents );
+    $order->update_meta_data( '_mnu_stripe_fee_shipping_cents',   (string) max( 0, $stripe_fee_on_total_cents - $stripe_fee_on_products_cents ) );
+    $order->update_meta_data( '_mnu_stripe_fee_seller_shares',    wp_json_encode( $seller_stripe_fee_share ) );
+    $order->update_meta_data( '_mnu_platform_shipping_kept_cents', (string) mnu_native_cents( (float) $order->get_shipping_total() ) );
     $order->save();
 
     $settings = mnu_native_get_settings();

@@ -1246,6 +1246,26 @@ final class TNM_Marketplace {
                 'net'          => max( 0, $gross - $fee ),
             );
         }
+        // v3.7.124 — surface the seller's Stripe-fee share so the app can
+        // show the seller's true net (product − 8% − Stripe fee on product).
+        // For orders where the platform kept the shipping (new-model orders),
+        // we intentionally do NOT expose a shipping line to the seller —
+        // they never received that money.
+        $platform_keeps_shipping = '' !== (string) $order->get_meta( '_mnu_platform_shipping_kept_cents', true );
+        $stripe_fee_seller_cents = 0;
+        if ( $platform_keeps_shipping ) {
+            // Single-seller destination-charge path stamps the aggregate.
+            $stripe_fee_seller_cents = (int) $order->get_meta( '_mnu_stripe_fee_product_cents', true );
+            // Multi-seller SCT path stamps a per-seller share map.
+            $shares_raw = $order->get_meta( '_mnu_stripe_fee_seller_shares', true );
+            $shares = is_string( $shares_raw ) ? json_decode( $shares_raw, true ) : $shares_raw;
+            if ( is_array( $shares ) && isset( $shares[ (string) $seller_id ] ) ) {
+                $stripe_fee_seller_cents = (int) $shares[ (string) $seller_id ];
+            }
+        }
+        $stripe_fee_seller = round( $stripe_fee_seller_cents / 100, wc_get_price_decimals() );
+        $seller_net = max( 0, $subtotal - $fees - $stripe_fee_seller );
+
         return array(
             'id'              => $order->get_id(),
             'number'          => $order->get_order_number(),
@@ -1268,6 +1288,10 @@ final class TNM_Marketplace {
             'total'           => $subtotal,
             'platform_fee'    => $fees,
             'net_before_shipping' => max( 0, $subtotal - $fees ),
+            // v3.7.124 — additional fields for accurate seller-side math.
+            'stripe_fee'              => $stripe_fee_seller,
+            'seller_net'              => $seller_net,
+            'platform_keeps_shipping' => $platform_keeps_shipping,
             'currency'        => $order->get_currency(),
         );
     }

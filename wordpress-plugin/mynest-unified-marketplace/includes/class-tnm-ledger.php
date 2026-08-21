@@ -110,6 +110,15 @@ final class TNM_Ledger {
         }
         $shipping_seller_allocated = array();
 
+        // v3.7.124 — for orders created under the new fee model, the platform
+        // keeps 100% of buyer-paid shipping and pays for Shippo labels itself.
+        // Detect that by the presence of `_mnu_platform_shipping_kept_cents`
+        // meta stamped at charge-intent-build time. When set, the seller's
+        // ledger row gets shipping=0 and the shipping stays in the platform's
+        // pocket. Legacy orders (meta absent) keep the old +shipping behavior
+        // so we don't retroactively short existing payouts.
+        $platform_keeps_shipping = '' !== (string) $order->get_meta( '_mnu_platform_shipping_kept_cents', true );
+
         $holding_days   = max( 0, (int) tnm_get_option( 'holding_days', 7 ) );
         $paid_date      = $order->get_date_paid() ?: $order->get_date_created();
         $available_at   = $paid_date ? gmdate( 'Y-m-d H:i:s', $paid_date->getTimestamp() + ( $holding_days * DAY_IN_SECONDS ) ) : gmdate( 'Y-m-d H:i:s', time() + ( $holding_days * DAY_IN_SECONDS ) );
@@ -130,7 +139,12 @@ final class TNM_Ledger {
             if ( $fee <= 0 && $gross > 0 ) {
                 $fee = round( $gross * ( tnm_fee_percent() / 100 ), wc_get_price_decimals() + 2 );
             }
-            if ( isset( $shipping_by_seller[ $seller_id ] ) ) {
+            if ( $platform_keeps_shipping ) {
+                // Platform keeps all shipping. Seller ledger row has zero
+                // shipping. Postage-clawback rows are no longer written for
+                // these orders either.
+                $shipping = 0.0;
+            } elseif ( isset( $shipping_by_seller[ $seller_id ] ) ) {
                 // Allocate the seller's full shipping amount to their FIRST
                 // ledger row; subsequent rows for the same seller get $0 so
                 // per-seller shipping isn't multiplied across a seller with
