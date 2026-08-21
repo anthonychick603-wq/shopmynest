@@ -125,7 +125,12 @@ final class MNU_Seller_Readiness {
 			'description'  => 'ShopMyNest pays your earnings by ACH to this account after the 7-day holding window.',
 			'ok'           => $has_bank,
 			'blocking'     => true,
-			'action_url'   => '/(tabs)/(more)/seller/connect',
+			// v3.10.0 — mobile route renamed /seller/connect → /seller/bank to
+			// drop the last Stripe Connect naming leftover. Mobile v1.0.128 ships
+			// the matching file rename; older app builds still resolve because
+			// the mobile app keeps /seller/connect as a redirect alias for one
+			// release.
+			'action_url'   => '/(tabs)/(more)/seller/bank',
 			'action_label' => $has_bank ? 'Edit' : 'Add bank',
 			'detail'       => $has_bank && '' !== $bank_last4 ? 'Account ending in ' . $bank_last4 : '',
 		);
@@ -138,7 +143,7 @@ final class MNU_Seller_Readiness {
 		$steps[] = array(
 			'key'          => 'ship_from_complete',
 			'label'        => 'Complete ship-from address',
-			'description'  => 'ShopMyNest quotes shipping from your address, so buyers see accurate rates at checkout.',
+			'description'  => 'ShopMyNest uses this as the return address on every label we buy for you.',
 			'ok'           => $ship_ok,
 			'blocking'     => true,
 			'action_url'   => '/(tabs)/(more)/seller/shippo',
@@ -148,8 +153,9 @@ final class MNU_Seller_Readiness {
 
 		// v3.9.2 — Shippo connect step removed. The platform's own Shippo token
 		// covers every seller, so per-seller Shippo onboarding is no longer part
-		// of the readiness checklist. Sellers can still connect their own token
-		// via the seller dashboard → Shipping (Shippo) screen if they want to.
+		// of the readiness checklist. v3.10.0 — the mobile screen that used to
+		// accept a Shippo token is now an address form; sellers enter their
+		// ship-from address there and the platform buys labels on their behalf.
 
 		// 7) First product published.
 		$has_product = self::has_published_product( $seller_id );
