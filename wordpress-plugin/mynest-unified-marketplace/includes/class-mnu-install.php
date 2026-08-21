@@ -212,6 +212,21 @@ final class MNU_Install {
             KEY seller_status (seller_id,status)
         ) $charset;";
 
+        // v3.9.0 (Phase 3) — audit log for manual ACH payout batches
+        // created from WP Admin → Marketplace → Payouts.
+        $queries[] = 'CREATE TABLE ' . tnm_table( 'payout_batches' ) . " (
+            id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+            created_at datetime NOT NULL,
+            created_by bigint(20) unsigned NOT NULL DEFAULT 0,
+            seller_count int unsigned NOT NULL DEFAULT 0,
+            total_amount decimal(18,6) NOT NULL DEFAULT 0,
+            row_count int unsigned NOT NULL DEFAULT 0,
+            memo varchar(190) NOT NULL DEFAULT '',
+            PRIMARY KEY  (id),
+            KEY created_at (created_at),
+            KEY created_by (created_by)
+        ) $charset;";
+
         $queries[] = 'CREATE TABLE ' . tnm_table( 'follows' ) . " (
             id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
             follower_id bigint(20) unsigned NOT NULL,
