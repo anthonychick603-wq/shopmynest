@@ -3,7 +3,7 @@
  * Plugin Name: ShopMyNest Legal Pages
  * Plugin URI:  https://shopmynest.com/
  * Description: Seeds Terms of Service, Privacy Policy, Return & Refund Policy, and Shipping Policy pages on activation. Provides a settings screen so the legal entity name, business address, contact email, and effective date can be updated without editing page content. Values are substituted at render time via the_content filter.
- * Version:     1.1.5
+ * Version:     1.1.6
  * Author:      MyNest
  * Text Domain: shopmynest-legal-pages
  * Requires at least: 6.5
@@ -14,9 +14,13 @@
 defined( 'ABSPATH' ) || exit;
 
 final class ShopMyNest_Legal_Pages {
-    private const VERSION      = '1.1.5';
-    private const OPT          = 'shopmynest_legal_settings';
-    private const OPT_PAGE_IDS = 'shopmynest_legal_page_ids';
+    private const VERSION       = '1.1.6';
+    private const OPT           = 'shopmynest_legal_settings';
+    private const OPT_PAGE_IDS  = 'shopmynest_legal_page_ids';
+    // v1.1.6 — tracks the plugin version whose bundled content/*.html was
+    // last force-pushed into the seeded pages. Bump the constant + write a
+    // new refresh_map() entry to trigger a one-shot rewrite on activation.
+    private const OPT_CONTENT_V = 'shopmynest_legal_content_version';
 
     /**
      * Page definitions. Slugs are stable; content files are relative to
@@ -68,6 +72,11 @@ final class ShopMyNest_Legal_Pages {
         // deactivate/reactivate. Runs quickly and only rewrites the map when
         // the current mapping doesn't resolve to a page with the expected slug.
         add_action( 'admin_init', array( __CLASS__, 'maybe_heal_page_map' ) );
+
+        // v1.1.6 — one-shot content refresh also runs on any admin load, so
+        // WP-CLI plugin updates and "replace existing" uploads (which don't
+        // fire register_activation_hook) still pick up the new content.
+        add_action( 'admin_init', array( __CLASS__, 'maybe_refresh_content_from_admin' ) );
 
         // Substitute [LEGAL ENTITY], [BUSINESS ADDRESS], [CONTACT EMAIL],
         // [EFFECTIVE DATE] at render time, on the seeded pages only.
@@ -236,13 +245,95 @@ final class ShopMyNest_Legal_Pages {
             add_option(
                 self::OPT,
                 array(
-                    'legal_entity'   => 'ShopMyNest',
-                    'business_addr'  => '',
-                    'contact_email'  => get_option( 'admin_email' ),
+                    'legal_entity'   => 'ShopMyNest LLC',
+                    'business_addr'  => '47 Leonard St, Rochester, NH 03867',
+                    'contact_email'  => 'help@shopmynest.com',
                     'effective_date' => gmdate( 'F j, Y' ),
                 )
             );
         }
+
+        // v1.1.6 — one-shot content refresh. If the stored content version is
+        // older than the current one, rewrite the body of every page listed in
+        // refresh_map() with the bundled content/*.html. Runs once per version.
+        self::maybe_refresh_content( $ids );
+    }
+
+    /**
+     * Map of pages() key → minimum plugin version that requires a rewrite.
+     * Add a new entry when you ship new content that must override any
+     * hand-edits on the live site. Bump self::VERSION at the same time.
+     */
+    private static function refresh_map(): array {
+        return array(
+            // v1.1.6 — rewritten Fees & Payouts (manual ACH, 7-day hold,
+            // 10% platform fee) and stripped all Stripe brand references.
+            'terms' => '1.1.6',
+        );
+    }
+
+    /**
+     * Admin-side wrapper: only manage_options users trigger this, and it
+     * looks up the current OPT_PAGE_IDS map itself. Delegates to the same
+     * version-gated worker used by activate().
+     */
+    public static function maybe_refresh_content_from_admin(): void {
+        if ( ! current_user_can( 'manage_options' ) ) {
+            return;
+        }
+        $ids = get_option( self::OPT_PAGE_IDS, array() );
+        if ( ! is_array( $ids ) ) {
+            return;
+        }
+        self::maybe_refresh_content( $ids );
+    }
+
+    /**
+     * If the stored content version is older than the current plugin version,
+     * overwrite the body of every mapped page with the bundled HTML file, then
+     * stamp the new version so this never runs again for the same release.
+     *
+     * Safe on repeat activation: after the stamp is written, version_compare()
+     * short-circuits and no page is touched.
+     *
+     * @param array<string,int> $ids OPT_PAGE_IDS map (key → post ID).
+     */
+    private static function maybe_refresh_content( array $ids ): void {
+        $stored = (string) get_option( self::OPT_CONTENT_V, '0.0.0' );
+        if ( version_compare( $stored, self::VERSION, '>=' ) ) {
+            return;
+        }
+
+        $pages = self::pages();
+        foreach ( self::refresh_map() as $key => $required_version ) {
+            if ( version_compare( $stored, $required_version, '>=' ) ) {
+                continue;
+            }
+            if ( ! isset( $pages[ $key ], $ids[ $key ] ) ) {
+                continue;
+            }
+            $post = get_post( $ids[ $key ] );
+            if ( ! $post instanceof WP_Post ) {
+                continue;
+            }
+            $content_path = plugin_dir_path( __FILE__ ) . 'content/' . $pages[ $key ]['file'];
+            if ( ! is_readable( $content_path ) ) {
+                continue;
+            }
+            $fresh = file_get_contents( $content_path );
+            if ( ! is_string( $fresh ) || '' === $fresh ) {
+                continue;
+            }
+            wp_update_post(
+                array(
+                    'ID'           => (int) $ids[ $key ],
+                    'post_content' => $fresh,
+                    'post_status'  => 'publish',
+                )
+            );
+        }
+
+        update_option( self::OPT_CONTENT_V, self::VERSION );
     }
 
     public static function register_settings_page(): void {
