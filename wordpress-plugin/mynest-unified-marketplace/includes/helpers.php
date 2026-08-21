@@ -7,6 +7,45 @@ function tnm_table( string $name ): string {
     return $wpdb->prefix . 'tnm_' . $name;
 }
 
+/**
+ * v3.7.122.15 — convert a MySQL-format UTC timestamp ("YYYY-MM-DD
+ * HH:MM:SS", as produced by current_time( 'mysql', true )) to ISO 8601
+ * with an explicit UTC marker ("YYYY-MM-DDTHH:MM:SSZ").
+ *
+ * The plugin stores every event timestamp with the GMT variant of
+ * current_time so the value on disk is UTC, but MySQL's DATETIME type
+ * has no timezone metadata. If we return the raw string to a JSON
+ * client, JavaScript's Date constructor parses it as LOCAL time on iOS
+ * / Android — that's why every alert row was rendering "about 6 hours
+ * ago" for events that just happened (client is UTC-4, server was
+ * returning +0 without the Z).
+ *
+ * Idempotent: strings that already look like ISO 8601 or already carry
+ * a Z / ±HH:MM suffix are returned unchanged.
+ */
+function tnm_mysql_utc_to_iso8601( ?string $mysql ): string {
+    if ( ! $mysql ) return '';
+    $mysql = trim( (string) $mysql );
+    if ( '' === $mysql ) return '';
+    // Already carries a timezone marker — trust it.
+    if ( preg_match( '/Z$|[+-]\d{2}:?\d{2}$/', $mysql ) ) {
+        return $mysql;
+    }
+    // MySQL DATETIME — replace space separator with T, append Z.
+    if ( preg_match( '/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/', $mysql ) ) {
+        return str_replace( ' ', 'T', $mysql ) . 'Z';
+    }
+    // ISO shape but missing suffix.
+    if ( preg_match( '/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?$/', $mysql ) ) {
+        return $mysql . 'Z';
+    }
+    // Date-only.
+    if ( preg_match( '/^\d{4}-\d{2}-\d{2}$/', $mysql ) ) {
+        return $mysql . 'T00:00:00Z';
+    }
+    return $mysql;
+}
+
 function tnm_get_option( string $key, mixed $default = null ): mixed {
     $settings = get_option( 'tnm_settings', array() );
     return array_key_exists( $key, $settings ) ? $settings[ $key ] : $default;

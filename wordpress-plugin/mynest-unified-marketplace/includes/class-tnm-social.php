@@ -288,6 +288,15 @@ final class TNM_Social {
             // is_read for backwards compatibility with any web consumer; add
             // `read` as the canonical field going forward.
             $row['read']      = $row['is_read'];
+            // v3.7.122.15 — created_at is stored as MySQL UTC via
+            // current_time( 'mysql', true ), but returning "YYYY-MM-DD
+            // HH:MM:SS" with no timezone marker made JavaScript's Date
+            // parser treat it as local time on iOS/Android — every
+            // notification looked 4-8 hours older than reality. Serialize
+            // as ISO 8601 UTC ("...Z") so every consumer parses correctly.
+            if ( ! empty( $row['created_at'] ) ) {
+                $row['created_at'] = tnm_mysql_utc_to_iso8601( $row['created_at'] );
+            }
             $row['actor']     = $row['actor_id'] ? array(
                 'display_name' => get_the_author_meta( 'display_name', $row['actor_id'] ),
                 'avatar'       => tnm_user_avatar_url( (int) $row['actor_id'], 128 ),
@@ -461,7 +470,8 @@ final class TNM_Social {
                         'avatar'       => tnm_user_avatar_url( $other_id, 128 ),
                     ),
                     'last_message' => $row['message'],
-                    'date'         => $row['created_at'],
+                    // v3.7.122.15 — ISO 8601 UTC so JS Date parses it correctly.
+                    'date'         => tnm_mysql_utc_to_iso8601( $row['created_at'] ),
                     'unread'       => (int) $row['recipient_id'] === $user_id && ! (bool) $row['is_read'],
                 );
             },
@@ -504,7 +514,8 @@ final class TNM_Social {
                 'recipient_id' => (int) $row['recipient_id'],
                 'message'      => $row['message'],
                 'is_read'      => (bool) $row['is_read'],
-                'created_at'   => $row['created_at'],
+                // v3.7.122.15 — ISO 8601 UTC so JS Date parses it correctly.
+                'created_at'   => tnm_mysql_utc_to_iso8601( $row['created_at'] ),
                 // v3.7.86 — hydrate photo attachments so the client can render
                 // the grid without a second round-trip. Each entry carries a
                 // 24h signed URL scoped to the viewer.
@@ -744,6 +755,10 @@ final class TNM_Social {
             $row['seller_id']   = (int) $row['seller_id'];
             $row['order_id']    = (int) $row['order_id'];
             $row['rating']      = (int) $row['rating'];
+            // v3.7.122.15 — ISO 8601 UTC so JS Date parses it correctly.
+            if ( ! empty( $row['created_at'] ) ) {
+                $row['created_at'] = tnm_mysql_utc_to_iso8601( $row['created_at'] );
+            }
             $row['reviewer']    = array(
                 'display_name' => get_the_author_meta( 'display_name', $row['reviewer_id'] ),
                 'avatar'       => tnm_user_avatar_url( (int) $row['reviewer_id'], 128 ),
