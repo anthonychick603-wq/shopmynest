@@ -158,9 +158,20 @@ function mnu_native_calc_items( array $items ): array|WP_Error {
         if ( ! $product->has_enough_stock( $quantity ) ) {
             return new WP_Error( 'insufficient_stock', ( $parent ? $parent->get_name() : $product->get_name() ) . ' does not have enough stock.', array( 'status' => 409, 'product_id' => $product_id ) );
         }
-        if ( class_exists( 'MNU_Connect' ) ) {
-            $seller_id = (int) tnm_get_product_seller_id( $parent ?: $product );
-            if ( $seller_id > 0 ) {
+        // v3.11.0 — Under the sellers-off-Stripe money model, buyer add-to-cart
+        // is only blocked when the seller has no bank account on file (no ACH
+        // destination). The old gate here checked MNU_Connect charges_enabled
+        // / payouts_enabled, which no longer reflects reality — sellers stopped
+        // touching Stripe in v3.8.0. Fall back to the Stripe gate only when
+        // MNU_Bank_Account is missing (defensive; the class is always loaded
+        // once the plugin has booted).
+        $seller_id = (int) tnm_get_product_seller_id( $parent ?: $product );
+        if ( $seller_id > 0 ) {
+            if ( class_exists( 'MNU_Bank_Account' ) ) {
+                if ( ! MNU_Bank_Account::has_bank_account( $seller_id ) ) {
+                    return new WP_Error( 'seller_not_ready', ( $parent ? $parent->get_name() : $product->get_name() ) . ' is temporarily unavailable because its seller has not finished payment setup.', array( 'status' => 409, 'product_id' => $product_id ) );
+                }
+            } elseif ( class_exists( 'MNU_Connect' ) ) {
                 $seller_status = MNU_Connect::cached_status( $seller_id );
                 if ( ! $seller_status['charges_enabled'] || ! $seller_status['payouts_enabled'] ) {
                     return new WP_Error( 'seller_not_ready', ( $parent ? $parent->get_name() : $product->get_name() ) . ' is temporarily unavailable because its seller has not finished payment setup.', array( 'status' => 409, 'product_id' => $product_id ) );
@@ -1489,134 +1500,55 @@ function mnu_native_seller_splits( WC_Order $order ): array {
  * @param string   $charge_id  The Stripe charge id (from intent.latest_charge)
  */
 function mnu_native_issue_seller_transfers( WC_Order $order, string $charge_id ): void {
+    // v3.11.0 — Sellers are OFF Stripe entirely. 100% of the buyer's charge
+    // stays at the platform and sellers are paid by manual ACH from the
+    // platform business checking account after the 7-day holding window
+    // (see WP Admin → MyNest → Payouts). This function used to fan out
+    // Stripe Connect transfers to each seller; that branch has been
+    // retired unconditionally to make it impossible for a legacy
+    // Connect-onboarded seller to receive a real transfer on top of
+    // their manual ACH.
+    //
+    // The function is kept (rather than deleted) so the existing
+    // payment_intent.succeeded webhook call site keeps compiling and any
+    // future retry / reconciliation code paths keep a single stamping
+    // entry point. It now only stamps two order metas that downstream
+    // ledger / reconciliation code still reads:
+    //   _mnu_platform_shipping_kept_cents — shipping stays with platform.
+    //   _mnu_seller_transfers             — audit trail explaining the skip.
+    //
+    // $charge_id is retained in the signature so older callers still
+    // work, but it is intentionally unused now.
+    unset( $charge_id );
+
     $existing = (array) json_decode( (string) $order->get_meta( '_mnu_seller_transfers', true ), true );
     if ( ! empty( $existing ) ) {
         return; // Already processed.
     }
 
-    // v3.9.2 — Under the v3.8.0 money model, 100% of the buyer's charge stays
-    // at the platform. Sellers are paid via manual ACH from Bluevine after the
-    // 7-day holding window (see the Payouts admin console). Skip every Stripe
-    // Connect transfer here, but keep stamping the platform-shipping meta so
-    // the ledger's `platform_keeps_shipping` branch still fires for legacy
-    // pre-v3.8.0 sellers whose orders somehow hit this webhook.
-    if ( '1' === (string) $order->get_meta( '_mnu_v380_model', true ) ) {
-        $order->update_meta_data( '_mnu_platform_shipping_kept_cents', (string) mnu_native_cents( (float) $order->get_shipping_total() ) );
-        $order->update_meta_data( '_mnu_seller_transfers', wp_json_encode( array( '__v380' => array( 'status' => 'skipped', 'reason' => 'v3.8.0 money model — manual ACH payouts, no Stripe Connect transfers' ) ) ) );
-        $order->add_order_note( 'Skipped per-seller Stripe transfers (v3.8.0 money model). Sellers will be paid manually via ACH after the holding window.' );
-        $order->save();
-        return;
-    }
-
-    if ( ! class_exists( 'MNU_Connect' ) ) {
-        return;
-    }
-    $splits = mnu_native_seller_splits( $order );
-    if ( count( $splits ) < 2 ) {
-        return; // Single-seller carts already routed via destination charge.
-    }
-
-    // v3.7.124 — seller eats the Stripe processing fee on the PRODUCT
-    // portion only. Platform absorbs the fee on the shipping portion.
-    // Compute each seller's Stripe fee share directly from their product
-    // gross_cents so the fixed $0.30 lands proportionally without needing
-    // to pro-rate a whole-order estimate. Stamp the estimate + per-seller
-    // share on the order so the refund guardrail can subtract it correctly.
-    $order_total_cents         = mnu_native_cents( $order->get_total() );
-    $total_gross_cents         = 0;
-    foreach ( $splits as $row ) {
-        $total_gross_cents += (int) $row['gross_cents'];
-    }
-    $stripe_fee_on_products_cents = mnu_native_estimate_stripe_fee_cents( $total_gross_cents );
-    $stripe_fee_on_total_cents    = mnu_native_estimate_stripe_fee_cents( $order_total_cents );
-    $stripe_fee_cents_estimate    = $stripe_fee_on_total_cents; // for meta parity
-    $seller_stripe_fee_share = array();
-    $allocated               = 0;
-    $seller_ids              = array_keys( $splits );
-    foreach ( $seller_ids as $idx => $sid ) {
-        if ( $idx === count( $seller_ids ) - 1 ) {
-            // Last seller absorbs any rounding delta so shares sum exactly.
-            $share = max( 0, $stripe_fee_on_products_cents - $allocated );
-        } else {
-            $share = $total_gross_cents > 0
-                ? (int) round( $stripe_fee_on_products_cents * ( $splits[ $sid ]['gross_cents'] / $total_gross_cents ) )
-                : 0;
-        }
-        $seller_stripe_fee_share[ (string) $sid ] = $share;
-        $allocated += $share;
-    }
-    $order->update_meta_data( '_mnu_stripe_fee_estimate_cents',   (string) $stripe_fee_cents_estimate );
-    $order->update_meta_data( '_mnu_stripe_fee_product_cents',    (string) $stripe_fee_on_products_cents );
-    $order->update_meta_data( '_mnu_stripe_fee_shipping_cents',   (string) max( 0, $stripe_fee_on_total_cents - $stripe_fee_on_products_cents ) );
-    $order->update_meta_data( '_mnu_stripe_fee_seller_shares',    wp_json_encode( $seller_stripe_fee_share ) );
-    $order->update_meta_data( '_mnu_platform_shipping_kept_cents', (string) mnu_native_cents( (float) $order->get_shipping_total() ) );
-    $order->save();
-
-    $settings = mnu_native_get_settings();
-    $currency = strtolower( (string) $settings['currency'] );
-    $transfers = array();
-
-    foreach ( $splits as $seller_id => $row ) {
-        // Deduct this seller's share of the Stripe processing fee so the
-        // platform recovers what Stripe took off the top of the charge.
-        $stripe_share_cents = (int) ( $seller_stripe_fee_share[ (string) $seller_id ] ?? 0 );
-        $original_net_cents = (int) $row['net_cents'];
-        $row['net_cents']   = max( 0, $original_net_cents - $stripe_share_cents );
-        $seller_account = MNU_Connect::account_id( $seller_id );
-        if ( '' === $seller_account || ! MNU_Connect::seller_can_sell( $seller_id ) ) {
-            $order->add_order_note( sprintf( 'Skipped Stripe transfer to seller #%d: no connected account or onboarding incomplete. Platform is holding $%.2f owed to this seller.', $seller_id, $row['net_cents'] / 100 ) );
-            $transfers[ (string) $seller_id ] = array( 'status' => 'held', 'net_cents' => $row['net_cents'], 'stripe_fee_share_cents' => $stripe_share_cents );
-            continue;
-        }
-        $result = mnu_native_stripe_request(
-            '/transfers',
+    $order->update_meta_data(
+        '_mnu_platform_shipping_kept_cents',
+        (string) mnu_native_cents( (float) $order->get_shipping_total() )
+    );
+    $order->update_meta_data(
+        '_mnu_seller_transfers',
+        wp_json_encode(
             array(
-                'amount'             => (string) $row['net_cents'],
-                'currency'           => $currency,
-                'destination'        => $seller_account,
-                'source_transaction' => $charge_id,
-                'transfer_group'     => 'mnu_order_' . $order->get_id(),
-                'metadata[wc_order_id]' => (string) $order->get_id(),
-                'metadata[seller_id]'   => (string) $seller_id,
-            ),
-            'mnu_transfer_' . $order->get_id() . '_' . $seller_id
-        );
-        if ( is_wp_error( $result ) ) {
-            $order->add_order_note( sprintf( 'Stripe transfer to seller #%d failed: %s. Retrying later.', $seller_id, $result->get_error_message() ) );
-            $transfers[ (string) $seller_id ] = array( 'status' => 'failed', 'error' => $result->get_error_message(), 'net_cents' => $row['net_cents'], 'stripe_fee_share_cents' => $stripe_share_cents );
-            continue;
-        }
-        $transfer_id_str = (string) ( $result['id'] ?? '' );
-        $transfers[ (string) $seller_id ] = array(
-            'status'                 => 'sent',
-            'transfer_id'            => $transfer_id_str,
-            'net_cents'              => $row['net_cents'],           // net actually transferred (already minus stripe share)
-            'stripe_fee_share_cents' => $stripe_share_cents,          // recovered by platform on capture, NOT returned on refund reversal
-        );
-        // Write the transfer id back onto every earning ledger row for this
-        // order+seller so downstream refund reversals (record_refund →
-        // reverse_transfer_for_item) can find it without re-parsing the
-        // order-level JSON.
-        if ( '' !== $transfer_id_str && function_exists( 'tnm_table' ) ) {
-            global $wpdb;
-            $wpdb->query(
-                $wpdb->prepare(
-                    'UPDATE ' . tnm_table( 'ledger' ) . " SET stripe_transfer_id=%s, updated_at=%s WHERE order_id=%d AND seller_id=%d AND type='earning' AND (stripe_transfer_id='' OR stripe_transfer_id IS NULL)",
-                    $transfer_id_str,
-                    current_time( 'mysql' ),
-                    $order->get_id(),
-                    (int) $seller_id
-                )
-            );
-        }
-    }
-    $order->update_meta_data( '_mnu_seller_transfers', wp_json_encode( $transfers ) );
-    $order->add_order_note( 'Issued Stripe transfers to ' . count( array_filter( $transfers, static function ( $t ) { return 'sent' === ( $t['status'] ?? '' ); } ) ) . ' seller(s).' );
+                '__v380' => array(
+                    'status' => 'skipped',
+                    'reason' => 'v3.11.0 — sellers OFF Stripe. Manual ACH payouts from platform business checking after the 7-day holding window.',
+                ),
+            )
+        )
+    );
+    $order->add_order_note( 'Skipped per-seller Stripe transfers (v3.11.0: sellers off Stripe entirely). Seller earnings will be paid manually via ACH after the holding window.' );
     $order->save();
-    // v3.7.65 — evaluate the split-payment guardrail every time transfers are
-    // issued (or attempted). Flags multi-seller orders whose transfer set does
-    // not match the expected seller set so an admin can reconcile before
-    // funds sit indefinitely in the platform balance.
+
+    // v3.7.65 / v3.11.0 — the split-payment guardrail still runs so admin
+    // reconciliation queues stay honest for multi-seller orders. Under the
+    // new money model the "expected" state is that no per-seller transfer
+    // exists, which the guardrail already tolerates because expected =
+    // actual_sent ∪ actual_held for v3.8.0-model orders.
     mnu_native_apply_split_guardrail( $order );
 }
 
