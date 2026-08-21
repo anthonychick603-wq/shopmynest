@@ -110,69 +110,24 @@ final class MNU_Seller_Readiness {
 			'detail'       => $has_name ? $display_name : '',
 		);
 
-		// 2) Stripe Connect account.
-		$account_id = class_exists( 'MNU_Connect' )
-			? (string) MNU_Connect::account_id( $seller_id )
-			: (string) get_user_meta( $seller_id, 'tnm_stripe_account_id', true );
-		$stripe_connected = ( '' !== $account_id );
-		// v3.7.107 - fresh_status() self-heals when the account.updated webhook
-		// never landed. Rate-limited to once/min per seller.
-		$stripe_cache = class_exists( 'MNU_Connect' )
-			? MNU_Connect::fresh_status( $seller_id )
-			: array(
-				'connected'         => $stripe_connected,
-				'charges_enabled'   => (bool) get_user_meta( $seller_id, 'tnm_stripe_charges_enabled', true ),
-				'payouts_enabled'   => (bool) get_user_meta( $seller_id, 'tnm_stripe_payouts_enabled', true ),
-				'details_submitted' => (bool) get_user_meta( $seller_id, 'tnm_stripe_details_submitted', true ),
-			);
+		// 2) Bank account on file (v3.8.0 replacement for the four Stripe
+		// Connect steps). Sellers now enter a routing + account number
+		// directly; the platform ACHs their share from a business checking
+		// account after the holding window. Charges/payouts/details_submitted
+		// concepts no longer apply since there is no Connect account.
+		$has_bank = class_exists( 'MNU_Bank_Account' )
+			? MNU_Bank_Account::has_bank_account( $seller_id )
+			: false;
+		$bank_last4 = (string) get_user_meta( $seller_id, '_mnu_bank_last4', true );
 		$steps[] = array(
-			'key'          => 'stripe_connected',
-			'label'        => 'Connect Stripe',
-			'description'  => 'ShopMyNest routes payouts through Stripe. You will land on Stripe to link a bank account.',
-			'ok'           => $stripe_connected,
+			'key'          => 'bank_account',
+			'label'        => 'Add your bank account',
+			'description'  => 'ShopMyNest pays your earnings by ACH to this account after the 7-day holding window.',
+			'ok'           => $has_bank,
 			'blocking'     => true,
 			'action_url'   => '/(tabs)/(more)/seller/connect',
-			'action_label' => $stripe_connected ? 'Manage' : 'Connect',
-			'detail'       => $stripe_connected ? substr( $account_id, 0, 12 ) . '...' : '',
-		);
-
-		// 3) Stripe details submitted (the "you finished onboarding" gate).
-		$details_ok = ! empty( $stripe_cache['details_submitted'] );
-		$steps[] = array(
-			'key'          => 'stripe_details_submitted',
-			'label'        => 'Finish Stripe onboarding',
-			'description'  => 'Provide the business or personal details Stripe needs to release payouts.',
-			'ok'           => $details_ok,
-			'blocking'     => true,
-			'action_url'   => '/(tabs)/(more)/seller/connect',
-			'action_label' => $details_ok ? 'Open' : 'Continue',
-			'detail'       => '',
-		);
-
-		// 4) Charges enabled.
-		$charges_ok = ! empty( $stripe_cache['charges_enabled'] );
-		$steps[] = array(
-			'key'          => 'stripe_charges_enabled',
-			'label'        => 'Stripe can accept charges',
-			'description'  => 'Stripe must have your account cleared for charges so buyers can pay you.',
-			'ok'           => $charges_ok,
-			'blocking'     => true,
-			'action_url'   => '/(tabs)/(more)/seller/connect',
-			'action_label' => 'Check status',
-			'detail'       => $charges_ok ? '' : 'Stripe has not enabled charges yet. If you just onboarded, allow a few minutes and refresh.',
-		);
-
-		// 5) Payouts enabled.
-		$payouts_ok = ! empty( $stripe_cache['payouts_enabled'] );
-		$steps[] = array(
-			'key'          => 'stripe_payouts_enabled',
-			'label'        => 'Stripe can send payouts',
-			'description'  => 'Payouts must be enabled so your earnings can leave the ShopMyNest platform balance.',
-			'ok'           => $payouts_ok,
-			'blocking'     => true,
-			'action_url'   => '/(tabs)/(more)/seller/connect',
-			'action_label' => 'Check status',
-			'detail'       => $payouts_ok ? '' : 'Stripe has not enabled payouts yet. Complete any remaining requirements in the Stripe dashboard.',
+			'action_label' => $has_bank ? 'Edit' : 'Add bank',
+			'detail'       => $has_bank && '' !== $bank_last4 ? 'Account ending in ' . $bank_last4 : '',
 		);
 
 		// 6) Ship-from address complete.
