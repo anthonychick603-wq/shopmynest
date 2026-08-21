@@ -110,14 +110,17 @@ final class TNM_Ledger {
         }
         $shipping_seller_allocated = array();
 
-        // v3.7.124 — for orders created under the new fee model, the platform
-        // keeps 100% of buyer-paid shipping and pays for Shippo labels itself.
-        // Detect that by the presence of `_mnu_platform_shipping_kept_cents`
-        // meta stamped at charge-intent-build time. When set, the seller's
-        // ledger row gets shipping=0 and the shipping stays in the platform's
-        // pocket. Legacy orders (meta absent) keep the old +shipping behavior
-        // so we don't retroactively short existing payouts.
-        $platform_keeps_shipping = '' !== (string) $order->get_meta( '_mnu_platform_shipping_kept_cents', true );
+        // v3.8.0 — detect the new money model. New orders get a plain
+        // platform charge (no Connect destination). Seller ledger net is
+        // computed as (product * 0.90) with shipping=0 (platform keeps 100%
+        // of buyer-paid shipping, pays for the Shippo label out of that).
+        // Legacy orders (meta absent) keep the previous behavior so we
+        // don't retroactively short existing payouts.
+        $is_v380_model            = '1' === (string) $order->get_meta( '_mnu_v380_model', true );
+        // v3.7.124 legacy flag — also causes platform to keep shipping. All
+        // v3.8.0 orders satisfy this too, but reading both preserves the old
+        // orders' behavior verbatim.
+        $platform_keeps_shipping = $is_v380_model || '' !== (string) $order->get_meta( '_mnu_platform_shipping_kept_cents', true );
 
         $holding_days   = max( 0, (int) tnm_get_option( 'holding_days', 7 ) );
         $paid_date      = $order->get_date_paid() ?: $order->get_date_created();
@@ -138,6 +141,15 @@ final class TNM_Ledger {
             $fee   = '' === $fee_meta ? round( $gross * ( tnm_fee_percent() / 100 ), wc_get_price_decimals() + 2 ) : (float) $fee_meta;
             if ( $fee <= 0 && $gross > 0 ) {
                 $fee = round( $gross * ( tnm_fee_percent() / 100 ), wc_get_price_decimals() + 2 );
+            }
+            if ( $is_v380_model ) {
+                // v3.8.0 — hard-lock platform cut at 10% of the seller's
+                // product subtotal. The item snapshot may have been stamped
+                // with a legacy percent (e.g. 8%) at product-add time; use
+                // that value only for reference and overwrite the ledger
+                // row fee to the new fixed 10% so seller_net is always
+                // product * 0.90 for new-model orders.
+                $fee = round( $gross * 0.10, wc_get_price_decimals() + 2 );
             }
             if ( $platform_keeps_shipping ) {
                 // Platform keeps all shipping. Seller ledger row has zero
@@ -211,6 +223,15 @@ final class TNM_Ledger {
      */
     public static function create_seller_transfers( int $order_id ): void {
         if ( ! function_exists( 'mnu_native_stripe_request' ) || ! class_exists( 'MNU_Connect' ) ) {
+            return;
+        }
+        // v3.8.0 — new-model orders never generate Stripe Connect transfers.
+        // Sellers are paid via manual ACH from the platform business checking
+        // account after the 7-day holding window. See the admin Payouts page
+        // (WP Admin → MyNest → Payouts) which flips rows from status='available'
+        // to status='paid' when the ACH batch is marked completed.
+        $order = wc_get_order( $order_id );
+        if ( $order && '1' === (string) $order->get_meta( '_mnu_v380_model', true ) ) {
             return;
         }
         global $wpdb;
@@ -480,14 +501,28 @@ final class TNM_Ledger {
         $order_id         = $order->get_id();
         $original_item_id = $original_item->get_id();
         $original_gross   = max( 0.000001, (float) $original_item->get_total() );
-        $original_fee_meta = $original_item->get_meta( '_tnm_platform_fee', true );
-        if ( '' === $original_fee_meta ) {
-            $original_fee_meta = $original_item->get_meta( '_mynest_nestkeeper_fee', true );
+        $is_v380_model    = '1' === (string) $order->get_meta( '_mnu_v380_model', true );
+
+        if ( $is_v380_model ) {
+            // v3.8.0 — platform cut is a fixed 10%, so the fee refund is
+            // exactly 10% of the refunded product portion. Shipping is not
+            // seller-owned under the new model — any buyer shipping refund
+            // comes out of platform's kept-shipping bucket and never touches
+            // the seller ledger.
+            $original_fee      = round( $original_gross * 0.10, wc_get_price_decimals() + 2 );
+            $fee_refund        = $refunded_gross > 0 ? round( $refunded_gross * 0.10, wc_get_price_decimals() + 2 ) : 0.0;
+            $refunded_shipping = 0.0;
+        } else {
+            $original_fee_meta = $original_item->get_meta( '_tnm_platform_fee', true );
+            if ( '' === $original_fee_meta ) {
+                $original_fee_meta = $original_item->get_meta( '_mynest_nestkeeper_fee', true );
+            }
+            $original_fee = '' === $original_fee_meta ? round( $original_gross * ( tnm_fee_percent() / 100 ), wc_get_price_decimals() + 2 ) : (float) $original_fee_meta;
+            $fee_refund   = $refunded_gross > 0 ? min( $original_fee, $original_fee * ( $refunded_gross / $original_gross ) ) : 0.0;
         }
-        $original_fee = '' === $original_fee_meta ? round( $original_gross * ( tnm_fee_percent() / 100 ), wc_get_price_decimals() + 2 ) : (float) $original_fee_meta;
-        $fee_refund   = $refunded_gross > 0 ? min( $original_fee, $original_fee * ( $refunded_gross / $original_gross ) ) : 0.0;
         // Seller loses: product gross minus refunded platform fee, plus the
-        // shipping they were credited for (labels are non-refundable).
+        // shipping they were credited for (labels are non-refundable). For
+        // v3.8.0 the shipping portion is always 0 (see above).
         $net_reversal = -max( 0, ( $refunded_gross - $fee_refund ) + $refunded_shipping );
         $type         = 'refund_' . $refund_id;
 

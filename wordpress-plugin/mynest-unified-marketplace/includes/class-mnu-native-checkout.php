@@ -767,6 +767,25 @@ function mnu_native_quote( WP_REST_Request $request ): array|WP_Error {
     if ( $coupon['free_shipping'] && $discount >= 0 && $coupon_code ) {
         $shipping = 0.0;
     }
+
+    // v3.8.0 — bake the flat $0.43 processing fee into every non-zero shipping
+    // amount the buyer sees (the cheapest quote AND each selectable rate). This
+    // must match the same fee applied in mnu_native_create_intent_locked() so
+    // the quote total the buyer confirmed equals the amount actually charged.
+    // Free shipping stays free (no fee attached to a $0 line).
+    $processing_fee_cents = (int) apply_filters( 'mnu_v380_processing_fee_cents', 43, null );
+    $processing_fee       = $processing_fee_cents / 100;
+    if ( $shipping > 0 ) {
+        $shipping = round( $shipping + $processing_fee, wc_get_price_decimals() );
+    }
+    if ( ! empty( $shipping_rates ) ) {
+        foreach ( $shipping_rates as $i => $rate ) {
+            if ( (float) $rate['amount'] > 0 ) {
+                $shipping_rates[ $i ]['amount'] = round( (float) $rate['amount'] + $processing_fee, wc_get_price_decimals() );
+            }
+        }
+    }
+
     $total_before_tax = max( 0.0, ( $subtotal - $discount ) + $shipping );
 
     $response = array(
@@ -1066,92 +1085,49 @@ function mnu_native_create_intent( WP_REST_Request $request ): array|WP_Error {
 }
 
 /**
- * Compute Stripe Connect routing parameters for a marketplace order.
+ * v3.8.0 — new money model. Buyer pays product + shipping (real Shippo rate
+ * + $0.43 processing fee baked into the shipping line). 100% of the charge
+ * lands in the platform Stripe account: no destination charge, no
+ * application_fee_amount, no Connect involvement at intent creation. Sellers
+ * are paid later via manual ACH from the platform's business checking
+ * (Bluevine) after a 7-day holding window. See TNM_Ledger::create_order_rows()
+ * for the seller ledger row (net = product × 0.90).
  *
- * Returns an array of extra params to merge into /payment_intents. For
- * single-seller carts we use a destination charge (`transfer_data[destination]`)
- * plus `application_fee_amount` so the platform keeps its cut and the seller
- * receives the balance directly. For multi-seller carts we return an empty
- * array so the charge lands on the platform and payouts are handled later via
- * Separate Charges & Transfers.
+ * This function only stamps reconciliation metadata on the order. It is called
+ * from mnu_native_create_intent_locked() right before the payment intent is
+ * created.
  *
- * @return array<string,string>
+ * @since 3.8.0
  */
-function mnu_native_connect_intent_params( WC_Order $order ): array {
-    if ( ! class_exists( 'MNU_Connect' ) ) {
-        return array();
-    }
+function mnu_native_stamp_v380_intent_meta( WC_Order $order ): void {
+    $total_cents          = mnu_native_cents( $order->get_total() );
+    $stripe_fee_est_cents = mnu_native_estimate_stripe_fee_cents( $total_cents );
 
-    // Group per-item platform fee by seller. `_tnm_platform_fee` is stamped
-    // during stamp_item_snapshot() so it already reflects the 8% marketplace fee.
-    $seller_fees = array();
-    foreach ( $order->get_items() as $item ) {
-        if ( ! $item instanceof WC_Order_Item_Product ) {
-            continue;
-        }
-        $seller_id = (int) $item->get_meta( '_tnm_seller_id', true );
-        if ( $seller_id <= 0 ) {
-            continue;
-        }
-        $fee                        = (float) $item->get_meta( '_tnm_platform_fee', true );
-        $seller_fees[ $seller_id ]  = ( $seller_fees[ $seller_id ] ?? 0 ) + max( 0, $fee );
-    }
-
-    // Multi-seller carts are handled separately (post-capture transfers). For
-    // now the charge stays on the platform, which is safer than routing to
-    // one arbitrary seller.
-    if ( count( $seller_fees ) !== 1 ) {
-        return array();
-    }
-
-    $seller_id      = (int) array_key_first( $seller_fees );
-    $seller_account = MNU_Connect::account_id( $seller_id );
-
-    // Seller has to have finished onboarding for the destination charge to
-    // clear. If they haven't, fall back to a platform charge (still captures
-    // the customer's money; ops can manually pay the seller).
-    if ( '' === $seller_account || ! MNU_Connect::seller_can_sell( $seller_id ) ) {
-        return array();
-    }
-
-    // v3.7.124 — platform keeps 100% of buyer-paid shipping (platform pays
-    // for Shippo labels out of that). The seller eats the Stripe processing
-    // fee only on the PRODUCT portion of the charge; the platform absorbs
-    // Stripe's cut on the shipping portion. Stamp the components on the
-    // order so ledger + refund guardrail can read exact numbers.
-    // Compute the seller's true product subtotal (in cents) from the item
-    // snapshot so we're not reverse-engineering it from the fee.
-    $product_cents = 0;
+    // Snapshot each seller's product cents so the payout admin table and the
+    // ledger row don't have to re-derive it from items later.
+    $product_cents_by_seller = array();
     foreach ( $order->get_items() as $item ) {
         if ( ! $item instanceof WC_Order_Item_Product ) { continue; }
-        if ( (int) $item->get_meta( '_tnm_seller_id', true ) !== $seller_id ) { continue; }
-        $product_cents += mnu_native_cents( (float) $item->get_total() + (float) $item->get_subtotal_tax() );
+        $seller_id = (int) $item->get_meta( '_tnm_seller_id', true );
+        if ( $seller_id <= 0 ) { continue; }
+        $product_cents_by_seller[ $seller_id ] = ( $product_cents_by_seller[ $seller_id ] ?? 0 )
+            + mnu_native_cents( (float) $item->get_total() + (float) $item->get_subtotal_tax() );
     }
-    $shipping_cents            = mnu_native_cents( (float) $order->get_shipping_total() );
-    $total_cents               = mnu_native_cents( $order->get_total() );
-    // Stripe processing fee: bill the seller for the fee on the product
-    // portion only. Platform absorbs the fee on the shipping portion.
-    $stripe_fee_product_cents  = mnu_native_estimate_stripe_fee_cents( $product_cents );
-    $stripe_fee_total_cents    = mnu_native_estimate_stripe_fee_cents( $total_cents );
-    $stripe_fee_shipping_cents = max( 0, $stripe_fee_total_cents - $stripe_fee_product_cents );
-    $platform_fee_cents        = (int) round( $seller_fees[ $seller_id ] * 100 );
-    // Platform keeps: 8% + Stripe fee on product + full shipping. Platform
-    // separately absorbs Stripe fee on shipping (comes out of platform's
-    // shipping revenue, not withheld from the seller).
-    $application_fee_cents     = $platform_fee_cents + $stripe_fee_product_cents + $shipping_cents;
 
-    $order->update_meta_data( '_mnu_stripe_fee_estimate_cents',          (string) ( $stripe_fee_product_cents + $stripe_fee_shipping_cents ) );
-    $order->update_meta_data( '_mnu_stripe_fee_product_cents',           (string) $stripe_fee_product_cents );
-    $order->update_meta_data( '_mnu_stripe_fee_shipping_cents',          (string) $stripe_fee_shipping_cents );
-    $order->update_meta_data( '_mnu_platform_fee_cents',                 (string) $platform_fee_cents );
-    $order->update_meta_data( '_mnu_platform_shipping_kept_cents',       (string) $shipping_cents );
-    $order->update_meta_data( '_mnu_application_fee_cents',              (string) $application_fee_cents );
+    $order->update_meta_data( '_mnu_v380_model',                    '1' );
+    $order->update_meta_data( '_mnu_stripe_fee_estimate_cents',     (string) $stripe_fee_est_cents );
+    $order->update_meta_data( '_mnu_v380_product_cents_by_seller',  wp_json_encode( $product_cents_by_seller ) );
     $order->save();
+}
 
-    return array(
-        'transfer_data[destination]' => $seller_account,
-        'application_fee_amount'     => (string) $application_fee_cents,
-    );
+/**
+ * DEPRECATED in v3.8.0. Kept as a no-op shim so no legacy call site errors.
+ * All new orders take the plain platform-charge path (no Connect).
+ *
+ * @deprecated 3.8.0 Use mnu_native_stamp_v380_intent_meta() instead.
+ */
+function mnu_native_connect_intent_params( WC_Order $order ): array {
+    return array();
 }
 
 /**
@@ -1260,6 +1236,19 @@ function mnu_native_create_intent_locked( int $user_id, array $data, string $che
             $shipping_method = 'thenest_standard';
         }
 
+        // v3.8.0 — bake the flat $0.43 buyer-paid processing fee INTO the
+        // shipping line so the buyer sees a single Shipping row. The real
+        // Shippo rate ($shipping_total pre-adjust) is preserved separately
+        // as `_mnu_real_shipping_cents` so the auto-label service still buys
+        // the label at its actual carrier cost. Skip on free-shipping /
+        // no-shipping carts to avoid attaching a fee to a $0 line.
+        $real_shipping_total  = (float) $shipping_total;
+        $processing_fee_cents = 0;
+        if ( $shipping_total > 0 ) {
+            $processing_fee_cents = (int) apply_filters( 'mnu_v380_processing_fee_cents', 43, $order ?? null );
+            $shipping_total       = round( $shipping_total + ( $processing_fee_cents / 100 ), wc_get_price_decimals() );
+        }
+
         $order = mnu_native_create_order(
             $user_id,
             $lines,
@@ -1275,6 +1264,15 @@ function mnu_native_create_intent_locked( int $user_id, array $data, string $che
         }
         if ( $quote_token ) {
             $order->update_meta_data( '_thenest_quote_token_hash', hash( 'sha256', $quote_token ) );
+            $order->save();
+        }
+
+        // v3.8.0 — stamp real vs buyer-visible shipping so the label service
+        // uses the real carrier rate and the ledger/refund path can subtract
+        // the processing fee from platform net cleanly.
+        if ( $shipping_total > 0 ) {
+            $order->update_meta_data( '_mnu_real_shipping_cents',    (string) mnu_native_cents( $real_shipping_total ) );
+            $order->update_meta_data( '_mnu_processing_fee_cents',   (string) $processing_fee_cents );
             $order->save();
         }
 
@@ -1335,10 +1333,12 @@ function mnu_native_create_intent_locked( int $user_id, array $data, string $che
     if ( $intent_id ) {
         $intent = mnu_native_stripe_get( '/payment_intents/' . rawurlencode( $intent_id ) );
     } else {
-        // Route the charge to the seller's Connect account when we have exactly one
-        // seller in the cart, retaining the platform application fee. This turns
-        // the charge into a proper marketplace destination charge instead of the
-        // money landing in the platform account only.
+        // v3.8.0 — plain platform charge. 100% of the buyer's charge lands
+        // in the platform Stripe account. Sellers are paid via manual ACH
+        // from the platform's business checking after a 7-day holding
+        // window (see TNM_Ledger). No Connect destination charge, no
+        // application_fee_amount.
+        mnu_native_stamp_v380_intent_meta( $order );
         $intent_params = array(
             'amount'                             => mnu_native_cents( $order->get_total() ),
             'currency'                           => strtolower( $settings['currency'] ),
@@ -1347,9 +1347,9 @@ function mnu_native_create_intent_locked( int $user_id, array $data, string $che
             'metadata[wc_order_id]'              => $order->get_id(),
             'metadata[customer_id]'              => $user_id,
             'metadata[source]'                   => 'the_nest_native_app',
+            'metadata[money_model]'              => 'v380_platform_charge',
             'description'                        => 'MyNest order #' . $order->get_order_number(),
         );
-        $intent_params = array_merge( $intent_params, mnu_native_connect_intent_params( $order ) );
         $intent = mnu_native_stripe_request(
             '/payment_intents',
             $intent_params,
