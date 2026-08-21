@@ -211,6 +211,20 @@ final class TNM_REST {
     }
 
     public static function register( WP_REST_Request $request ): WP_REST_Response|WP_Error {
+        // v3.7.122.16 — the legacy one-shot register endpoint let anyone
+        // (including Google Play's pre-launch bot) create a wp_users row
+        // with a fake email like testuser123@example.com. Signups must go
+        // through the two-step /auth/signup/start + /auth/signup/verify
+        // flow so no user record exists until the email is confirmed.
+        return tnm_json_error(
+            'signup_deprecated',
+            'Please update the ShopMyNest app to the latest version to sign up. This registration method is no longer supported.',
+            410
+        );
+
+        // The rest of this method is unreachable but kept in place until
+        // the next full audit so any old integrations that somehow reach
+        // it get a clean error rather than a fatal.
         if ( 'yes' !== tnm_get_option( 'allow_buyer_registration', 'yes' ) ) {
             return tnm_json_error( 'registration_disabled', 'Registration is currently disabled.', 403 );
         }

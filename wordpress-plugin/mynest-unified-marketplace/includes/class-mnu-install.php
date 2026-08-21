@@ -310,6 +310,32 @@ final class MNU_Install {
         ) $charset;";
 
         global $wpdb;
+
+        // v3.7.122.16 — pending signups.
+        // A signup does NOT create a wp_users row anymore. Step 1
+        // (/auth/signup/start) stashes the desired credentials + a 6-digit
+        // code + a magic-link token here. Step 2 (/auth/signup/verify)
+        // consumes the row and creates the real user via wp_create_user.
+        // Rows automatically expire after 24h; a daily cron purges them.
+        $queries[] = 'CREATE TABLE ' . tnm_table( 'pending_signups' ) . " (
+            id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+            email varchar(190) NOT NULL,
+            username varchar(60) NOT NULL,
+            display_name varchar(190) NOT NULL DEFAULT '',
+            password_hash varchar(255) NOT NULL,
+            code varchar(6) NOT NULL,
+            token varchar(64) NOT NULL,
+            attempts smallint(5) unsigned NOT NULL DEFAULT 0,
+            last_sent_at int(11) unsigned NOT NULL DEFAULT 0,
+            created_at int(11) unsigned NOT NULL,
+            expires_at int(11) unsigned NOT NULL,
+            PRIMARY KEY  (id),
+            UNIQUE KEY email (email),
+            UNIQUE KEY username (username),
+            KEY token (token),
+            KEY expires_at (expires_at)
+        ) $charset;";
+
         $queries[] = 'CREATE TABLE ' . $wpdb->prefix . "mnu_import_jobs (
             id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
             seller_id bigint(20) unsigned NOT NULL,
