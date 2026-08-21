@@ -1457,8 +1457,12 @@ function mnu_native_seller_splits( WC_Order $order ): array {
         $line_gross = (float) $item->get_subtotal() + (float) $item->get_subtotal_tax();
         $line_fee   = (float) $item->get_meta( '_tnm_platform_fee', true );
         if ( $line_fee <= 0 ) {
-            // Fallback: 8% of the pre-tax subtotal, matching stamp_item_snapshot().
-            $line_fee = round( (float) $item->get_subtotal() * 0.08, 2 );
+            // Fallback: current platform fee percentage of the pre-tax subtotal,
+            // matching stamp_item_snapshot(). v3.9.1 — reads from the live
+            // setting so a future percentage change doesn't leave this line
+            // stuck at the old value.
+            $rate     = function_exists( 'tnm_fee_percent' ) ? ( (float) tnm_fee_percent() / 100.0 ) : 0.10;
+            $line_fee = round( (float) $item->get_subtotal() * $rate, 2 );
         }
         if ( ! isset( $splits[ $seller_id ] ) ) {
             $splits[ $seller_id ] = array( 'gross_cents' => 0, 'fee_cents' => 0, 'net_cents' => 0 );

@@ -1247,7 +1247,10 @@ final class TNM_Marketplace {
             );
         }
         // v3.7.124 — surface the seller's Stripe-fee share so the app can
-        // show the seller's true net (product − 8% − Stripe fee on product).
+        // show the seller's true net (product − platform fee − Stripe fee
+        // on product). Note: under v3.8.0 the platform fee is a flat 10%
+        // and the Stripe fee is absorbed by the platform, so this line
+        // stays zero on new-model orders.
         // For orders where the platform kept the shipping (new-model orders),
         // we intentionally do NOT expose a shipping line to the seller —
         // they never received that money.
