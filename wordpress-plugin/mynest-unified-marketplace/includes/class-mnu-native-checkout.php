@@ -1083,8 +1083,7 @@ function mnu_native_connect_intent_params( WC_Order $order ): array {
     }
 
     // Group per-item platform fee by seller. `_tnm_platform_fee` is stamped
-    // during stamp_item_snapshot() so it already reflects the current
-    // marketplace fee rate (v3.7.123: 10%, admin-configurable via tnm_settings).
+    // during stamp_item_snapshot() so it already reflects the 8% marketplace fee.
     $seller_fees = array();
     foreach ( $order->get_items() as $item ) {
         if ( ! $item instanceof WC_Order_Item_Product ) {
@@ -1117,7 +1116,7 @@ function mnu_native_connect_intent_params( WC_Order $order ): array {
 
     // v3.7.122.10 — seller eats the Stripe processing fee. Add the estimated
     // Stripe fee on the FULL charge total (product + shipping + tax) to the
-    // platform's marketplace fee so the seller's net transfer is reduced accordingly.
+    // platform's 8% so the seller's net transfer is reduced accordingly.
     // Stamp both components on the order so ledger + refund guardrail can
     // read exact numbers instead of re-estimating.
     $order_total_cents         = mnu_native_cents( $order->get_total() );
@@ -1421,8 +1420,8 @@ function mnu_native_complete( WP_REST_Request $request ): array|WP_Error {
  *   )
  *
  * `fee_cents` comes from _tnm_platform_fee stamped by stamp_item_snapshot() at
- * cart time (the current marketplace fee rate, default 10% as of v3.7.123).
- * If a line is missing the fee meta we fall back to tnm_fee_percent() of gross.
+ * cart time (the 8% marketplace fee). If a line is missing the fee meta we
+ * fall back to 8% of gross.
  *
  * @return array<int, array<string, int>>
  */
@@ -1439,9 +1438,8 @@ function mnu_native_seller_splits( WC_Order $order ): array {
         $line_gross = (float) $item->get_subtotal() + (float) $item->get_subtotal_tax();
         $line_fee   = (float) $item->get_meta( '_tnm_platform_fee', true );
         if ( $line_fee <= 0 ) {
-            // Fallback: current fee rate on the pre-tax subtotal, matching
-            // stamp_item_snapshot(). v3.7.123 default is 10%.
-            $line_fee = round( (float) $item->get_subtotal() * ( tnm_fee_percent() / 100 ), 2 );
+            // Fallback: 8% of the pre-tax subtotal, matching stamp_item_snapshot().
+            $line_fee = round( (float) $item->get_subtotal() * 0.08, 2 );
         }
         if ( ! isset( $splits[ $seller_id ] ) ) {
             $splits[ $seller_id ] = array( 'gross_cents' => 0, 'fee_cents' => 0, 'net_cents' => 0 );

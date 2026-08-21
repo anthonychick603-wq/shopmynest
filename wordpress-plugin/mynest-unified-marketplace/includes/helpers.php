@@ -58,11 +58,7 @@ function tnm_update_option( string $key, mixed $value ): void {
 }
 
 function tnm_fee_percent(): float {
-    // v3.7.123 — default marketplace fee bumped 8% → 10%. Installs whose
-    // admin explicitly saved a value keep whatever is in tnm_settings; a
-    // migration in MNU_Install rewrites a stale 8 to 10 on upgrade so the
-    // stored value doesn't shadow the new default forever.
-    return max( 0.0, min( 100.0, (float) tnm_get_option( 'fee_percent', 10 ) ) );
+    return max( 0.0, min( 100.0, (float) tnm_get_option( 'fee_percent', 8 ) ) );
 }
 
 function tnm_fee_label(): string {

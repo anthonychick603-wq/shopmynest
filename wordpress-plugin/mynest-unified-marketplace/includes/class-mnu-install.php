@@ -89,7 +89,7 @@ final class MNU_Install {
 
     public static function set_defaults(): void {
         $defaults = array(
-            'fee_percent'              => 10,
+            'fee_percent'              => 8,
             'fee_label'                => 'Nest Service Fee',
             'holding_days'             => 7,
             'minimum_payout'           => 25,
@@ -110,17 +110,7 @@ final class MNU_Install {
             'seller_order_emails'      => 'yes',
         );
         $current = get_option( 'tnm_settings', array() );
-        $merged  = wp_parse_args( is_array( $current ) ? $current : array(), $defaults );
-
-        // v3.7.123 — platform fee bumped from 8% to 10%. If the site still
-        // has the old default explicitly stored, promote it to 10 so the new
-        // rate applies without an admin visiting Settings. Any custom value
-        // an admin set (7, 12, whatever) is respected.
-        if ( isset( $current['fee_percent'] ) && (float) $current['fee_percent'] === 8.0 ) {
-            $merged['fee_percent'] = 10;
-        }
-
-        update_option( 'tnm_settings', $merged, false );
+        update_option( 'tnm_settings', wp_parse_args( is_array( $current ) ? $current : array(), $defaults ), false );
         update_option( 'tnm_db_version', MNU_DB_VERSION, false );
         update_option( 'mnu_version', MNU_VERSION, false );
     }
