@@ -1489,12 +1489,27 @@ function mnu_native_seller_splits( WC_Order $order ): array {
  * @param string   $charge_id  The Stripe charge id (from intent.latest_charge)
  */
 function mnu_native_issue_seller_transfers( WC_Order $order, string $charge_id ): void {
-    if ( ! class_exists( 'MNU_Connect' ) ) {
-        return;
-    }
     $existing = (array) json_decode( (string) $order->get_meta( '_mnu_seller_transfers', true ), true );
     if ( ! empty( $existing ) ) {
         return; // Already processed.
+    }
+
+    // v3.9.2 — Under the v3.8.0 money model, 100% of the buyer's charge stays
+    // at the platform. Sellers are paid via manual ACH from Bluevine after the
+    // 7-day holding window (see the Payouts admin console). Skip every Stripe
+    // Connect transfer here, but keep stamping the platform-shipping meta so
+    // the ledger's `platform_keeps_shipping` branch still fires for legacy
+    // pre-v3.8.0 sellers whose orders somehow hit this webhook.
+    if ( '1' === (string) $order->get_meta( '_mnu_v380_model', true ) ) {
+        $order->update_meta_data( '_mnu_platform_shipping_kept_cents', (string) mnu_native_cents( (float) $order->get_shipping_total() ) );
+        $order->update_meta_data( '_mnu_seller_transfers', wp_json_encode( array( '__v380' => array( 'status' => 'skipped', 'reason' => 'v3.8.0 money model — manual ACH payouts, no Stripe Connect transfers' ) ) ) );
+        $order->add_order_note( 'Skipped per-seller Stripe transfers (v3.8.0 money model). Sellers will be paid manually via ACH after the holding window.' );
+        $order->save();
+        return;
+    }
+
+    if ( ! class_exists( 'MNU_Connect' ) ) {
+        return;
     }
     $splits = mnu_native_seller_splits( $order );
     if ( count( $splits ) < 2 ) {

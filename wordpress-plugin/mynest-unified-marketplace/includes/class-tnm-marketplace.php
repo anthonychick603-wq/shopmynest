@@ -281,7 +281,7 @@ final class TNM_Marketplace {
         if ( ! empty( $request['id'] ) || ! tnm_seller_listing_blocked() ) {
             return $prepared;
         }
-        return tnm_json_error( 'stripe_onboarding_required', tnm_seller_listing_blocked_message(), 403 );
+        return tnm_json_error( 'bank_account_required', tnm_seller_listing_blocked_message(), 403 );
     }
 
     public static function stamp_product_seller( int $post_id, WP_Post $post, bool $update ): void {
@@ -553,23 +553,22 @@ final class TNM_Marketplace {
         if ( ! tnm_current_user_can_manage_seller( $seller_id ) || ( ! tnm_is_seller( $seller_id ) && ! tnm_is_admin_or_manager() ) ) {
             return tnm_json_error( 'seller_permission_denied', 'You cannot create products for this seller.', 403 );
         }
-        // Allow other code (e.g. bulk CSV importer) to bypass the Stripe onboarding gate.
-        // Products still get created as pending/draft; the seller must connect Stripe before
-        // they can actually be published for sale.
-        $skip_stripe_gate = (bool) apply_filters( 'mnu_skip_stripe_onboarding_gate', false, $seller_id, $data );
-        if ( ! $skip_stripe_gate && ! tnm_is_admin_or_manager() && class_exists( 'MNU_Connect' ) && ! MNU_Connect::seller_can_sell( $seller_id ) ) {
-            return tnm_json_error( 'stripe_onboarding_required', 'You must finish connecting your bank account with Stripe before you can list new products. Open your seller dashboard to complete Stripe onboarding.', 403 );
+        // v3.9.2 — sellers must save a bank account (routing + account number)
+        // before they can list products. The old Stripe Connect gate is gone;
+        // payouts run as manual ACH from the platform's business checking after
+        // the 7-day holding window. The filter name is preserved for anything
+        // (like the bulk CSV importer) that already opts out of the pre-list gate.
+        $skip_bank_gate = (bool) apply_filters( 'mnu_skip_stripe_onboarding_gate', false, $seller_id, $data );
+        if ( ! $skip_bank_gate && ! tnm_is_admin_or_manager() && class_exists( 'MNU_Bank_Account' ) && ! MNU_Bank_Account::has_bank_account( $seller_id ) ) {
+            return tnm_json_error( 'bank_account_required', 'Add a bank account before you can list new products. Open your seller dashboard → Payout account and enter your routing and account numbers.', 403 );
         }
 
-        // v3.7.122.9 — sellers must connect their own Shippo account before
-        // they can list products. This makes the marketplace's cost story
-        // clean (postage bills to the seller's Shippo balance, not the
-        // platform) and forces sellers to see the shipping-label workflow
-        // during onboarding instead of after their first order.
-        $skip_shippo_gate = (bool) apply_filters( 'mnu_skip_shippo_onboarding_gate', false, $seller_id, $data );
-        if ( ! $skip_shippo_gate && ! tnm_is_admin_or_manager() && function_exists( 'mnu_shippo_read_token' ) && '' === mnu_shippo_read_token( $seller_id ) ) {
-            return tnm_json_error( 'shippo_onboarding_required', 'You must connect a Shippo account before you can list new products. Open your seller dashboard → Shipping (Shippo) to connect — you can create a free Shippo account there in under a minute.', 403 );
-        }
+        // v3.9.2 — Shippo gate removed. The platform now ships every order via
+        // its own Shippo token, so sellers no longer need to connect their own
+        // account. If a seller has personally connected Shippo, the label
+        // purchase path will still prefer their token; if not, it falls back
+        // to the platform token. Either way, listing a product is no longer
+        // blocked on Shippo connection.
 
         $name        = sanitize_text_field( (string) tnm_array_get( $data, 'name', '' ) );
         $description = wp_kses_post( (string) tnm_array_get( $data, 'description', '' ) );
@@ -689,18 +688,16 @@ final class TNM_Marketplace {
             $allowed = array( 'publish', 'draft', 'pending' );
             $status  = sanitize_key( (string) $data['status'] );
             if ( in_array( $status, $allowed, true ) ) {
-                // Block only the publish/go-live transition for sellers who have
-                // not finished Stripe onboarding; editing other fields is allowed.
-                if ( 'publish' === $status && 'publish' !== $product->get_status() && ! tnm_is_admin_or_manager() && class_exists( 'MNU_Connect' ) && ! MNU_Connect::seller_can_sell( $seller_id ) ) {
-                    return tnm_json_error( 'stripe_onboarding_required', 'You must finish connecting your bank account with Stripe before you can publish products. Open your seller dashboard to complete Stripe onboarding.', 403 );
+                // v3.9.2 — Block only the publish/go-live transition for sellers
+                // who have not saved a bank account yet. Editing other fields is
+                // allowed. Stripe Connect check is retired.
+                if ( 'publish' === $status && 'publish' !== $product->get_status() && ! tnm_is_admin_or_manager() && class_exists( 'MNU_Bank_Account' ) && ! MNU_Bank_Account::has_bank_account( $seller_id ) ) {
+                    return tnm_json_error( 'bank_account_required', 'Add a bank account before you can publish products. Open your seller dashboard → Payout account and enter your routing and account numbers.', 403 );
                 }
-                // v3.7.122.9 — same guardrail for Shippo. A seller who has
-                // a legacy draft can’t flip it live without connecting Shippo.
-                if ( 'publish' === $status && 'publish' !== $product->get_status() && ! tnm_is_admin_or_manager() && function_exists( 'mnu_shippo_read_token' ) && '' === mnu_shippo_read_token( $seller_id ) ) {
-                    return tnm_json_error( 'shippo_onboarding_required', 'You must connect a Shippo account before you can publish products. Open your seller dashboard → Shipping (Shippo) to connect.', 403 );
-                }
-                // v3.7.109 — no admin moderation gate; the Stripe check above
-                // is the only guard on going live.
+                // v3.9.2 — Shippo publish-gate removed. Platform Shippo token
+                // covers every seller by default.
+                // v3.7.109 — no admin moderation gate; the bank-account check
+                // above is the only guard on going live.
                 $product->set_status( $status );
             }
         }
@@ -766,10 +763,10 @@ final class TNM_Marketplace {
             return tnm_json_error( 'product_permission_denied', 'You cannot duplicate this product.', 403 );
         }
 
-        // Stripe onboarding gate — same rule as create. A seller who can't list
-        // new products shouldn't be able to duplicate their way around it.
-        if ( ! tnm_is_admin_or_manager() && class_exists( 'MNU_Connect' ) && ! MNU_Connect::seller_can_sell( $seller_id ) ) {
-            return tnm_json_error( 'stripe_onboarding_required', 'You must finish connecting your bank account with Stripe before you can duplicate a listing.', 403 );
+        // v3.9.2 — Bank-account gate, same rule as create. A seller who can't
+        // list new products shouldn't be able to duplicate their way around it.
+        if ( ! tnm_is_admin_or_manager() && class_exists( 'MNU_Bank_Account' ) && ! MNU_Bank_Account::has_bank_account( $seller_id ) ) {
+            return tnm_json_error( 'bank_account_required', 'Add a bank account before you can duplicate a listing. Open your seller dashboard → Payout account.', 403 );
         }
 
         $copy = new WC_Product_Simple();

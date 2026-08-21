@@ -97,25 +97,25 @@ function tnm_is_marketplace_user( int $user_id = 0 ): bool {
 }
 
 /**
- * Whether this user is a vendor who has not yet met the Stripe requirement for
- * listing products.
+ * Whether this user is a vendor who has not yet met the bank-account requirement
+ * for listing products.
  *
- * `tnm_stripe_payouts_enabled` user meta (read through MNU_Connect) is the one
- * source of truth for "Stripe is connected enough to sell"; the mobile app gates
- * its new-listing screen on the same value via nest-connect/v1/status. Admins and
- * shop managers are not vendors (tnm_is_seller() already excludes them) and list
- * on a seller's behalf, so they are never blocked.
+ * v3.9.2 — the Stripe Connect gate is retired. `MNU_Bank_Account::has_bank_account()`
+ * is now the one source of truth for "seller can list"; the mobile app gates its
+ * new-listing screen on the same value via nest/v1/seller/bank. Admins and shop
+ * managers are not vendors (tnm_is_seller() already excludes them) and list on a
+ * seller's behalf, so they are never blocked.
  */
 function tnm_seller_listing_blocked( int $user_id = 0 ): bool {
     $user_id = $user_id ?: get_current_user_id();
     if ( ! tnm_is_seller( $user_id ) ) {
         return false;
     }
-    return class_exists( 'MNU_Connect' ) && ! MNU_Connect::seller_can_sell( $user_id );
+    return class_exists( 'MNU_Bank_Account' ) && ! MNU_Bank_Account::has_bank_account( $user_id );
 }
 
 function tnm_seller_listing_blocked_message(): string {
-    return 'Connect your Stripe account before you can list products for sale. Open your seller dashboard to finish Stripe onboarding.';
+    return 'Add a bank account before you can list products for sale. Open your seller dashboard → Payout account.';
 }
 
 function tnm_is_admin_or_manager( int $user_id = 0 ): bool {
