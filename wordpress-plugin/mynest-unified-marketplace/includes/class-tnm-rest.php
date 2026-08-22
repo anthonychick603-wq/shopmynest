@@ -1132,6 +1132,19 @@ final class TNM_REST {
         // v3.7.120 — previous period accumulators (compare baseline).
         $prev_orders_count = 0;
         $prev_total_gross  = 0.0;
+        // v3.13.4 — status breakdown + repeat-customer ratio. Both are
+        // derived from the same wc_get_orders scan we already run for the
+        // current window, so this adds no new queries.
+        $status_counts   = array(
+            'processing' => 0,
+            'on-hold'    => 0,
+            'completed'  => 0,
+            'refunded'   => 0,
+        );
+        // Buyer id → order count inside the current window. Guest orders
+        // (customer_id == 0) are grouped under email so a guest who buys
+        // twice with the same email still counts as one customer.
+        $buyer_orders = array();
 
         foreach ( $query as $order ) {
             if ( ! tnm_order_contains_seller( $order, $seller_id ) ) {
@@ -1149,9 +1162,25 @@ final class TNM_REST {
             }
             if ( $is_current ) {
                 $orders_count++;
-                if ( 'refunded' === $order->get_status() ) {
+                $status = (string) $order->get_status();
+                if ( 'refunded' === $status ) {
                     $refunded_orders++;
                 }
+                if ( isset( $status_counts[ $status ] ) ) {
+                    $status_counts[ $status ]++;
+                }
+                // v3.13.4 — bucket by buyer for repeat-rate math. Prefer
+                // customer id, fall back to billing email for guest
+                // checkouts so we don't undercount.
+                $buyer_key = (int) $order->get_customer_id();
+                if ( $buyer_key <= 0 ) {
+                    $email = strtolower( (string) $order->get_billing_email() );
+                    $buyer_key = $email !== '' ? 'g:' . $email : 'g:' . $order->get_id();
+                }
+                if ( ! isset( $buyer_orders[ $buyer_key ] ) ) {
+                    $buyer_orders[ $buyer_key ] = 0;
+                }
+                $buyer_orders[ $buyer_key ]++;
             } else {
                 $prev_orders_count++;
             }
@@ -1210,6 +1239,23 @@ final class TNM_REST {
         $pct_gross       = $prev_total_gross > 0 ? round( ( $delta_gross / $prev_total_gross ) * 100, 1 ) : null;
         $pct_orders      = $prev_orders_count > 0 ? round( ( $delta_orders / $prev_orders_count ) * 100, 1 ) : null;
 
+        // v3.13.4 — customer summary. `repeat` is any buyer with >1 order
+        // inside the current window. `repeat_rate` is share of ORDERS from
+        // repeat customers, not share of customers, because that's what a
+        // seller reads intuitively ("X% of my sales came from returning
+        // buyers").
+        $unique_customers = count( $buyer_orders );
+        $repeat_customers = 0;
+        $repeat_orders    = 0;
+        foreach ( $buyer_orders as $count ) {
+            if ( $count > 1 ) {
+                $repeat_customers++;
+                $repeat_orders += $count;
+            }
+        }
+        $new_customers = $unique_customers - $repeat_customers;
+        $repeat_rate   = $orders_count > 0 ? round( $repeat_orders / $orders_count, 4 ) : 0;
+
         return rest_ensure_response( array(
             'range'          => $range,
             'revenue'        => $revenue_series,
@@ -1220,6 +1266,20 @@ final class TNM_REST {
             'total_net'      => round( max( 0, $total_gross - $total_fees ), 2 ),
             'top_products'   => $top_products,
             'pending_payout' => isset( $balances['available'] ) ? (float) $balances['available'] : 0,
+            // v3.13.4 — status breakdown (actionable: "3 orders waiting to
+            // ship") and repeat-customer ratio (marketplace health metric).
+            'status_breakdown' => array(
+                'processing' => (int) $status_counts['processing'],
+                'on_hold'    => (int) $status_counts['on-hold'],
+                'completed'  => (int) $status_counts['completed'],
+                'refunded'   => (int) $status_counts['refunded'],
+            ),
+            'customers'      => array(
+                'unique'      => (int) $unique_customers,
+                'new'         => (int) $new_customers,
+                'repeat'      => (int) $repeat_customers,
+                'repeat_rate' => (float) $repeat_rate,
+            ),
             'compare'        => array(
                 'prev_total_gross'  => round( $prev_total_gross, 2 ),
                 'prev_orders_count' => $prev_orders_count,
