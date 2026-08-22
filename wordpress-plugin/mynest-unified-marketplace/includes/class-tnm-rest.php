@@ -103,6 +103,11 @@ final class TNM_REST {
             array( 'methods' => WP_REST_Server::CREATABLE, 'callback' => array( __CLASS__, 'recently_viewed_track' ), 'permission_callback' => array( __CLASS__, 'logged_in' ) ),
             array( 'methods' => WP_REST_Server::DELETABLE, 'callback' => array( __CLASS__, 'recently_viewed_clear' ), 'permission_callback' => array( __CLASS__, 'logged_in' ) ),
         ) );
+        // v3.13.3 — individual row removal so buyers can drop a single
+        // product from their MRU without wiping the whole list.
+        register_rest_route( self::NS, '/me/recently-viewed/(?P<product_id>\d+)', array(
+            array( 'methods' => WP_REST_Server::DELETABLE, 'callback' => array( __CLASS__, 'recently_viewed_remove' ), 'permission_callback' => array( __CLASS__, 'logged_in' ) ),
+        ) );
         register_rest_route( self::NS, '/seller/orders', array( 'methods' => WP_REST_Server::READABLE, 'callback' => array( __CLASS__, 'seller_orders' ), 'permission_callback' => array( __CLASS__, 'seller' ) ) );
         register_rest_route( self::NS, '/seller/orders/(?P<id>\d+)', array( 'methods' => WP_REST_Server::EDITABLE, 'callback' => array( __CLASS__, 'seller_order_update' ), 'permission_callback' => array( __CLASS__, 'seller' ) ) );
         register_rest_route( self::NS, '/seller/earnings', array( 'methods' => WP_REST_Server::READABLE, 'callback' => array( __CLASS__, 'seller_earnings' ), 'permission_callback' => array( __CLASS__, 'seller' ) ) );
@@ -1892,5 +1897,29 @@ final class TNM_REST {
         $uid = get_current_user_id();
         delete_user_meta( $uid, self::RECENTLY_VIEWED_META );
         return rest_ensure_response( array( 'ok' => true ) );
+    }
+
+    // v3.13.3 — drop a single product from the buyer's MRU. Returns ok
+    // with the resulting row count so the client can update its local
+    // list without a follow-up GET. Idempotent: removing an id that
+    // isn't in the list is not an error — the client shouldn't have to
+    // race against the server on a UX action.
+    public static function recently_viewed_remove( WP_REST_Request $request ): WP_REST_Response {
+        $uid = get_current_user_id();
+        $pid = absint( $request->get_param( 'product_id' ) );
+        $rows = self::recently_viewed_load( $uid );
+        $filtered = array();
+        foreach ( $rows as $row ) {
+            if ( isset( $row['id'] ) && (int) $row['id'] === $pid ) {
+                continue;
+            }
+            $filtered[] = $row;
+        }
+        if ( empty( $filtered ) ) {
+            delete_user_meta( $uid, self::RECENTLY_VIEWED_META );
+        } else {
+            update_user_meta( $uid, self::RECENTLY_VIEWED_META, $filtered );
+        }
+        return rest_ensure_response( array( 'ok' => true, 'count' => count( $filtered ) ) );
     }
 }
