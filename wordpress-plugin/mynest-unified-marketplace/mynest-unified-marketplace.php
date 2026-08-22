@@ -3,7 +3,7 @@
  * Plugin Name: MyNest Unified Marketplace
  * Plugin URI:  https://shopmynest.com/
  * Description: One complete WooCommerce marketplace plugin for MyNest sellers, fees, payouts, orders, social features, mobile APIs, checkout, and shipping.
- * Version:     3.12.0
+ * Version:     3.13.0
  * Author:      MyNest
  * Text Domain: mynest-unified-marketplace
  * Requires at least: 6.5
@@ -16,8 +16,8 @@
 
 defined( 'ABSPATH' ) || exit;
 
-define( 'MNU_VERSION', '3.12.0' );
-define( 'MNU_DB_VERSION', '3.0.16' );
+define( 'MNU_VERSION', '3.13.0' );
+define( 'MNU_DB_VERSION', '3.0.17' );
 define( 'MNU_FILE', __FILE__ );
 define( 'MNU_BASENAME', plugin_basename( __FILE__ ) );
 define( 'MNU_PATH', plugin_dir_path( __FILE__ ) );
@@ -123,6 +123,7 @@ function mnu_load_files(): void {
 		// searches, blog, save-alert pill, and seller rating badges to the
 		// browsing site as native WordPress surfaces.
 		'includes/class-mnu-web-parity.php',
+		'includes/class-mnu-custom-requests.php',
 		// v3.7.114 — admin console REST routes powering the mobile admin drawer.
 		'includes/class-mnu-admin-console.php',
 	);
@@ -301,6 +302,7 @@ final class MNU_Plugin {
 		// because wp_insert_post -> get_permalink touches $wp_rewrite,
 		// which is only initialized on the 'init' hook. Defer to 'init'.
 		MNU_Web_Parity::init();
+		MNU_Custom_Requests::init();
 		MNU_Admin_Console::init();
 		TNM_Order_Review_Card::init();
 		TNM_Review_Nudge::init();

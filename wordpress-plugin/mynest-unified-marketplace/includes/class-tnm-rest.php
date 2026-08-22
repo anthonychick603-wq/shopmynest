@@ -1016,17 +1016,25 @@ final class TNM_REST {
     }
 
     public static function seller_product_create( WP_REST_Request $request ): WP_REST_Response|WP_Error {
-        $product_id = TNM_Marketplace::create_product( get_current_user_id(), $request->get_json_params() ?: $request->get_params() );
+        $params = $request->get_json_params() ?: $request->get_params();
+        $product_id = TNM_Marketplace::create_product( get_current_user_id(), $params );
         if ( is_wp_error( $product_id ) ) {
             return $product_id;
+        }
+        if ( array_key_exists( 'customizable', $params ) ) {
+            update_post_meta( $product_id, '_mnu_customizable', filter_var( $params['customizable'], FILTER_VALIDATE_BOOLEAN ) ? 'yes' : 'no' );
         }
         return rest_ensure_response( TNM_Marketplace::product_to_array( wc_get_product( $product_id ), true ) );
     }
 
     public static function seller_product_update( WP_REST_Request $request ): WP_REST_Response|WP_Error {
-        $product_id = TNM_Marketplace::update_product( get_current_user_id(), absint( $request['id'] ), $request->get_json_params() ?: $request->get_params() );
+        $params = $request->get_json_params() ?: $request->get_params();
+        $product_id = TNM_Marketplace::update_product( get_current_user_id(), absint( $request['id'] ), $params );
         if ( is_wp_error( $product_id ) ) {
             return $product_id;
+        }
+        if ( array_key_exists( 'customizable', $params ) ) {
+            update_post_meta( $product_id, '_mnu_customizable', filter_var( $params['customizable'], FILTER_VALIDATE_BOOLEAN ) ? 'yes' : 'no' );
         }
         return rest_ensure_response( TNM_Marketplace::product_to_array( wc_get_product( $product_id ), true ) );
     }

@@ -337,6 +337,58 @@ final class MNU_Install {
         // (/auth/signup/start) stashes the desired credentials + a 6-digit
         // code + a magic-link token here. Step 2 (/auth/signup/verify)
         // consumes the row and creates the real user via wp_create_user.
+        // v3.13.0 — Customization requests. Buyer opens a request against a
+        // seller's product marked `_mnu_customizable=yes`. Seller can post
+        // messages, attach a quote (price + lead time), then buyer accepts and
+        // pays through a private one-off SKU (see class-mnu-custom-requests.php).
+        // Status flow: open → quoted → accepted → paid → completed
+        //                            → declined | withdrawn
+        $queries[] = 'CREATE TABLE ' . tnm_table( 'custom_requests' ) . " (
+            id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+            buyer_id bigint(20) unsigned NOT NULL,
+            seller_id bigint(20) unsigned NOT NULL,
+            product_id bigint(20) unsigned NOT NULL DEFAULT 0,
+            title varchar(200) NOT NULL,
+            description text NOT NULL,
+            budget_cents int(11) unsigned NOT NULL DEFAULT 0,
+            quantity smallint(5) unsigned NOT NULL DEFAULT 1,
+            reference_photo_ids text NULL,
+            status varchar(20) NOT NULL DEFAULT 'open',
+            quoted_price_cents int(11) unsigned NOT NULL DEFAULT 0,
+            quoted_lead_days smallint(5) unsigned NOT NULL DEFAULT 0,
+            quoted_at datetime NULL,
+            quote_note text NULL,
+            decline_reason varchar(500) NULL,
+            private_product_id bigint(20) unsigned NOT NULL DEFAULT 0,
+            order_id bigint(20) unsigned NOT NULL DEFAULT 0,
+            last_activity_at datetime NOT NULL,
+            created_at datetime NOT NULL,
+            updated_at datetime NOT NULL,
+            PRIMARY KEY  (id),
+            KEY buyer_status (buyer_id,status,last_activity_at),
+            KEY seller_status (seller_id,status,last_activity_at),
+            KEY product_id (product_id),
+            KEY private_product_id (private_product_id),
+            KEY order_id (order_id)
+        ) $charset;";
+
+        // v3.13.0 — thread of messages per custom request. Kept separate from
+        // the omnibus messages table so we can enforce request-scoped
+        // permissions without leaking DM history. `kind` distinguishes plain
+        // buyer/seller chat from system events ("seller quoted", "buyer
+        // accepted") so the UI can render them differently.
+        $queries[] = 'CREATE TABLE ' . tnm_table( 'custom_request_messages' ) . " (
+            id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+            request_id bigint(20) unsigned NOT NULL,
+            sender_id bigint(20) unsigned NOT NULL,
+            kind varchar(20) NOT NULL DEFAULT 'message',
+            body text NOT NULL,
+            photo_attachments text NULL,
+            created_at datetime NOT NULL,
+            PRIMARY KEY  (id),
+            KEY request_created (request_id,created_at)
+        ) $charset;";
+
         // Rows automatically expire after 24h; a daily cron purges them.
         $queries[] = 'CREATE TABLE ' . tnm_table( 'pending_signups' ) . " (
             id bigint(20) unsigned NOT NULL AUTO_INCREMENT,

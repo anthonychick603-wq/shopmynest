@@ -1045,6 +1045,7 @@ final class TNM_Marketplace {
             'image'             => wp_get_attachment_image_url( $product->get_image_id(), 'large' ) ?: wc_placeholder_img_src(),
             'gallery'           => array_values( array_filter( array_map( static fn( $id ) => wp_get_attachment_image_url( $id, 'large' ), $product->get_gallery_image_ids() ) ) ),
             'permalink'         => get_permalink( $product->get_id() ),
+            'customizable'      => 'yes' === get_post_meta( $product->get_id(), '_mnu_customizable', true ),
             'product_rating'    => class_exists( 'TNM_Social' )
                 ? TNM_Social::product_rating_summary( $product->get_id() )
                 : array( 'rating' => 0.0, 'review_count' => 0 ),
