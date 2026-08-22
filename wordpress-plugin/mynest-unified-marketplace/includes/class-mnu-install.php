@@ -389,6 +389,23 @@ final class MNU_Install {
             KEY request_created (request_id,created_at)
         ) $charset;";
 
+        // v3.13.2 — Abandoned-cart snapshots. One row per buyer whose cart
+        // has been modified but not checked out. Updated on every cart
+        // mutation, cleared on order placement. A daily WP-Cron sweep
+        // emails a single reminder for rows older than 24h that haven't
+        // been reminded or dismissed yet.
+        $queries[] = 'CREATE TABLE ' . tnm_table( 'abandoned_carts' ) . " (
+            user_id bigint(20) unsigned NOT NULL,
+            line_count smallint(5) unsigned NOT NULL DEFAULT 0,
+            total_cents int(11) unsigned NOT NULL DEFAULT 0,
+            items_json longtext NOT NULL,
+            updated_at datetime NOT NULL,
+            reminded_at datetime NULL,
+            dismissed_at datetime NULL,
+            PRIMARY KEY  (user_id),
+            KEY sweep_idx (reminded_at,dismissed_at,updated_at)
+        ) $charset;";
+
         // Rows automatically expire after 24h; a daily cron purges them.
         $queries[] = 'CREATE TABLE ' . tnm_table( 'pending_signups' ) . " (
             id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
