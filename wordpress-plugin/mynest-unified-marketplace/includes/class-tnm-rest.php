@@ -15,7 +15,7 @@ final class TNM_REST {
         register_rest_route( self::NS, '/auth/login', array( 'methods' => WP_REST_Server::CREATABLE, 'callback' => array( __CLASS__, 'login' ), 'permission_callback' => '__return_true' ) );
         register_rest_route( self::NS, '/auth/logout', array( 'methods' => WP_REST_Server::CREATABLE, 'callback' => array( __CLASS__, 'logout' ), 'permission_callback' => array( __CLASS__, 'logged_in' ) ) );
         register_rest_route( self::NS, '/auth/me', array( array( 'methods' => WP_REST_Server::READABLE, 'callback' => array( __CLASS__, 'me' ), 'permission_callback' => array( __CLASS__, 'logged_in' ) ), array( 'methods' => WP_REST_Server::EDITABLE, 'callback' => array( __CLASS__, 'update_me' ), 'permission_callback' => array( __CLASS__, 'logged_in' ) ) ) );
-        register_rest_route( self::NS, '/media', array( 'methods' => WP_REST_Server::CREATABLE, 'callback' => array( __CLASS__, 'upload_media' ), 'permission_callback' => array( __CLASS__, 'seller' ) ) );
+        register_rest_route( self::NS, '/media', array( 'methods' => WP_REST_Server::CREATABLE, 'callback' => array( __CLASS__, 'upload_media' ), 'permission_callback' => array( __CLASS__, 'media_upload_permission' ) ) );
 
         register_rest_route( self::NS, '/categories', array( 'methods' => WP_REST_Server::READABLE, 'callback' => array( __CLASS__, 'categories' ), 'permission_callback' => '__return_true' ) );
         register_rest_route( self::NS, '/products', array( 'methods' => WP_REST_Server::READABLE, 'callback' => array( __CLASS__, 'products' ), 'permission_callback' => '__return_true' ) );
@@ -77,9 +77,13 @@ final class TNM_REST {
         register_rest_route( self::NS, '/admin/coupons', array( array( 'methods' => WP_REST_Server::READABLE, 'callback' => array( __CLASS__, 'admin_coupons_list' ), 'permission_callback' => array( __CLASS__, 'admin' ) ), array( 'methods' => WP_REST_Server::CREATABLE, 'callback' => array( __CLASS__, 'admin_coupon_create' ), 'permission_callback' => array( __CLASS__, 'admin' ) ) ) );
         register_rest_route( self::NS, '/admin/coupons/(?P<id>\d+)', array( array( 'methods' => WP_REST_Server::EDITABLE, 'callback' => array( __CLASS__, 'admin_coupon_update' ), 'permission_callback' => array( __CLASS__, 'admin' ) ), array( 'methods' => WP_REST_Server::DELETABLE, 'callback' => array( __CLASS__, 'admin_coupon_delete' ), 'permission_callback' => array( __CLASS__, 'admin' ) ) ) );
         register_rest_route( self::NS, '/coupons/apply', array( 'methods' => WP_REST_Server::CREATABLE, 'callback' => array( __CLASS__, 'coupon_apply' ), 'permission_callback' => array( __CLASS__, 'logged_in' ) ) );
-        // v3.7.119 (Build #9-lite) — product reviews list. Submit already exists at
-        // /sellers/{id}/reviews (POST) and is verified against buyer orders.
-        register_rest_route( self::NS, '/products/(?P<id>\d+)/reviews', array( 'methods' => WP_REST_Server::READABLE, 'callback' => array( __CLASS__, 'product_reviews' ), 'permission_callback' => '__return_true' ) );
+        register_rest_route( self::NS, '/products/(?P<id>\d+)/reviews', array(
+            array( 'methods' => WP_REST_Server::READABLE, 'callback' => array( __CLASS__, 'product_reviews' ), 'permission_callback' => '__return_true' ),
+            array( 'methods' => WP_REST_Server::CREATABLE, 'callback' => array( __CLASS__, 'submit_product_review' ), 'permission_callback' => array( __CLASS__, 'logged_in' ) ),
+        ) );
+        register_rest_route( self::NS, '/products/(?P<id>\d+)/reviews/(?P<review_id>\d+)/response', array( 'methods' => WP_REST_Server::CREATABLE, 'callback' => array( __CLASS__, 'respond_to_product_review' ), 'permission_callback' => array( __CLASS__, 'logged_in' ) ) );
+        register_rest_route( self::NS, '/orders/(?P<id>\d+)/reviewable-products', array( 'methods' => WP_REST_Server::READABLE, 'callback' => array( __CLASS__, 'reviewable_products' ), 'permission_callback' => array( __CLASS__, 'logged_in' ) ) );
+        register_rest_route( self::NS, '/seller/reviews', array( 'methods' => WP_REST_Server::READABLE, 'callback' => array( __CLASS__, 'seller_product_reviews' ), 'permission_callback' => array( __CLASS__, 'seller' ) ) );
         // v3.7.119 (Build #11) — buyer address book. GET lists, POST creates, PUT edits,
         // DELETE removes. Multi-address support (existing /ops/addresses is single-shipping).
         register_rest_route( self::NS, '/me/addresses', array( array( 'methods' => WP_REST_Server::READABLE, 'callback' => array( __CLASS__, 'address_book_list' ), 'permission_callback' => array( __CLASS__, 'logged_in' ) ), array( 'methods' => WP_REST_Server::CREATABLE, 'callback' => array( __CLASS__, 'address_book_create' ), 'permission_callback' => array( __CLASS__, 'logged_in' ) ) ) );
@@ -122,6 +126,13 @@ final class TNM_REST {
             return tnm_json_error( 'rest_login_required', 'Authentication is required.', 401 );
         }
         return tnm_is_seller() || tnm_is_admin_or_manager() ? true : tnm_json_error( 'rest_seller_required', 'An approved seller account is required.', 403 );
+    }
+
+    public static function media_upload_permission( WP_REST_Request $request ): bool|WP_Error {
+        if ( 'review' === sanitize_key( (string) $request->get_param( 'context' ) ) ) {
+            return self::logged_in();
+        }
+        return self::seller();
     }
 
     // v3.7.119 (Build #10) — admin/shop-manager gate for site-wide coupon CRUD.
@@ -1519,19 +1530,154 @@ final class TNM_REST {
         $product_id = absint( $request['id'] );
         $product = wc_get_product( $product_id );
         if ( ! $product ) {
-            return rest_ensure_response( array( 'items' => array(), 'total' => 0, 'average' => 0 ) );
+            return rest_ensure_response( array( 'items' => array(), 'total' => 0, 'average' => 0, 'page' => 1, 'total_pages' => 0 ) );
+        }
+        $page     = max( 1, (int) $request->get_param( 'page' ) );
+        $per_page = max( 1, min( 100, (int) ( $request->get_param( 'per_page' ) ?: 20 ) ) );
+        return rest_ensure_response( TNM_Social::product_reviews( $product_id, $page, $per_page ) );
+    }
+
+    public static function submit_product_review( WP_REST_Request $request ): WP_REST_Response|WP_Error {
+        global $wpdb;
+        $reviewer_id = get_current_user_id();
+        $product_id  = absint( $request['id'] );
+        $order_id    = absint( $request->get_param( 'order_id' ) );
+        $rating      = (int) $request->get_param( 'rating' );
+        $review      = sanitize_textarea_field( (string) $request->get_param( 'review' ) );
+        $variation_id = absint( $request->get_param( 'variation_id' ) );
+        $photo_ids    = array_values( array_filter( array_map( 'absint', (array) $request->get_param( 'photo_ids' ) ) ) );
+        $product      = $product_id ? wc_get_product( $product_id ) : false;
+
+        if ( ! $product || ! $order_id || $rating < 1 || $rating > 5 || strlen( $review ) > 2000 || count( $photo_ids ) > 5 ) {
+            return tnm_json_error( 'invalid_product_review', 'Enter a rating, review, and valid review details.', 422 );
+        }
+        $order = wc_get_order( $order_id );
+        if ( ! $order || (int) $order->get_customer_id() !== $reviewer_id || ! in_array( $order->get_status(), array( 'completed' ), true ) ) {
+            return tnm_json_error( 'review_not_verified', 'Only the buyer of a completed order can review this product.', 403 );
+        }
+        $purchased = false;
+        foreach ( $order->get_items() as $item ) {
+            if ( ! $item instanceof WC_Order_Item_Product || (int) $item->get_product_id() !== $product_id ) {
+                continue;
+            }
+            if ( $variation_id && (int) $item->get_variation_id() !== $variation_id ) {
+                continue;
+            }
+            $purchased = true;
+            if ( ! $variation_id ) {
+                $variation_id = (int) $item->get_variation_id();
+            }
+            break;
+        }
+        if ( ! $purchased ) {
+            return tnm_json_error( 'review_not_verified', 'This completed order does not contain that product.', 403 );
+        }
+        foreach ( $photo_ids as $photo_id ) {
+            $photo = get_post( $photo_id );
+            if ( ! $photo || 'attachment' !== $photo->post_type || (int) $photo->post_author !== $reviewer_id ) {
+                return tnm_json_error( 'review_not_verified', 'Review photos must be uploaded by the buyer.', 403 );
+            }
         }
         $seller_id = tnm_get_product_seller_id( $product );
         if ( ! $seller_id ) {
-            return rest_ensure_response( array( 'items' => array(), 'total' => 0, 'average' => 0 ) );
+            return tnm_json_error( 'product_not_found', 'Product not found.', 404 );
         }
-        // Product reviews are the seller's reviews scoped to the product's line
-        // items. Since our reviews table stores by seller_id we don't have a
-        // product-scoped view; return the seller reviews with the product's
-        // aggregate. Product-scoped reviews are the next iteration.
+        $existing = $wpdb->get_var( $wpdb->prepare( 'SELECT id FROM ' . tnm_table( 'reviews' ) . ' WHERE reviewer_id=%d AND order_id=%d AND product_id=%d', $reviewer_id, $order_id, $product_id ) );
+        if ( $existing ) {
+            return tnm_json_error( 'product_review_exists', 'You have already reviewed this product from this order.', 409 );
+        }
+        $now = current_time( 'mysql', true );
+        $inserted = $wpdb->insert(
+            tnm_table( 'reviews' ),
+            array(
+                'reviewer_id' => $reviewer_id, 'seller_id' => $seller_id, 'order_id' => $order_id,
+                'product_id' => $product_id, 'variation_id' => $variation_id, 'rating' => $rating,
+                'review' => $review, 'photo_ids' => wp_json_encode( $photo_ids ), 'status' => 'approved',
+                'created_at' => $now, 'updated_at' => $now,
+            ),
+            array( '%d', '%d', '%d', '%d', '%d', '%d', '%s', '%s', '%s', '%s', '%s' )
+        );
+        if ( false === $inserted ) {
+            if ( false !== strpos( strtolower( $wpdb->last_error ), 'duplicate' ) ) {
+                return tnm_json_error( 'product_review_exists', 'You have already reviewed this product from this order.', 409 );
+            }
+            return tnm_json_error( 'product_review_failed', 'Could not save your review. Please try again.', 500 );
+        }
+        $review_id = (int) $wpdb->insert_id;
+        TNM_Social::clear_product_rating_summary( $product_id );
+        tnm_notify( $seller_id, $reviewer_id, 'product_review', 'New product review', wp_trim_words( $review, 20 ), $review_id, 'orders' );
+        $row = $wpdb->get_row( $wpdb->prepare( 'SELECT * FROM ' . tnm_table( 'reviews' ) . ' WHERE id=%d', $review_id ), ARRAY_A );
+        return rest_ensure_response( TNM_Social::product_review_to_array( $row ?: array() ) );
+    }
+
+    public static function respond_to_product_review( WP_REST_Request $request ): WP_REST_Response|WP_Error {
+        global $wpdb;
+        $product_id = absint( $request['id'] );
+        $review_id  = absint( $request['review_id'] );
+        $response   = sanitize_textarea_field( (string) $request->get_param( 'response' ) );
+        $product    = $product_id ? wc_get_product( $product_id ) : false;
+        if ( ! $product || tnm_get_product_seller_id( $product ) !== get_current_user_id() ) {
+            return tnm_json_error( 'review_response_forbidden', 'Only this product’s seller can respond.', 403 );
+        }
+        if ( '' === trim( $response ) || strlen( $response ) > 2000 ) {
+            return tnm_json_error( 'invalid_review_response', 'Response must be between 1 and 2000 characters.', 422 );
+        }
+        $updated = $wpdb->update(
+            tnm_table( 'reviews' ),
+            array( 'seller_response' => $response, 'seller_response_at' => current_time( 'mysql', true ), 'updated_at' => current_time( 'mysql', true ) ),
+            array( 'id' => $review_id, 'product_id' => $product_id ),
+            array( '%s', '%s', '%s' ),
+            array( '%d', '%d' )
+        );
+        if ( false === $updated || 0 === $updated ) {
+            return tnm_json_error( 'product_review_not_found', 'Review not found.', 404 );
+        }
+        $row = $wpdb->get_row( $wpdb->prepare( 'SELECT * FROM ' . tnm_table( 'reviews' ) . ' WHERE id=%d', $review_id ), ARRAY_A );
+        return rest_ensure_response( TNM_Social::product_review_to_array( $row ?: array() ) );
+    }
+
+    public static function reviewable_products( WP_REST_Request $request ): WP_REST_Response|WP_Error {
+        global $wpdb;
+        $order_id = absint( $request['id'] );
+        $order    = wc_get_order( $order_id );
+        if ( ! $order || (int) $order->get_customer_id() !== get_current_user_id() || ! in_array( $order->get_status(), array( 'completed' ), true ) ) {
+            return tnm_json_error( 'reviewable_products_forbidden', 'Only completed orders you placed can be reviewed.', 403 );
+        }
+        $items = array();
+        foreach ( $order->get_items() as $item ) {
+            if ( ! $item instanceof WC_Order_Item_Product ) {
+                continue;
+            }
+            $product_id = (int) $item->get_product_id();
+            if ( ! $product_id || isset( $items[ $product_id ] ) ) {
+                continue;
+            }
+            $product = wc_get_product( $product_id );
+            $items[ $product_id ] = array(
+                'product_id'       => $product_id,
+                'name'             => $product ? $product->get_name() : $item->get_name(),
+                'image'            => $product ? ( wp_get_attachment_image_url( $product->get_image_id(), 'medium' ) ?: wc_placeholder_img_src() ) : '',
+                'variation_id'     => (int) $item->get_variation_id(),
+                'already_reviewed' => (bool) $wpdb->get_var( $wpdb->prepare( 'SELECT id FROM ' . tnm_table( 'reviews' ) . ' WHERE reviewer_id=%d AND order_id=%d AND product_id=%d', get_current_user_id(), $order_id, $product_id ) ),
+            );
+        }
+        return rest_ensure_response( array( 'items' => array_values( $items ) ) );
+    }
+
+    public static function seller_product_reviews( WP_REST_Request $request ): WP_REST_Response {
+        global $wpdb;
         $page     = max( 1, (int) $request->get_param( 'page' ) );
-        $per_page = max( 1, (int) ( $request->get_param( 'per_page' ) ?: 20 ) );
-        return rest_ensure_response( TNM_Social::seller_reviews( $seller_id, $page, $per_page ) );
+        $per_page = max( 1, min( 100, (int) ( $request->get_param( 'per_page' ) ?: 20 ) ) );
+        $seller_id = get_current_user_id();
+        $summary = $wpdb->get_row( $wpdb->prepare( "SELECT COUNT(*) AS total, AVG(rating) AS average FROM " . tnm_table( 'reviews' ) . " WHERE seller_id=%d AND product_id!=0 AND status='approved'", $seller_id ), ARRAY_A );
+        $rows = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM " . tnm_table( 'reviews' ) . " WHERE seller_id=%d AND product_id!=0 AND status='approved' ORDER BY created_at DESC,id DESC LIMIT %d OFFSET %d", $seller_id, $per_page, ( $page - 1 ) * $per_page ), ARRAY_A );
+        $items = array();
+        foreach ( $rows as $row ) {
+            $item = TNM_Social::product_review_to_array( $row );
+            $item['product_name'] = get_the_title( (int) $row['product_id'] );
+            $items[] = $item;
+        }
+        return rest_ensure_response( array( 'items' => $items, 'total' => (int) ( $summary['total'] ?? 0 ), 'average' => round( (float) ( $summary['average'] ?? 0 ), 2 ), 'page' => $page, 'total_pages' => (int) ceil( (int) ( $summary['total'] ?? 0 ) / $per_page ) ) );
     }
 
     // ---- Buyer address book ------------------------------------------------

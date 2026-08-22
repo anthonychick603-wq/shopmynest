@@ -291,14 +291,20 @@ final class MNU_Install {
             reviewer_id bigint(20) unsigned NOT NULL,
             seller_id bigint(20) unsigned NOT NULL,
             order_id bigint(20) unsigned NOT NULL,
+            product_id bigint(20) unsigned NOT NULL DEFAULT 0,
+            variation_id bigint(20) unsigned NOT NULL DEFAULT 0,
             rating tinyint(2) unsigned NOT NULL,
             review text NULL,
+            photo_ids text NULL,
+            seller_response text NULL,
+            seller_response_at datetime NULL,
             status varchar(20) NOT NULL DEFAULT 'approved',
             created_at datetime NOT NULL,
             updated_at datetime NOT NULL,
             PRIMARY KEY  (id),
-            UNIQUE KEY reviewer_seller_order (reviewer_id,seller_id,order_id),
-            KEY seller_status (seller_id,status)
+            UNIQUE KEY reviewer_order_product (reviewer_id,order_id,product_id),
+            KEY seller_status (seller_id,status),
+            KEY product_status (product_id,status)
         ) $charset;";
 
         // v3.7.101 — saved searches. Each row is one "alert me when new listings
@@ -371,6 +377,18 @@ final class MNU_Install {
 
         foreach ( $queries as $query ) {
             dbDelta( $query );
+        }
+
+        // dbDelta adds columns and indexes but deliberately does not remove an
+        // obsolete index. Drop the pre-v3.12 seller/order uniqueness rule after
+        // every install/upgrade, then let the CREATE statement above add the
+        // product-aware key idempotently.
+        $review_indexes = $wpdb->get_results( 'SHOW INDEX FROM ' . tnm_table( 'reviews' ), ARRAY_A );
+        foreach ( (array) $review_indexes as $index ) {
+            if ( 'reviewer_seller_order' === (string) ( $index['Key_name'] ?? '' ) ) {
+                $wpdb->query( 'ALTER TABLE ' . tnm_table( 'reviews' ) . ' DROP INDEX reviewer_seller_order' );
+                break;
+            }
         }
     }
 

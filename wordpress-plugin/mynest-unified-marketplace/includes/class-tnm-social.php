@@ -3,6 +3,7 @@
 defined( 'ABSPATH' ) || exit;
 
 final class TNM_Social {
+    private static array $product_rating_cache = array();
     public static function init(): void {
         add_action( 'wp_insert_post', array( __CLASS__, 'stamp_post_author' ), 10, 3 );
     }
@@ -722,7 +723,7 @@ final class TNM_Social {
         global $wpdb;
         $row = $wpdb->get_row(
             $wpdb->prepare(
-                'SELECT COUNT(*) AS total, AVG(rating) AS average FROM ' . tnm_table( 'reviews' ) . " WHERE seller_id=%d AND status='approved'",
+                'SELECT COUNT(*) AS total, AVG(rating) AS average FROM ' . tnm_table( 'reviews' ) . " WHERE seller_id=%d AND product_id=0 AND status='approved'",
                 $seller_id
             ),
             ARRAY_A
@@ -735,14 +736,98 @@ final class TNM_Social {
         return $summary;
     }
 
+    /**
+     * Lightweight per-product rating aggregate for buyer-facing product cards.
+     *
+     * @return array{rating: float, review_count: int}
+     */
+    public static function product_rating_summary( int $product_id ): array {
+        if ( isset( self::$product_rating_cache[ $product_id ] ) ) {
+            return self::$product_rating_cache[ $product_id ];
+        }
+        global $wpdb;
+        $row = $wpdb->get_row(
+            $wpdb->prepare(
+                'SELECT COUNT(*) AS total, AVG(rating) AS average FROM ' . tnm_table( 'reviews' ) . " WHERE product_id=%d AND status='approved'",
+                $product_id
+            ),
+            ARRAY_A
+        );
+        return self::$product_rating_cache[ $product_id ] = array(
+            'rating'       => round( (float) ( $row['average'] ?? 0 ), 2 ),
+            'review_count' => (int) ( $row['total'] ?? 0 ),
+        );
+    }
+
+    public static function clear_product_rating_summary( int $product_id ): void {
+        unset( self::$product_rating_cache[ $product_id ] );
+    }
+
+    public static function product_review_to_array( array $row ): array {
+        $photo_ids = json_decode( (string) ( $row['photo_ids'] ?? '' ), true );
+        $photo_ids = is_array( $photo_ids ) ? array_values( array_filter( array_map( 'absint', $photo_ids ) ) ) : array();
+        $variation_id = (int) ( $row['variation_id'] ?? 0 );
+        $variation    = $variation_id ? wc_get_product( $variation_id ) : false;
+        $photos    = array_values(
+            array_filter(
+                array_map(
+                    static fn( int $photo_id ) => wp_get_attachment_image_url( $photo_id, 'large' ) ?: wp_get_attachment_url( $photo_id ),
+                    $photo_ids
+                )
+            )
+        );
+        return array(
+            'id'                 => (int) $row['id'],
+            'rating'             => (int) $row['rating'],
+            'review'             => (string) ( $row['review'] ?? '' ),
+            'product_id'         => (int) $row['product_id'],
+            'variation_id'       => $variation_id,
+            'variation_name'     => $variation ? wp_strip_all_tags( $variation->get_name() ) : null,
+            'order_id'           => (int) $row['order_id'],
+            'reviewer_id'        => (int) $row['reviewer_id'],
+            'reviewer'           => array(
+                'display_name' => get_the_author_meta( 'display_name', (int) $row['reviewer_id'] ),
+                'avatar'       => tnm_user_avatar_url( (int) $row['reviewer_id'], 128 ),
+            ),
+            'photo_ids'          => $photo_ids,
+            'photos'             => $photos,
+            'seller_response'    => $row['seller_response'] ?? null,
+            'seller_response_at' => empty( $row['seller_response_at'] ) ? null : tnm_mysql_utc_to_iso8601( $row['seller_response_at'] ),
+            'created_at'         => empty( $row['created_at'] ) ? '' : tnm_mysql_utc_to_iso8601( $row['created_at'] ),
+        );
+    }
+
+    public static function product_reviews( int $product_id, int $page = 1, int $per_page = 20 ): array {
+        global $wpdb;
+        $per_page = max( 1, min( 100, $per_page ) );
+        $page     = max( 1, $page );
+        $summary  = $wpdb->get_row( $wpdb->prepare( "SELECT COUNT(*) AS total, AVG(rating) AS average FROM " . tnm_table( 'reviews' ) . " WHERE product_id=%d AND status='approved'", $product_id ), ARRAY_A );
+        $rows     = $wpdb->get_results(
+            $wpdb->prepare(
+                "SELECT * FROM " . tnm_table( 'reviews' ) . " WHERE product_id=%d AND status='approved' ORDER BY created_at DESC,id DESC LIMIT %d OFFSET %d",
+                $product_id,
+                $per_page,
+                ( $page - 1 ) * $per_page
+            ),
+            ARRAY_A
+        );
+        return array(
+            'items'       => array_map( array( __CLASS__, 'product_review_to_array' ), $rows ),
+            'total'       => (int) ( $summary['total'] ?? 0 ),
+            'average'     => round( (float) ( $summary['average'] ?? 0 ), 2 ),
+            'page'        => $page,
+            'total_pages' => (int) ceil( (int) ( $summary['total'] ?? 0 ) / $per_page ),
+        );
+    }
+
     public static function seller_reviews( int $seller_id, int $page = 1, int $per_page = 20 ): array {
         global $wpdb;
         $per_page = max( 1, min( 100, $per_page ) );
         $offset   = ( max( 1, $page ) - 1 ) * $per_page;
-        $summary  = $wpdb->get_row( $wpdb->prepare( "SELECT COUNT(*) AS total, AVG(rating) AS average FROM " . tnm_table( 'reviews' ) . " WHERE seller_id=%d AND status='approved'", $seller_id ), ARRAY_A );
+        $summary  = $wpdb->get_row( $wpdb->prepare( "SELECT COUNT(*) AS total, AVG(rating) AS average FROM " . tnm_table( 'reviews' ) . " WHERE seller_id=%d AND product_id=0 AND status='approved'", $seller_id ), ARRAY_A );
         $rows     = $wpdb->get_results(
             $wpdb->prepare(
-                "SELECT * FROM " . tnm_table( 'reviews' ) . " WHERE seller_id=%d AND status='approved' ORDER BY created_at DESC,id DESC LIMIT %d OFFSET %d",
+                "SELECT * FROM " . tnm_table( 'reviews' ) . " WHERE seller_id=%d AND product_id=0 AND status='approved' ORDER BY created_at DESC,id DESC LIMIT %d OFFSET %d",
                 $seller_id,
                 $per_page,
                 $offset
