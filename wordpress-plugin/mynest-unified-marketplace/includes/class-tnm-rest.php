@@ -998,31 +998,27 @@ final class TNM_REST {
         $seller_id = get_current_user_id();
         $page      = max( 1, (int) $request->get_param( 'page' ) );
         $per_page  = max( 1, min( 100, (int) ( $request->get_param( 'per_page' ) ?: 30 ) ) );
+        // v3.13.11 fixed the helper to bypass WP_Query's status-visibility
+        // gating. v3.13.12 does the same for the endpoint itself: we already
+        // have the seller's IDs in date-desc order (usort at the bottom of
+        // tnm_seller_product_ids), so hydrate them directly instead of
+        // round-tripping through another WP_Query that also strips drafts
+        // for non-admin sellers.
         $product_ids = tnm_seller_product_ids( $seller_id, array( 'publish', 'pending', 'draft', 'private' ) );
-        // v3.13.7 — explicitly declare this query is for the current user's
-        // own posts. Without `perm=editable`, WP_Query silently strips
-        // draft/pending/private rows from the result set for non-admin
-        // users even when they own them, so sellers couldn't see their own
-        // stuck drafts in the mobile app. Also disable status-visibility
-        // filtering that other plugins (Woo, security) might hook in.
-        $query = new WP_Query(
-            array(
-                'post_type'      => 'product',
-                'post_status'    => array( 'publish', 'pending', 'draft', 'private' ),
-                'post__in'       => $product_ids ?: array( 0 ),
-                'posts_per_page' => $per_page,
-                'paged'          => $page,
-                'orderby'        => 'date',
-                'order'          => 'DESC',
-                'perm'           => 'editable',
-            )
-        );
-        $items = array();
-        foreach ( $query->posts as $post ) {
-            $product = wc_get_product( $post->ID );
-            if ( $product ) {
-                $items[] = TNM_Marketplace::product_to_array( $product, true );
+        $total       = count( $product_ids );
+        $total_pages = $per_page > 0 ? (int) ceil( $total / $per_page ) : 1;
+        $offset      = ( $page - 1 ) * $per_page;
+        $page_ids    = array_slice( $product_ids, max( 0, $offset ), $per_page );
+        $items       = array();
+        $status_tally = array();
+        foreach ( $page_ids as $product_id ) {
+            $product = wc_get_product( $product_id );
+            if ( ! $product ) {
+                continue;
             }
+            $items[] = TNM_Marketplace::product_to_array( $product, true );
+            $status  = (string) $product->get_status();
+            $status_tally[ $status ] = ( $status_tally[ $status ] ?? 0 ) + 1;
         }
         // v3.13.7 — emit a compact debug block so we can diagnose why drafts
         // sometimes don't come through. Only visible to the seller themself
@@ -1037,19 +1033,14 @@ final class TNM_REST {
         $response = array(
             'items'       => $items,
             'page'        => $page,
-            'total'       => (int) $query->found_posts,
-            'total_pages' => (int) $query->max_num_pages,
+            'total'       => $total,
+            'total_pages' => max( 1, $total_pages ),
             'debug'       => array(
                 'seller_id'         => $seller_id,
                 'product_ids_count' => count( $product_ids ),
                 'product_ids'       => array_slice( $product_ids, 0, 50 ),
-                'query_found'       => (int) $query->found_posts,
-                'posts_by_status'   => array_count_values(
-                    array_map(
-                        static fn( $p ) => (string) get_post_status( $p ),
-                        $query->posts
-                    )
-                ),
+                'query_found'       => $total,
+                'posts_by_status'   => $status_tally,
             ),
         );
         return rest_ensure_response( $response );
