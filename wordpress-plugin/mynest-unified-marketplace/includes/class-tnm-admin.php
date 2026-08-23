@@ -105,7 +105,7 @@ final class TNM_Admin {
                 <table class="form-table" role="presentation">
                     <?php self::number_row( 'Platform fee percentage', 'fee_percent', $settings, 10, '0.01', '0', '100', 'Applied to each product line after discounts, excluding tax and shipping.' ); ?>
                     <?php self::text_row( 'Fee label', 'fee_label', $settings, 'Nest Service Fee', 'Shown in seller transaction breakdowns.' ); ?>
-                    <?php self::number_row( 'Holding period (days)', 'holding_days', $settings, 3, '1', '0', '180', 'Completed-order earnings become available after this period. Admins bypass the hold and see earnings immediately.' ); ?>
+                    <?php self::number_row( 'Holding period (days)', 'holding_days', $settings, 7, '1', '0', '180', 'Completed-order earnings become available after this period. Admins bypass the hold and see earnings immediately.' ); ?>
                     <?php self::number_row( 'Minimum payout', 'minimum_payout', $settings, 25, '0.01', '0', '', 'A seller cannot request less than this available balance.' ); ?>
                     <?php // v3.13.5 — seller listings always auto-publish. The old
                     // "Require admin review" gate was retired in v3.7.109 (see
@@ -199,7 +199,7 @@ final class TNM_Admin {
         $new = array(
             'fee_percent'              => max( 0, min( 100, (float) ( $_POST['fee_percent'] ?? 10 ) ) ),
             'fee_label'                => sanitize_text_field( wp_unslash( $_POST['fee_label'] ?? 'Nest Service Fee' ) ),
-            'holding_days'             => max( 0, min( 180, absint( $_POST['holding_days'] ?? 3 ) ) ),
+            'holding_days'             => max( 0, min( 180, absint( $_POST['holding_days'] ?? 7 ) ) ),
             'minimum_payout'           => max( 0, (float) ( $_POST['minimum_payout'] ?? 25 ) ),
             // v3.13.5 — always publish immediately (setting removed from UI).
             'seller_can_publish'       => 'yes',

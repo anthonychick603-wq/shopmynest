@@ -91,7 +91,7 @@ final class MNU_Install {
         $defaults = array(
             'fee_percent'              => 10,
             'fee_label'                => 'Nest Service Fee',
-            'holding_days'             => 3,
+            'holding_days'             => 7,
             'minimum_payout'           => 25,
             'automatic_payouts'        => 'no',
             'payout_schedule'          => 'weekly',
@@ -113,15 +113,15 @@ final class MNU_Install {
         $current = is_array( $current ) ? $current : array();
         $merged  = wp_parse_args( $current, $defaults );
 
-        // v3.13.14 — one-time migration: the previous default was 7 days.
-        // If the site is still on the old default (never customized) and
-        // hasn't been migrated yet, drop it to the new 3-day default.
-        // Explicit customizations are preserved.
-        if ( 'yes' !== get_option( 'mnu_holding_days_v3_13_14_migrated', 'no' ) ) {
-            if ( ! isset( $current['holding_days'] ) || 7 === (int) $current['holding_days'] ) {
-                $merged['holding_days'] = 3;
+        // v3.13.15 — seller hold reverted to 7 days. If the v3.13.14
+        // migration flipped this install from 7 to 3, put it back to 7
+        // exactly once so existing installs match the new default. Any
+        // explicit customization the operator has since made is preserved.
+        if ( 'yes' !== get_option( 'mnu_holding_days_v3_13_15_restored', 'no' ) ) {
+            if ( ! isset( $current['holding_days'] ) || 3 === (int) $current['holding_days'] ) {
+                $merged['holding_days'] = 7;
             }
-            update_option( 'mnu_holding_days_v3_13_14_migrated', 'yes', false );
+            update_option( 'mnu_holding_days_v3_13_15_restored', 'yes', false );
         }
 
         update_option( 'tnm_settings', $merged, false );

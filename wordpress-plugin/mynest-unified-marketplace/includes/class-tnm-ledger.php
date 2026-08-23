@@ -122,13 +122,13 @@ final class TNM_Ledger {
         // orders' behavior verbatim.
         $platform_keeps_shipping = $is_v380_model || '' !== (string) $order->get_meta( '_mnu_platform_shipping_kept_cents', true );
 
-        // v3.13.14 — holding window is per-seller now. Sellers wait
-        // holding_days (default 3) after order-paid time before earnings
-        // become available. Admins skip the hold entirely: their earnings
-        // are written directly as 'available' with available_at=now so a
-        // cancellation or refund can be issued against real funds without
-        // waiting on the release cron.
-        $holding_days     = max( 0, (int) tnm_get_option( 'holding_days', 3 ) );
+        // v3.13.14 — holding window is per-seller. Sellers wait
+        // holding_days (default 7, per v3.13.15) after order-paid time
+        // before earnings become available. Admins skip the hold entirely:
+        // their earnings are written directly as 'available' with
+        // available_at=now so a cancellation or refund can be issued
+        // against real funds without waiting on the release cron.
+        $holding_days     = max( 0, (int) tnm_get_option( 'holding_days', 7 ) );
         $paid_date        = $order->get_date_paid() ?: $order->get_date_created();
         $paid_ts          = $paid_date ? $paid_date->getTimestamp() : time();
         $seller_available = gmdate( 'Y-m-d H:i:s', $paid_ts + ( $holding_days * DAY_IN_SECONDS ) );
