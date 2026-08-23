@@ -154,36 +154,56 @@ function tnm_seller_product_ids( int $seller_id, array $statuses = array( 'publi
         return array();
     }
 
-    $base_args = array(
-        'post_type'              => 'product',
-        'post_status'            => $statuses,
-        'posts_per_page'         => -1,
-        'fields'                 => 'ids',
-        'no_found_rows'          => true,
-        'orderby'                => 'date',
-        'order'                  => 'DESC',
-        'update_post_meta_cache' => false,
-        'update_post_term_cache' => false,
+    global $wpdb;
+
+    // v3.13.11 — bypass WP_Query's status-visibility filtering entirely.
+    //
+    // Prior versions used get_posts() with `post_status` set to the private
+    // statuses (draft/pending/private). WP_Query silently drops those rows
+    // from the result set when the current user lacks read_private_products,
+    // and a plain `tnm_seller` role does NOT have that cap. Result: the same
+    // helper returned 4 IDs when called from wp-admin (as an administrator)
+    // and 1 ID when called from a REST request (as the seller themself),
+    // hiding the seller's own drafts from their own Your Listings screen.
+    //
+    // Do a direct SQL lookup instead. The seller is asking about their own
+    // products; we handle authorization at the endpoint layer
+    // (get_current_user_id() === $seller_id), so we do not need WP_Query to
+    // second-guess visibility here.
+
+    $status_placeholders = implode( ',', array_fill( 0, count( $statuses ), '%s' ) );
+
+    // Branch 1: products whose WordPress post_author is the seller.
+    $author_sql = $wpdb->prepare(
+        // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+        "SELECT ID FROM {$wpdb->posts}
+         WHERE post_type = 'product'
+           AND post_author = %d
+           AND post_status IN ({$status_placeholders})",
+        array_merge( array( $seller_id ), $statuses )
     );
+    $ids = array_map( 'absint', (array) $wpdb->get_col( $author_sql ) );
 
-    $ids = get_posts( array_merge( $base_args, array( 'author' => $seller_id ) ) );
-
+    // Branch 2: legacy/migrated products where the author was left as an
+    // admin but the seller ID lives in a marketplace meta key.
     foreach ( array( '_tnm_seller_id', '_mynest_seller_id', '_wcv_vendor_id', '_dokan_vendor_id' ) as $meta_key ) {
-        $ids = array_merge(
-            $ids,
-            get_posts(
-                array_merge(
-                    $base_args,
-                    array(
-                        'meta_key'   => $meta_key,
-                        'meta_value' => $seller_id,
-                    )
-                )
-            )
+        $meta_sql = $wpdb->prepare(
+            // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+            "SELECT p.ID FROM {$wpdb->posts} p
+             INNER JOIN {$wpdb->postmeta} pm ON pm.post_id = p.ID
+             WHERE p.post_type = 'product'
+               AND p.post_status IN ({$status_placeholders})
+               AND pm.meta_key = %s
+               AND pm.meta_value = %s",
+            array_merge( $statuses, array( $meta_key, (string) $seller_id ) )
         );
+        $ids = array_merge( $ids, array_map( 'absint', (array) $wpdb->get_col( $meta_sql ) ) );
     }
 
     $ids = array_values( array_unique( array_map( 'absint', $ids ) ) );
+    // Final defensive pass — confirm the product's canonical seller ID matches
+    // and the status is still in the requested set. wc_get_product() reads
+    // through the object cache so this stays cheap.
     $ids = array_values(
         array_filter(
             $ids,
