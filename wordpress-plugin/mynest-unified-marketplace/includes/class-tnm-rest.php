@@ -1029,9 +1029,17 @@ final class TNM_REST {
         // (they hit their own endpoint) and only when ?debug=1 is passed, so
         // it's safe to ship. Shows product_ids the seller_products_ids helper
         // returned, the query's found_posts, and each post's status.
-        $response = array( 'items' => $items, 'page' => $page, 'total' => (int) $query->found_posts, 'total_pages' => (int) $query->max_num_pages );
-        if ( '1' === (string) $request->get_param( 'debug' ) ) {
-            $response['debug'] = array(
+        // v3.13.9 — always emit a compact debug block so the mobile app
+        // can display server_seller_id vs its own state when a seller
+        // reports missing listings. It's just metadata (no PII), and it
+        // lets us diagnose auth/token mapping bugs without needing to
+        // extract the bearer token from the device.
+        $response = array(
+            'items'       => $items,
+            'page'        => $page,
+            'total'       => (int) $query->found_posts,
+            'total_pages' => (int) $query->max_num_pages,
+            'debug'       => array(
                 'seller_id'         => $seller_id,
                 'product_ids_count' => count( $product_ids ),
                 'product_ids'       => array_slice( $product_ids, 0, 50 ),
@@ -1042,8 +1050,8 @@ final class TNM_REST {
                         $query->posts
                     )
                 ),
-            );
-        }
+            ),
+        );
         return rest_ensure_response( $response );
     }
 
