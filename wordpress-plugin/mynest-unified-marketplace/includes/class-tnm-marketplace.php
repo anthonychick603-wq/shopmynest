@@ -1078,6 +1078,40 @@ final class TNM_Marketplace {
             $data['status']           = $product->get_status();
             $data['sku']              = $product->get_sku();
             $data['sales']            = (int) $product->get_total_sales();
+            // v3.13.6 — when a listing is a draft, surface WHY so the mobile
+            // app can show the seller an actionable message instead of a
+            // silent "why is this a draft?" mystery. The ship-from guard
+            // reverts to draft when the seller's ship-from profile is
+            // incomplete or the product parcel (weight/dims) is missing; the
+            // two helpers below return the first missing field or ''.
+            if ( 'draft' === $product->get_status() ) {
+                $seller_id    = (int) get_post_meta( $product->get_id(), '_tnm_seller_id', true );
+                $missing_from = function_exists( 'mnu_seller_ship_from_missing_field' ) && $seller_id > 0
+                    ? mnu_seller_ship_from_missing_field( $seller_id )
+                    : '';
+                $missing_pkg  = function_exists( 'mnu_product_parcel_missing_field' )
+                    ? mnu_product_parcel_missing_field( $product->get_id() )
+                    : '';
+                if ( '' !== $missing_from ) {
+                    $data['draft_reason'] = array(
+                        'kind'  => 'ship_from',
+                        'field' => $missing_from,
+                        'label' => function_exists( 'mnu_missing_field_label' ) ? mnu_missing_field_label( $missing_from ) : $missing_from,
+                    );
+                } elseif ( '' !== $missing_pkg ) {
+                    $data['draft_reason'] = array(
+                        'kind'  => 'package',
+                        'field' => $missing_pkg,
+                        'label' => function_exists( 'mnu_missing_field_label' ) ? mnu_missing_field_label( $missing_pkg ) : $missing_pkg,
+                    );
+                } else {
+                    $data['draft_reason'] = array(
+                        'kind'  => 'manual',
+                        'field' => '',
+                        'label' => 'saved as draft',
+                    );
+                }
+            }
             // v3.7.104 - seller listings show a heart + count so the seller
             // knows which items are drawing interest. Only in seller context;
             // buyer-facing product cards don't need it.
