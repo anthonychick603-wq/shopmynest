@@ -879,22 +879,19 @@ final class TNM_REST {
         // v3.7.69 — bump the slice so sellers with big catalogs (Johanna has
         // 137) see the real count on the dashboard. The full
         // /seller/products endpoint still owns pagination for larger stores.
+        // v3.13.13 — tnm_seller_product_ids already returns the seller's IDs
+        // in date-desc order. Hydrate them directly with wc_get_product()
+        // instead of running another WP_Query, which for non-admin sellers
+        // would silently strip draft/pending/private rows via WP's status-
+        // visibility gating (the same bug that made Your Listings show 1
+        // product instead of 4 pre-v3.13.12). Preserves the previous slice
+        // cap of 500 so Johanna-sized catalogs still render fast.
         $recent_ids = array_slice( $product_ids, 0, 500 );
         $products   = array();
-        if ( $recent_ids ) {
-            $query = new WP_Query( array(
-                'post_type'      => 'product',
-                'post_status'    => array( 'publish', 'pending', 'draft', 'private' ),
-                'post__in'       => $recent_ids,
-                'orderby'        => 'post__in',
-                'posts_per_page' => count( $recent_ids ),
-                'no_found_rows'  => true,
-            ) );
-            foreach ( $query->posts as $post ) {
-                $product = wc_get_product( $post->ID );
-                if ( $product ) {
-                    $products[] = TNM_Marketplace::product_to_array( $product, true );
-                }
+        foreach ( $recent_ids as $product_id ) {
+            $product = wc_get_product( $product_id );
+            if ( $product ) {
+                $products[] = TNM_Marketplace::product_to_array( $product, true );
             }
         }
 

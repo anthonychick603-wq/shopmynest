@@ -684,20 +684,17 @@ final class TNM_Shortcodes {
     }
 
     private static function seller_product_query( int $seller_id ): array {
+        // v3.13.13 — hydrate IDs directly instead of round-tripping through a
+        // second WP_Query. WP_Query silently drops draft/pending/private
+        // rows for callers without read_private_products (tnm_seller lacks
+        // that cap), which is exactly why the web seller dashboard was
+        // showing an under-count of products for sellers viewing their own
+        // dashboard. tnm_seller_product_ids already returns date-desc.
         $product_ids = tnm_seller_product_ids( $seller_id, array( 'publish', 'pending', 'draft', 'private' ) );
-        $query = new WP_Query(
-            array(
-                'post_type'      => 'product',
-                'post_status'    => array( 'publish', 'pending', 'draft', 'private' ),
-                'post__in'       => $product_ids ?: array( 0 ),
-                'posts_per_page' => 100,
-                'orderby'        => 'date',
-                'order'          => 'DESC',
-            )
-        );
-        $products = array();
-        foreach ( $query->posts as $post ) {
-            $product = wc_get_product( $post->ID );
+        $product_ids = array_slice( $product_ids, 0, 100 );
+        $products    = array();
+        foreach ( $product_ids as $pid ) {
+            $product = wc_get_product( $pid );
             if ( $product ) {
                 $products[] = $product;
             }
