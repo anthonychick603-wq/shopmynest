@@ -268,7 +268,10 @@ final class MNU_Money_Split_Metabox {
 		$recovered     = is_array( $recovered ) ? $recovered : array();
 
 		foreach ( $order->get_refunds() as $wc_refund ) {
-			$rid    = (string) $wc_refund->get_refund_id();
+			// v3.13.10 — WC_Order_Refund does not expose get_refund_id(); the
+			// refund's own post ID is what we want as the "WC #N" tag, and
+			// that's returned by get_id() (inherited from WC_Abstract_Order).
+			$rid    = (string) $wc_refund->get_id();
 			$cents  = (int) round( abs( (float) $wc_refund->get_amount() ) * 100 );
 			$refund_rows[] = array(
 				'id'                => 'WC #' . $rid,
