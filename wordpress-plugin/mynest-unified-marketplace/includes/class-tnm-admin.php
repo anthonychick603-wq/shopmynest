@@ -107,7 +107,18 @@ final class TNM_Admin {
                     <?php self::text_row( 'Fee label', 'fee_label', $settings, 'Nest Service Fee', 'Shown in seller transaction breakdowns.' ); ?>
                     <?php self::number_row( 'Holding period (days)', 'holding_days', $settings, 7, '1', '0', '180', 'Completed-order earnings become available after this period.' ); ?>
                     <?php self::number_row( 'Minimum payout', 'minimum_payout', $settings, 25, '0.01', '0', '', 'A seller cannot request less than this available balance.' ); ?>
-                    <?php self::select_row( 'Seller product publishing', 'seller_can_publish', $settings, array( 'yes' => 'Publish immediately', 'no' => 'Require admin review' ), 'yes' ); ?>
+                    <?php // v3.13.5 — seller listings always auto-publish. The old
+                    // "Require admin review" gate was retired in v3.7.109 (see
+                    // TNM_Marketplace::create_product), so hiding the setting
+                    // here keeps the admin UI honest instead of implying the
+                    // moderation queue can be turned back on. ?>
+                    <tr>
+                        <th scope="row">Seller product publishing</th>
+                        <td>
+                            <p><strong>Publish immediately.</strong> New seller listings go live as soon as the seller saves them.</p>
+                            <p class="description">The bank-account requirement in <em>Payout account</em> is the real-money guardrail; no admin moderation queue.</p>
+                        </td>
+                    </tr>
                     <?php self::select_row( 'Verified seller reviews', 'verified_reviews_only', $settings, array( 'yes' => 'Purchased customers only', 'no' => 'Allow any logged-in buyer' ), 'yes' ); ?>
                     <?php self::select_row( 'Buyer registration', 'allow_buyer_registration', $settings, array( 'yes' => 'Enabled', 'no' => 'Disabled' ), 'yes' ); ?>
                     <?php self::number_row( 'App token lifetime (days)', 'token_lifetime_days', $settings, 30, '1', '1', '365', 'Mobile bearer tokens expire after this many days.' ); ?>
@@ -190,7 +201,8 @@ final class TNM_Admin {
             'fee_label'                => sanitize_text_field( wp_unslash( $_POST['fee_label'] ?? 'Nest Service Fee' ) ),
             'holding_days'             => max( 0, min( 180, absint( $_POST['holding_days'] ?? 7 ) ) ),
             'minimum_payout'           => max( 0, (float) ( $_POST['minimum_payout'] ?? 25 ) ),
-            'seller_can_publish'       => 'no' === ( $_POST['seller_can_publish'] ?? 'yes' ) ? 'no' : 'yes',
+            // v3.13.5 — always publish immediately (setting removed from UI).
+            'seller_can_publish'       => 'yes',
             'verified_reviews_only'    => 'no' === ( $_POST['verified_reviews_only'] ?? 'yes' ) ? 'no' : 'yes',
             'allow_buyer_registration' => 'no' === ( $_POST['allow_buyer_registration'] ?? 'yes' ) ? 'no' : 'yes',
             'token_lifetime_days'      => max( 1, min( 365, absint( $_POST['token_lifetime_days'] ?? 30 ) ) ),

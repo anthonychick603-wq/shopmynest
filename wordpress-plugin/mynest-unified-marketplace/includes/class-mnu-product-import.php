@@ -392,8 +392,9 @@ final class MNU_Product_Import {
         $previous_user = get_current_user_id();
         wp_set_current_user( $seller_id );
 
-        // Allow the seller to bulk-import their catalog before completing Stripe onboarding.
-        // Products are still created as pending/draft (seller_can_publish handles publication gating).
+        // Allow the seller to bulk-import their catalog before completing bank-account
+        // onboarding. Imported products go live immediately via TNM_Marketplace::create_product,
+        // which was hardcoded to 'publish' in v3.7.109 (no admin moderation queue).
         add_filter( 'mnu_skip_stripe_onboarding_gate', '__return_true' );
 
         $end = min( $processed + self::BATCH_SIZE, count( $rows ) );

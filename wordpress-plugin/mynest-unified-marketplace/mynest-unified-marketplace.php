@@ -3,7 +3,7 @@
  * Plugin Name: MyNest Unified Marketplace
  * Plugin URI:  https://shopmynest.com/
  * Description: One complete WooCommerce marketplace plugin for MyNest sellers, fees, payouts, orders, social features, mobile APIs, checkout, and shipping.
- * Version:     3.13.4
+ * Version:     3.13.5
  * Author:      MyNest
  * Text Domain: mynest-unified-marketplace
  * Requires at least: 6.5
@@ -16,7 +16,20 @@
 
 defined( 'ABSPATH' ) || exit;
 
-define( 'MNU_VERSION', '3.13.4' );
+define( 'MNU_VERSION', '3.13.5' );
+
+// v3.13.5 — seller listings always auto-publish. If a legacy install still
+// has `seller_can_publish=no` saved from the pre-v3.7.109 moderation queue,
+// coerce it back to 'yes' at read time so nothing downstream can misread the
+// setting and start creating drafts. The admin UI already removed the toggle;
+// this filter guarantees the value stays 'yes' even if the option row was
+// hand-edited or restored from an old backup.
+add_filter( 'option_thenest_settings', function ( $settings ) {
+	if ( is_array( $settings ) ) {
+		$settings['seller_can_publish'] = 'yes';
+	}
+	return $settings;
+}, 5 );
 define( 'MNU_DB_VERSION', '3.0.18' );
 define( 'MNU_FILE', __FILE__ );
 define( 'MNU_BASENAME', plugin_basename( __FILE__ ) );
