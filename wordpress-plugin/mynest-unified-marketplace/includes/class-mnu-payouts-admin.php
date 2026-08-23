@@ -8,7 +8,7 @@
  *   • The platform collects 100 % of buyer payments to a single Stripe
  *     account; sellers are no longer connected via Stripe Connect.
  *   • Every ledger row (type=earning) is written with the new formula
- *     (net = gross * 0.90, available_at = paid + 7 days) and starts as
+ *     (net = gross * 0.90, available_at = paid + holding_days) and starts as
  *     status='pending'.  A cron flips rows to status='available' once
  *     their available_at is reached.
  *   • Payouts are then made manually by ACH from Bluevine business

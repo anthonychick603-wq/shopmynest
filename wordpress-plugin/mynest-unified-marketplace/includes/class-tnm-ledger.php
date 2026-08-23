@@ -122,10 +122,17 @@ final class TNM_Ledger {
         // orders' behavior verbatim.
         $platform_keeps_shipping = $is_v380_model || '' !== (string) $order->get_meta( '_mnu_platform_shipping_kept_cents', true );
 
-        $holding_days   = max( 0, (int) tnm_get_option( 'holding_days', 7 ) );
-        $paid_date      = $order->get_date_paid() ?: $order->get_date_created();
-        $available_at   = $paid_date ? gmdate( 'Y-m-d H:i:s', $paid_date->getTimestamp() + ( $holding_days * DAY_IN_SECONDS ) ) : gmdate( 'Y-m-d H:i:s', time() + ( $holding_days * DAY_IN_SECONDS ) );
-        $now            = current_time( 'mysql', true );
+        // v3.13.14 — holding window is per-seller now. Sellers wait
+        // holding_days (default 3) after order-paid time before earnings
+        // become available. Admins skip the hold entirely: their earnings
+        // are written directly as 'available' with available_at=now so a
+        // cancellation or refund can be issued against real funds without
+        // waiting on the release cron.
+        $holding_days     = max( 0, (int) tnm_get_option( 'holding_days', 3 ) );
+        $paid_date        = $order->get_date_paid() ?: $order->get_date_created();
+        $paid_ts          = $paid_date ? $paid_date->getTimestamp() : time();
+        $seller_available = gmdate( 'Y-m-d H:i:s', $paid_ts + ( $holding_days * DAY_IN_SECONDS ) );
+        $now              = current_time( 'mysql', true );
 
         foreach ( $items as $item_id => $item ) {
             $seller_id = $item instanceof WC_Order_Item_Product ? tnm_get_order_item_seller_id( $item ) : 0;
@@ -174,6 +181,13 @@ final class TNM_Ledger {
             }
             $net = max( 0, $gross - $fee + $shipping );
 
+            // v3.13.14 — admins bypass the hold. Write the row already
+            // 'available' with available_at=now so /balances and payout
+            // eligibility both see it without waiting for the release cron.
+            $is_admin_seller = user_can( $seller_id, 'manage_options' );
+            $row_status      = $is_admin_seller ? 'available' : 'pending';
+            $row_available   = $is_admin_seller ? $now : $seller_available;
+
             $wpdb->query(
                 $wpdb->prepare(
                     'INSERT IGNORE INTO ' . tnm_table( 'ledger' ) . ' (seller_id,order_id,order_item_id,type,gross,platform_fee,tax,shipping,net,currency,status,available_at,payout_id,note,created_at,updated_at) VALUES (%d,%d,%d,%s,%f,%f,%f,%f,%f,%s,%s,%s,0,%s,%s,%s)',
@@ -187,8 +201,8 @@ final class TNM_Ledger {
                     $shipping,
                     $net,
                     $order->get_currency(),
-                    'pending',
-                    $available_at,
+                    $row_status,
+                    $row_available,
                     tnm_fee_label() . ' ' . tnm_fee_percent() . '%; sales tax excluded from seller payout.',
                     $now,
                     $now

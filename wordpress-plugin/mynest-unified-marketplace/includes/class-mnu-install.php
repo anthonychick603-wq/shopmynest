@@ -91,7 +91,7 @@ final class MNU_Install {
         $defaults = array(
             'fee_percent'              => 10,
             'fee_label'                => 'Nest Service Fee',
-            'holding_days'             => 7,
+            'holding_days'             => 3,
             'minimum_payout'           => 25,
             'automatic_payouts'        => 'no',
             'payout_schedule'          => 'weekly',
@@ -110,7 +110,21 @@ final class MNU_Install {
             'seller_order_emails'      => 'yes',
         );
         $current = get_option( 'tnm_settings', array() );
-        update_option( 'tnm_settings', wp_parse_args( is_array( $current ) ? $current : array(), $defaults ), false );
+        $current = is_array( $current ) ? $current : array();
+        $merged  = wp_parse_args( $current, $defaults );
+
+        // v3.13.14 — one-time migration: the previous default was 7 days.
+        // If the site is still on the old default (never customized) and
+        // hasn't been migrated yet, drop it to the new 3-day default.
+        // Explicit customizations are preserved.
+        if ( 'yes' !== get_option( 'mnu_holding_days_v3_13_14_migrated', 'no' ) ) {
+            if ( ! isset( $current['holding_days'] ) || 7 === (int) $current['holding_days'] ) {
+                $merged['holding_days'] = 3;
+            }
+            update_option( 'mnu_holding_days_v3_13_14_migrated', 'yes', false );
+        }
+
+        update_option( 'tnm_settings', $merged, false );
         update_option( 'tnm_db_version', MNU_DB_VERSION, false );
         update_option( 'mnu_version', MNU_VERSION, false );
     }
