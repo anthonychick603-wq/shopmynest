@@ -999,6 +999,12 @@ final class TNM_REST {
         $page      = max( 1, (int) $request->get_param( 'page' ) );
         $per_page  = max( 1, min( 100, (int) ( $request->get_param( 'per_page' ) ?: 30 ) ) );
         $product_ids = tnm_seller_product_ids( $seller_id, array( 'publish', 'pending', 'draft', 'private' ) );
+        // v3.13.7 — explicitly declare this query is for the current user's
+        // own posts. Without `perm=editable`, WP_Query silently strips
+        // draft/pending/private rows from the result set for non-admin
+        // users even when they own them, so sellers couldn't see their own
+        // stuck drafts in the mobile app. Also disable status-visibility
+        // filtering that other plugins (Woo, security) might hook in.
         $query = new WP_Query(
             array(
                 'post_type'      => 'product',
@@ -1008,6 +1014,7 @@ final class TNM_REST {
                 'paged'          => $page,
                 'orderby'        => 'date',
                 'order'          => 'DESC',
+                'perm'           => 'editable',
             )
         );
         $items = array();
@@ -1017,7 +1024,27 @@ final class TNM_REST {
                 $items[] = TNM_Marketplace::product_to_array( $product, true );
             }
         }
-        return rest_ensure_response( array( 'items' => $items, 'page' => $page, 'total' => (int) $query->found_posts, 'total_pages' => (int) $query->max_num_pages ) );
+        // v3.13.7 — emit a compact debug block so we can diagnose why drafts
+        // sometimes don't come through. Only visible to the seller themself
+        // (they hit their own endpoint) and only when ?debug=1 is passed, so
+        // it's safe to ship. Shows product_ids the seller_products_ids helper
+        // returned, the query's found_posts, and each post's status.
+        $response = array( 'items' => $items, 'page' => $page, 'total' => (int) $query->found_posts, 'total_pages' => (int) $query->max_num_pages );
+        if ( '1' === (string) $request->get_param( 'debug' ) ) {
+            $response['debug'] = array(
+                'seller_id'         => $seller_id,
+                'product_ids_count' => count( $product_ids ),
+                'product_ids'       => array_slice( $product_ids, 0, 50 ),
+                'query_found'       => (int) $query->found_posts,
+                'posts_by_status'   => array_count_values(
+                    array_map(
+                        static fn( $p ) => (string) get_post_status( $p ),
+                        $query->posts
+                    )
+                ),
+            );
+        }
+        return rest_ensure_response( $response );
     }
 
     public static function seller_product_create( WP_REST_Request $request ): WP_REST_Response|WP_Error {
