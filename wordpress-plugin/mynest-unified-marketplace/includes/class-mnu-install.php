@@ -113,15 +113,15 @@ final class MNU_Install {
         $current = is_array( $current ) ? $current : array();
         $merged  = wp_parse_args( $current, $defaults );
 
-        // v3.13.15 — seller hold reverted to 7 days. If the v3.13.14
-        // migration flipped this install from 7 to 3, put it back to 7
-        // exactly once so existing installs match the new default. Any
-        // explicit customization the operator has since made is preserved.
-        if ( 'yes' !== get_option( 'mnu_holding_days_v3_13_15_restored', 'no' ) ) {
-            if ( ! isset( $current['holding_days'] ) || 3 === (int) $current['holding_days'] ) {
-                $merged['holding_days'] = 7;
-            }
-            update_option( 'mnu_holding_days_v3_13_15_restored', 'yes', false );
+        // v3.13.15/16 — seller hold is 7 days. If the current stored
+        // value is 3, put it back to 7. This runs whenever set_defaults()
+        // is called and the value is still the v3.13.14 default; it is
+        // a no-op once holding_days is 7 or anything else operator-set.
+        // Not flag-guarded because a prior activation may have set the
+        // flag without actually coercing (e.g. if an upgrade path skipped
+        // set_defaults entirely, pre-v3.13.16).
+        if ( 3 === (int) ( $merged['holding_days'] ?? 0 ) ) {
+            $merged['holding_days'] = 7;
         }
 
         update_option( 'tnm_settings', $merged, false );
