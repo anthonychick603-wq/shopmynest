@@ -317,6 +317,10 @@ final class MNU_Install {
 
         // v3.9.0 (Phase 3) — audit log for manual ACH payout batches
         // created from WP Admin → Marketplace → Payouts.
+        //
+        // v3.13.30 Fix #12 — added `status`, `ach_reference`,
+        // `ach_confirmed_at`, `ach_confirmed_by`. dbDelta will ADD (never
+        // drop) the new columns on existing installs.
         $queries[] = 'CREATE TABLE ' . tnm_table( 'payout_batches' ) . " (
             id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
             created_at datetime NOT NULL,
@@ -325,9 +329,30 @@ final class MNU_Install {
             total_amount decimal(18,6) NOT NULL DEFAULT 0,
             row_count int unsigned NOT NULL DEFAULT 0,
             memo varchar(190) NOT NULL DEFAULT '',
+            status varchar(24) NOT NULL DEFAULT 'pending',
+            ach_reference varchar(64) NOT NULL DEFAULT '',
+            ach_confirmed_at datetime NULL DEFAULT NULL,
+            ach_confirmed_by bigint(20) unsigned NULL DEFAULT NULL,
             PRIMARY KEY  (id),
             KEY created_at (created_at),
-            KEY created_by (created_by)
+            KEY created_by (created_by),
+            KEY status (status)
+        ) $charset;";
+
+        // v3.13.30 Fix #12 — immutable join between a manual payout batch
+        // and the ledger rows it will pay. Rows are inserted at batch
+        // creation and the ledger row status stays 'available' until an
+        // admin confirms the ACH transfer via mark_paid + ach_reference.
+        $queries[] = 'CREATE TABLE ' . tnm_table( 'payout_batch_rows' ) . " (
+            id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+            batch_id bigint(20) unsigned NOT NULL,
+            seller_id bigint(20) unsigned NOT NULL,
+            ledger_row_id bigint(20) unsigned NOT NULL,
+            amount decimal(18,6) NOT NULL DEFAULT 0,
+            created_at datetime NOT NULL,
+            PRIMARY KEY  (id),
+            UNIQUE KEY batch_ledger (batch_id,ledger_row_id),
+            KEY seller_batch (seller_id,batch_id)
         ) $charset;";
 
         $queries[] = 'CREATE TABLE ' . tnm_table( 'follows' ) . " (

@@ -151,12 +151,23 @@ final class TNM_Ledger {
             }
             if ( $is_v380_model ) {
                 // v3.8.0 — hard-lock platform cut at 10% of the seller's
-                // product subtotal. The item snapshot may have been stamped
-                // with an older percent at product-add time; use
-                // that value only for reference and overwrite the ledger
-                // row fee to the new fixed 10% so seller_net is always
-                // product * 0.90 for new-model orders.
-                $fee = round( $gross * 0.10, wc_get_price_decimals() + 2 );
+                // product subtotal.
+                //
+                // v3.13.30 Fix #13 — compute the fee in integer cents so we
+                // don't leave fractional-cent residue in a 6-decimal column
+                // that the 2-decimal batch total later swallows silently.
+                // Rule: fee_cents = intdiv( gross_cents * 10 + 5, 100 )
+                // (round-half-up per cent). seller_net_cents is then
+                // gross_cents - fee_cents so 10% + 90% always sum EXACTLY
+                // back to gross_cents.
+                $gross_cents = (int) round( $gross * 100 );
+                $fee_cents   = intdiv( $gross_cents * 10 + 50, 100 );
+                $fee         = $fee_cents / 100;
+                // Force $gross to the exact cent representation so the
+                // net = gross - fee + shipping arithmetic below stays
+                // penny-exact even after WooCommerce hands us a repeating
+                // decimal.
+                $gross       = $gross_cents / 100;
             }
             if ( $platform_keeps_shipping ) {
                 // Platform keeps all shipping. Seller ledger row has zero
@@ -179,7 +190,16 @@ final class TNM_Ledger {
             } else {
                 $shipping = $qty_total > 0 ? $shipping_total * ( max( 1, (int) $item->get_quantity() ) / $qty_total ) : 0;
             }
-            $net = max( 0, $gross - $fee + $shipping );
+            // v3.13.30 Fix #13 — do the final settlement subtraction in
+            // integer cents too so a $0.005-style residue from shipping
+            // allocation can never leak a fractional cent into seller_net.
+            $net_cents = max(
+                0,
+                ( (int) round( $gross * 100 ) )
+                - ( (int) round( $fee * 100 ) )
+                + ( (int) round( $shipping * 100 ) )
+            );
+            $net = $net_cents / 100;
 
             // v3.13.14 — admins bypass the hold. Write the row already
             // 'available' with available_at=now so /balances and payout

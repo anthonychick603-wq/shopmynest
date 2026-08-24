@@ -2015,13 +2015,21 @@ function mnu_native_webhook( WP_REST_Request $request ): array|WP_Error {
             $expected_currency = strtolower( (string) mnu_native_get_settings()['currency'] );
             $received_currency = strtolower( sanitize_key( (string) ( $intent['currency'] ?? '' ) ) );
             if ( $expected_amount === $received_amount && $expected_currency === $received_currency ) {
-                $order->payment_complete( sanitize_text_field( (string) $intent['id'] ) );
-                $order->add_order_note( 'Stripe webhook confirmed payment for The Nest native checkout.' );
-                // v3.7.34 — Issue per-seller transfers for multi-seller carts (no-op for single-seller).
+                // v3.13.30 Fix #15 — stamp _thenest_stripe_latest_charge on the
+                // webhook success path (previously only the web finalizer wrote
+                // it). Required so charge.dispute.* and charge.refunded lookups
+                // can resolve back to the order for native-app checkouts.
                 $charge_id = sanitize_text_field( (string) ( $intent['latest_charge'] ?? '' ) );
                 if ( '' === $charge_id && ! empty( $intent['charges']['data'][0]['id'] ) ) {
                     $charge_id = sanitize_text_field( (string) $intent['charges']['data'][0]['id'] );
                 }
+                if ( '' !== $charge_id ) {
+                    $order->update_meta_data( '_thenest_stripe_latest_charge', $charge_id );
+                    $order->save();
+                }
+                $order->payment_complete( sanitize_text_field( (string) $intent['id'] ) );
+                $order->add_order_note( sprintf( 'Stripe webhook confirmed payment for The Nest native checkout. Charge %s.', $charge_id ?: 'unknown' ) );
+                // v3.7.34 — Issue per-seller transfers for multi-seller carts (no-op for single-seller).
                 if ( '' !== $charge_id ) {
                     mnu_native_issue_seller_transfers( $order, $charge_id );
                 }

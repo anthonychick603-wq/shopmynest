@@ -47,6 +47,11 @@ final class MNU_Bank_Account {
 	public const META_LAST4       = '_mnu_bank_last4';
 	public const META_HOLDER      = '_mnu_bank_holder_name';
 	public const META_UPDATED     = '_mnu_bank_updated_at';
+	// v3.13.30 Fix #16 — payout hold + audit trail.
+	public const META_HOLD_UNTIL  = '_mnu_bank_payout_hold_until';
+	public const META_HISTORY     = '_mnu_bank_change_history';
+	/** How long payouts are frozen after a bank-detail change. */
+	public const CHANGE_HOLD_SECONDS = 2 * DAY_IN_SECONDS;
 
 	public static function init(): void {
 		add_action( 'rest_api_init', array( __CLASS__, 'register_routes' ) );
@@ -130,6 +135,20 @@ final class MNU_Bank_Account {
 			);
 		}
 
+		// v3.13.30 Fix #16 — real ABA/RTN check digit validation. The ABA
+		// routing number checksum is:
+		// (3*d1 + 7*d2 + d3 + 3*d4 + 7*d5 + d6 + 3*d7 + 7*d8 + d9) mod 10 == 0.
+		// This catches transposition typos and pasting garbage. It is NOT a
+		// substitute for ownership verification but it removes the
+		// obviously-wrong-routing-number failure mode before the ACH file.
+		if ( ! self::aba_checksum_ok( $routing_number ) ) {
+			return new WP_Error(
+				'invalid_routing_checksum',
+				'That routing number failed the ABA checksum. Double-check the digits with your bank.',
+				array( 'status' => 422 )
+			);
+		}
+
 		$plaintext = wp_json_encode(
 			array(
 				'routing_number' => $routing_number,
@@ -166,11 +185,54 @@ final class MNU_Bank_Account {
 		}
 
 		$last4 = substr( $account_number, -4 );
+
+		// v3.13.30 Fix #16 — record the previous last4/holder so ops can see
+		// what changed, then set a payout hold to prevent an ACH file being
+		// re-routed to a new account immediately before a batch run.
+		$prev_last4  = (string) get_user_meta( $seller_id, self::META_LAST4, true );
+		$prev_holder = (string) get_user_meta( $seller_id, self::META_HOLDER, true );
+		$changed     = ( $prev_last4 !== $last4 ) || ( $prev_holder !== $holder_name );
+
 		update_user_meta( $seller_id, self::META_CIPHERTEXT, base64_encode( $ciphertext ) );
 		update_user_meta( $seller_id, self::META_NONCE,      base64_encode( $nonce ) );
 		update_user_meta( $seller_id, self::META_LAST4,      $last4 );
 		update_user_meta( $seller_id, self::META_HOLDER,     $holder_name );
 		update_user_meta( $seller_id, self::META_UPDATED,    gmdate( 'c' ) );
+
+		if ( $changed ) {
+			$now_ts   = time();
+			$hold_until = $now_ts + self::CHANGE_HOLD_SECONDS;
+			update_user_meta( $seller_id, self::META_HOLD_UNTIL, (string) $hold_until );
+
+			// Append an immutable-ish audit row. Bounded to 25 entries so a
+			// chatty seller can't grow the row indefinitely.
+			$history = (array) json_decode( (string) get_user_meta( $seller_id, self::META_HISTORY, true ), true );
+			$history[] = array(
+				't'          => gmdate( 'c', $now_ts ),
+				'from_last4' => $prev_last4,
+				'to_last4'   => $last4,
+				'holder'     => $holder_name,
+				'ip'         => sanitize_text_field( (string) ( $_SERVER['REMOTE_ADDR'] ?? '' ) ),
+				'ua'         => substr( sanitize_text_field( (string) ( $_SERVER['HTTP_USER_AGENT'] ?? '' ) ), 0, 190 ),
+				'by_user'    => (int) get_current_user_id(),
+			);
+			update_user_meta( $seller_id, self::META_HISTORY, wp_json_encode( array_slice( $history, -25 ) ) );
+
+			if ( class_exists( 'MNU_Ops' ) ) {
+				MNU_Ops::notify_admin(
+					sprintf( 'Seller %d changed bank details', $seller_id ),
+					sprintf(
+						"Seller %d bank details changed.\n  From: ****%s\n  To:   ****%s (%s)\nPayouts are frozen until %s.",
+						$seller_id,
+						$prev_last4 ?: 'none',
+						$last4,
+						$holder_name,
+						gmdate( 'Y-m-d H:i:s', $hold_until )
+					),
+					array( 'seller_id' => $seller_id )
+				);
+			}
+		}
 
 		// Wipe the plaintext copies from memory.
 		if ( function_exists( 'sodium_memzero' ) ) {
@@ -325,6 +387,40 @@ final class MNU_Bank_Account {
 
 	private static function digits_only( string $value ): string {
 		return preg_replace( '/\D+/', '', $value ) ?? '';
+	}
+
+	/**
+	 * v3.13.30 Fix #16 — ABA/RTN checksum. Weight pattern 3-7-1 across the
+	 * 9 digits; sum mod 10 must be 0. Rejects an all-zero routing number
+	 * because it passes the arithmetic but is not a real routing number.
+	 */
+	private static function aba_checksum_ok( string $routing ): bool {
+		if ( strlen( $routing ) !== 9 || ! ctype_digit( $routing ) ) {
+			return false;
+		}
+		if ( '000000000' === $routing ) {
+			return false;
+		}
+		$w = array( 3, 7, 1, 3, 7, 1, 3, 7, 1 );
+		$sum = 0;
+		for ( $i = 0; $i < 9; $i++ ) {
+			$sum += ( (int) $routing[ $i ] ) * $w[ $i ];
+		}
+		return 0 === ( $sum % 10 );
+	}
+
+	/**
+	 * v3.13.30 Fix #16 — Is the seller currently in a post-bank-change
+	 * payout hold? Used by payout-admin batch selection to exclude them
+	 * (see MNU_Payouts_Admin::eligible_sellers).
+	 */
+	public static function is_in_change_hold( int $seller_id ): bool {
+		$until = (int) get_user_meta( $seller_id, self::META_HOLD_UNTIL, true );
+		return $until > 0 && $until > time();
+	}
+
+	public static function get_change_hold_until( int $seller_id ): int {
+		return (int) get_user_meta( $seller_id, self::META_HOLD_UNTIL, true );
 	}
 }
 

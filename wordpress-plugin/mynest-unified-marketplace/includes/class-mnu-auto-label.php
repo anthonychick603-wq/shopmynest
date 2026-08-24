@@ -44,6 +44,10 @@ final class MNU_Auto_Label {
         // Refund / cancel side.
         add_action( 'woocommerce_order_status_cancelled', array( __CLASS__, 'on_order_cancelled' ), 20, 1 );
         add_action( 'woocommerce_order_status_refunded',  array( __CLASS__, 'on_order_cancelled' ), 20, 1 );
+
+        // v3.13.30 Fix #14 — poll pending Shippo voids so postage ledger
+        // reversal only happens after confirmed refund.
+        add_action( 'mnu_poll_pending_label_voids', array( __CLASS__, 'poll_pending_voids' ) );
     }
 
     /**
@@ -321,26 +325,176 @@ final class MNU_Auto_Label {
                 continue;
             }
 
-            $order->update_meta_data( '_mnu_label_voided' . $suffix, current_time( 'mysql', true ) );
-            $order->update_meta_data( '_mnu_label_void_status' . $suffix, sanitize_text_field( (string) ( $refund['status'] ?? 'queued' ) ) );
+            // v3.13.30 Fix #14 — Shippo's /refunds/?async=true returns
+            // immediately with status=QUEUED. Do NOT mark the label voided
+            // yet, and do NOT reverse the platform postage ledger row. We
+            // stamp `void_requested` + the refund object id and let a poller
+            // (self::poll_pending_voids, scheduled below) escalate to
+            // `voided` / `error` after Shippo confirms the credit.
+            $refund_obj  = sanitize_text_field( (string) ( $refund['object_id'] ?? '' ) );
+            $refund_stat = strtoupper( sanitize_text_field( (string) ( $refund['status'] ?? 'QUEUED' ) ) );
+            $order->update_meta_data( '_mnu_label_void_state' . $suffix, 'void_requested' );
+            $order->update_meta_data( '_mnu_label_void_shippo_object' . $suffix, $refund_obj );
+            $order->update_meta_data( '_mnu_label_void_last_status' . $suffix, $refund_stat );
+            $order->update_meta_data( '_mnu_label_void_requested_at' . $suffix, current_time( 'mysql', true ) );
+            // Track pending void so the cron poller can find it cheaply.
+            $pending = (array) get_option( 'mnu_pending_label_voids', array() );
+            $pending[ $order->get_id() . ':' . $seller_id ] = array(
+                'order_id'    => $order->get_id(),
+                'seller_id'   => $seller_id,
+                'tx_id'       => $tx_id,
+                'refund_obj'  => $refund_obj,
+                'requested'   => time(),
+                'attempts'    => 0,
+            );
+            update_option( 'mnu_pending_label_voids', $pending, false );
             $order->save();
             $order->add_order_note(
                 sprintf(
-                    'Requested void for %s shipping label (%s). Shippo refund status: %s',
+                    'Requested void for %s shipping label (%s). Shippo status: %s (refund %s). Postage ledger will be reversed only after confirmation.',
                     function_exists( 'tnm_seller_display_name' ) ? tnm_seller_display_name( $seller_id ) : ( '#' . $seller_id ),
                     $tx_id,
-                    (string) ( $refund['status'] ?? 'queued' )
+                    $refund_stat,
+                    $refund_obj
                 )
             );
 
-            // If the platform fronted this label, reverse the postage-ledger
-            // debit so the seller's next payout isn't docked for a label they
-            // never used.
+            // Immediately check once (Shippo very often returns SUCCESS on
+            // the second request). If terminal, this call also does the
+            // ledger reversal and stamps _mnu_label_voided. If still QUEUED
+            // the cron will retry.
+            self::poll_single_void( $order->get_id(), $seller_id );
+        }
+
+        // Make sure the poller cron is scheduled.
+        if ( ! wp_next_scheduled( 'mnu_poll_pending_label_voids' ) ) {
+            wp_schedule_event( time() + 300, 'hourly', 'mnu_poll_pending_label_voids' );
+        }
+    }
+
+    /**
+     * v3.13.30 Fix #14 — Poll Shippo for one pending void's final status.
+     *
+     * If Shippo returns SUCCESS: stamp `_mnu_label_voided`, reverse the
+     * platform postage ledger row (if applicable), and remove the pending
+     * entry. If ERROR: stamp `void_state=error`, notify admin, and remove
+     * the pending entry so we stop retrying (recovery must be manual). If
+     * QUEUED/PENDING and we've retried >48 times (~2 days on hourly): give
+     * up and escalate to admin. Otherwise increment attempts and leave in
+     * the queue for the next run.
+     */
+    public static function poll_single_void( int $order_id, int $seller_id ): void {
+        if ( ! function_exists( 'mnu_labels_shippo_request' ) || ! function_exists( 'mnu_labels_with_seller_token' ) ) {
+            return;
+        }
+        $order = wc_get_order( $order_id );
+        if ( ! $order instanceof WC_Order ) {
+            self::pop_pending_void( $order_id, $seller_id );
+            return;
+        }
+        $suffix = '_' . $seller_id;
+        if ( $order->get_meta( '_mnu_label_voided' . $suffix, true ) ) {
+            self::pop_pending_void( $order_id, $seller_id );
+            return;
+        }
+        $refund_obj = (string) $order->get_meta( '_mnu_label_void_shippo_object' . $suffix, true );
+        $tx_id      = (string) $order->get_meta( '_thenest_label_transaction' . $suffix, true );
+        if ( '' === $refund_obj || '' === $tx_id ) {
+            self::pop_pending_void( $order_id, $seller_id );
+            return;
+        }
+
+        $result = mnu_labels_with_seller_token( $seller_id, static function () use ( $refund_obj ) {
+            return mnu_labels_shippo_request( '/refunds/' . rawurlencode( $refund_obj ) . '/', array(), 'GET' );
+        } );
+        if ( is_wp_error( $result ) ) {
+            $order->add_order_note( sprintf( 'Poll of Shippo refund %s failed: %s', $refund_obj, $result->get_error_message() ) );
+            self::increment_void_attempt( $order_id, $seller_id );
+            return;
+        }
+        $status = strtoupper( sanitize_text_field( (string) ( $result['status'] ?? '' ) ) );
+        $order->update_meta_data( '_mnu_label_void_last_status' . $suffix, $status );
+        $order->update_meta_data( '_mnu_label_void_last_checked_at' . $suffix, current_time( 'mysql', true ) );
+
+        if ( 'SUCCESS' === $status ) {
+            $order->update_meta_data( '_mnu_label_voided' . $suffix, current_time( 'mysql', true ) );
+            $order->update_meta_data( '_mnu_label_void_state' . $suffix, 'voided' );
+            $order->save();
             $paid_by = (string) $order->get_meta( '_mnu_autolabel_paid_by' . $suffix, true );
             if ( 'platform' === $paid_by && function_exists( 'mnu_labels_reverse_postage_ledger_row' ) ) {
                 mnu_labels_reverse_postage_ledger_row( $order, $seller_id, $tx_id );
             }
+            $order->add_order_note( sprintf( 'Shippo confirmed refund %s for label %s. Postage ledger reversed for seller %d.', $refund_obj, $tx_id, $seller_id ) );
+            self::pop_pending_void( $order_id, $seller_id );
+            return;
         }
+
+        if ( 'ERROR' === $status ) {
+            $order->update_meta_data( '_mnu_label_void_state' . $suffix, 'error' );
+            $order->save();
+            $order->add_order_note( sprintf( 'Shippo returned ERROR for refund %s on label %s. Ledger NOT reversed — manual review required.', $refund_obj, $tx_id ) );
+            if ( class_exists( 'MNU_Ops' ) ) {
+                MNU_Ops::notify_admin(
+                    'Shippo void failed on order #' . $order->get_order_number(),
+                    sprintf( 'Shippo refund %s (label %s, seller %d) returned ERROR. Platform postage ledger row was NOT reversed. Investigate manually.', $refund_obj, $tx_id, $seller_id ),
+                    array( 'order_id' => $order_id, 'seller_id' => $seller_id )
+                );
+            }
+            self::pop_pending_void( $order_id, $seller_id );
+            return;
+        }
+
+        // QUEUED / PENDING / anything else — back off and retry.
+        self::increment_void_attempt( $order_id, $seller_id );
+        $order->save();
+    }
+
+    /**
+     * v3.13.30 Fix #14 — hourly poller entry point.
+     */
+    public static function poll_pending_voids(): void {
+        $pending = (array) get_option( 'mnu_pending_label_voids', array() );
+        if ( empty( $pending ) ) {
+            return;
+        }
+        foreach ( $pending as $row ) {
+            $order_id  = (int) ( $row['order_id']  ?? 0 );
+            $seller_id = (int) ( $row['seller_id'] ?? 0 );
+            if ( $order_id <= 0 || $seller_id <= 0 ) { continue; }
+            self::poll_single_void( $order_id, $seller_id );
+        }
+    }
+
+    private static function increment_void_attempt( int $order_id, int $seller_id ): void {
+        $pending = (array) get_option( 'mnu_pending_label_voids', array() );
+        $key     = $order_id . ':' . $seller_id;
+        if ( ! isset( $pending[ $key ] ) ) { return; }
+        $pending[ $key ]['attempts'] = (int) ( $pending[ $key ]['attempts'] ?? 0 ) + 1;
+        if ( $pending[ $key ]['attempts'] > 48 ) {
+            // Gave up after ~2 days of hourly polling. Escalate.
+            $order = wc_get_order( $order_id );
+            if ( $order instanceof WC_Order ) {
+                $suffix = '_' . $seller_id;
+                $order->update_meta_data( '_mnu_label_void_state' . $suffix, 'timeout' );
+                $order->save();
+                $order->add_order_note( sprintf( 'Shippo void polling timed out after 48 attempts. Ledger NOT reversed — manual review required for seller %d.', $seller_id ) );
+            }
+            if ( class_exists( 'MNU_Ops' ) ) {
+                MNU_Ops::notify_admin(
+                    'Shippo void polling timed out',
+                    sprintf( 'Order #%d seller %d — Shippo never returned a terminal state. Postage ledger row was NOT reversed. Investigate manually.', $order_id, $seller_id ),
+                    array( 'order_id' => $order_id, 'seller_id' => $seller_id )
+                );
+            }
+            unset( $pending[ $key ] );
+        }
+        update_option( 'mnu_pending_label_voids', $pending, false );
+    }
+
+    private static function pop_pending_void( int $order_id, int $seller_id ): void {
+        $pending = (array) get_option( 'mnu_pending_label_voids', array() );
+        unset( $pending[ $order_id . ':' . $seller_id ] );
+        update_option( 'mnu_pending_label_voids', $pending, false );
     }
 
     // -----------------------------------------------------------------

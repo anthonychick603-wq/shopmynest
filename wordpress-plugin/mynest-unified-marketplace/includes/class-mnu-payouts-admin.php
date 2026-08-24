@@ -36,6 +36,125 @@ final class MNU_Payouts_Admin {
 		add_action( 'admin_menu',      array( __CLASS__, 'register_menu' ), 22 );
 		add_action( 'admin_post_' . self::MENU_SLUG . '_mark_paid', array( __CLASS__, 'handle_mark_paid' ) );
 		add_action( 'admin_post_' . self::MENU_SLUG . '_copy',      array( __CLASS__, 'handle_copy' ) );
+		// v3.13.30 Fix #12 — confirm ACH after transferring in Bluevine.
+		add_action( 'admin_post_' . self::MENU_SLUG . '_confirm_ach', array( __CLASS__, 'handle_confirm_ach' ) );
+	}
+
+	/**
+	 * v3.13.30 Fix #12 — confirm the ACH transfer and flip the reserved
+	 * ledger rows to paid. Requires an ach_reference so ops can reconcile
+	 * against the Bluevine transfer.
+	 */
+	public static function handle_confirm_ach(): void {
+		if ( ! current_user_can( 'manage_woocommerce' ) ) {
+			wp_die( esc_html__( 'Insufficient permissions.', 'mynest-unified-marketplace' ) );
+		}
+		check_admin_referer( self::MENU_SLUG . '_confirm_ach' );
+
+		$batch_id      = isset( $_POST['batch_id'] ) ? (int) $_POST['batch_id'] : 0;
+		$ach_reference = isset( $_POST['ach_reference'] ) ? sanitize_text_field( wp_unslash( $_POST['ach_reference'] ) ) : '';
+
+		if ( $batch_id <= 0 ) {
+			self::push_notice( 'error', __( 'Missing batch id.', 'mynest-unified-marketplace' ) );
+			wp_safe_redirect( self::menu_url() );
+			exit;
+		}
+		if ( strlen( $ach_reference ) < 3 ) {
+			self::push_notice( 'error', __( 'ACH reference is required (min 3 chars). Paste the Bluevine transfer id / memo.', 'mynest-unified-marketplace' ) );
+			wp_safe_redirect( self::menu_url() );
+			exit;
+		}
+
+		global $wpdb;
+		$batches    = tnm_table( 'payout_batches' );
+		$batch_rows = tnm_table( 'payout_batch_rows' );
+		$ledger     = tnm_table( 'ledger' );
+		$now        = current_time( 'mysql', true );
+		$user       = wp_get_current_user();
+
+		$wpdb->query( 'START TRANSACTION' );
+
+		$batch = $wpdb->get_row( $wpdb->prepare(
+			"SELECT * FROM {$batches} WHERE id=%d FOR UPDATE",
+			$batch_id
+		) );
+		if ( ! $batch ) {
+			$wpdb->query( 'ROLLBACK' );
+			self::push_notice( 'error', __( 'Batch not found.', 'mynest-unified-marketplace' ) );
+			wp_safe_redirect( self::menu_url() );
+			exit;
+		}
+		if ( 'paid' === $batch->status ) {
+			$wpdb->query( 'ROLLBACK' );
+			self::push_notice(
+				'warning',
+				sprintf( __( 'Batch #%d is already marked paid (reference %s).', 'mynest-unified-marketplace' ), $batch_id, (string) $batch->ach_reference )
+			);
+			wp_safe_redirect( self::menu_url() );
+			exit;
+		}
+
+		// Look up the snapshot rows and flip only those.
+		$row_ids = $wpdb->get_col( $wpdb->prepare(
+			"SELECT ledger_row_id FROM {$batch_rows} WHERE batch_id=%d",
+			$batch_id
+		) );
+		if ( empty( $row_ids ) ) {
+			$wpdb->query( 'ROLLBACK' );
+			self::push_notice( 'error', __( 'Batch has no snapshot rows to confirm. Contact support.', 'mynest-unified-marketplace' ) );
+			wp_safe_redirect( self::menu_url() );
+			exit;
+		}
+		$row_ids  = array_map( 'intval', $row_ids );
+		$expected = count( $row_ids );
+		$in       = implode( ',', $row_ids );
+
+		$flipped = (int) $wpdb->query( $wpdb->prepare(
+			"UPDATE {$ledger}
+			 SET status='paid', updated_at=%s
+			 WHERE id IN ($in) AND payout_id=%d AND status='pending_batch'",
+			$now, $batch_id
+		) ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+
+		if ( $flipped !== $expected ) {
+			$wpdb->query( 'ROLLBACK' );
+			self::push_notice(
+				'error',
+				sprintf(
+					/* translators: 1: expected count, 2: actual count, 3: batch id */
+					__( 'Confirm cancelled: expected to flip %1$d rows but %2$d responded (batch #%3$d). Ledger unchanged.', 'mynest-unified-marketplace' ),
+					$expected, $flipped, $batch_id
+				)
+			);
+			wp_safe_redirect( self::menu_url() );
+			exit;
+		}
+
+		$wpdb->update(
+			$batches,
+			array(
+				'status'           => 'paid',
+				'ach_reference'    => $ach_reference,
+				'ach_confirmed_at' => $now,
+				'ach_confirmed_by' => (int) ( $user->ID ?? 0 ),
+			),
+			array( 'id' => $batch_id ),
+			array( '%s', '%s', '%s', '%d' ),
+			array( '%d' )
+		);
+
+		$wpdb->query( 'COMMIT' );
+
+		self::push_notice(
+			'success',
+			sprintf(
+				/* translators: 1: batch id, 2: ach reference */
+				__( 'Batch #%1$d confirmed paid — ACH reference %2$s. Ledger flipped to paid.', 'mynest-unified-marketplace' ),
+				$batch_id, $ach_reference
+			)
+		);
+		wp_safe_redirect( self::menu_url() );
+		exit;
 	}
 
 	public static function register_menu(): void {
@@ -165,6 +284,7 @@ final class MNU_Payouts_Admin {
 			wp_die( esc_html__( 'You do not have permission to view this page.', 'mynest-unified-marketplace' ) );
 		}
 
+		global $wpdb; // v3.13.30 Fix #12 — needed for the pending-batches list.
 		$notice = self::pop_notice();
 		$rows   = self::collect_rows();
 
@@ -302,6 +422,77 @@ final class MNU_Payouts_Admin {
 					</div>
 				</div>
 			</form>
+
+			<?php if ( class_exists( 'MNU_Seller_Debit' ) && ! empty( $rows ) ) : ?>
+				<h2 style="margin-top:32px;"><?php esc_html_e( 'Seller debits (chargeback / SNAD / adjustments)', 'mynest-unified-marketplace' ); ?></h2>
+				<p class="description">
+					<?php esc_html_e( 'Records an immediate negative ledger row against the seller. Requires a case id and evidence — the note is written to the ledger and cannot be edited later.', 'mynest-unified-marketplace' ); ?>
+				</p>
+				<table class="widefat striped" style="max-width:820px;">
+					<thead>
+						<tr>
+							<th><?php esc_html_e( 'Seller', 'mynest-unified-marketplace' ); ?></th>
+							<th><?php esc_html_e( 'Available', 'mynest-unified-marketplace' ); ?></th>
+							<th><?php esc_html_e( 'Debit action', 'mynest-unified-marketplace' ); ?></th>
+						</tr>
+					</thead>
+					<tbody>
+						<?php foreach ( $rows as $r ) : ?>
+							<tr>
+								<td>
+									<strong><?php echo esc_html( $r['display_name'] ?: ( '#' . $r['seller_id'] ) ); ?></strong>
+									<div style="color:#646970;font-size:12px;">#<?php echo (int) $r['seller_id']; ?></div>
+								</td>
+								<td style="font-variant-numeric:tabular-nums;"><?php echo esc_html( $fmt( $r['available'] ) ); ?></td>
+								<td><?php MNU_Seller_Debit::render_form( (int) $r['seller_id'] ); ?></td>
+							</tr>
+						<?php endforeach; ?>
+					</tbody>
+				</table>
+			<?php endif; ?>
+
+			<?php
+			// v3.13.30 Fix #12 — Pending batches awaiting ACH confirmation.
+			$pending_batches = $wpdb->get_results( "SELECT * FROM " . tnm_table( 'payout_batches' ) . " WHERE status='pending' ORDER BY created_at DESC LIMIT 20" );
+			if ( ! empty( $pending_batches ) ) :
+			?>
+				<h2 style="margin-top:32px;"><?php esc_html_e( 'Pending batches — confirm ACH', 'mynest-unified-marketplace' ); ?></h2>
+				<p class="description">
+					<?php esc_html_e( 'Ledger rows are reserved but NOT marked paid until you paste the Bluevine ACH reference here. Until then, refunds and adjustments cannot touch these rows.', 'mynest-unified-marketplace' ); ?>
+				</p>
+				<table class="widefat striped" style="max-width:920px;">
+					<thead>
+						<tr>
+							<th><?php esc_html_e( 'Batch', 'mynest-unified-marketplace' ); ?></th>
+							<th><?php esc_html_e( 'Created', 'mynest-unified-marketplace' ); ?></th>
+							<th><?php esc_html_e( 'Sellers', 'mynest-unified-marketplace' ); ?></th>
+							<th><?php esc_html_e( 'Total', 'mynest-unified-marketplace' ); ?></th>
+							<th><?php esc_html_e( 'Confirm ACH', 'mynest-unified-marketplace' ); ?></th>
+						</tr>
+					</thead>
+					<tbody>
+					<?php foreach ( $pending_batches as $pb ) : ?>
+						<tr>
+							<td>#<?php echo (int) $pb->id; ?></td>
+							<td><?php echo esc_html( (string) $pb->created_at ); ?> UTC</td>
+							<td><?php echo (int) $pb->seller_count; ?> (<?php echo (int) $pb->row_count; ?> rows)</td>
+							<td style="font-variant-numeric:tabular-nums;"><?php echo esc_html( $fmt( (float) $pb->total_amount ) ); ?></td>
+							<td>
+								<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" style="display:flex;gap:6px;align-items:center;">
+									<?php wp_nonce_field( self::MENU_SLUG . '_confirm_ach' ); ?>
+									<input type="hidden" name="action" value="<?php echo esc_attr( self::MENU_SLUG . '_confirm_ach' ); ?>" />
+									<input type="hidden" name="batch_id" value="<?php echo (int) $pb->id; ?>" />
+									<input type="text" name="ach_reference" required minlength="3" maxlength="64" placeholder="Bluevine transfer id / memo" style="width:260px;" />
+									<button type="submit" class="button button-primary" onclick="return confirm('<?php echo esc_js( __( 'Confirm this batch was actually paid via ACH? This will flip ledger rows to paid.', 'mynest-unified-marketplace' ) ); ?>');">
+										<?php esc_html_e( 'Mark ACH paid', 'mynest-unified-marketplace' ); ?>
+									</button>
+								</form>
+							</td>
+						</tr>
+					<?php endforeach; ?>
+					</tbody>
+				</table>
+			<?php endif; ?>
 
 			<script id="mnu-copy-map" type="application/json"><?php echo $copy_json; ?></script>
 			<script>
@@ -459,7 +650,14 @@ final class MNU_Payouts_Admin {
 
 		$wpdb->query( 'START TRANSACTION' );
 
+		$held_sellers = array();
 		foreach ( $seller_ids as $sid ) {
+			// v3.13.30 Fix #16 — exclude sellers whose bank details changed in
+			// the last 2 days. They still get paid; just not in this batch.
+			if ( class_exists( 'MNU_Bank_Account' ) && MNU_Bank_Account::is_in_change_hold( (int) $sid ) ) {
+				$held_sellers[] = (int) $sid;
+				continue;
+			}
 			// Net balance across earning + refund + adjustment + postage rows.
 			// FOR UPDATE keeps a concurrent tab from double-computing this.
 			$sum = (float) $wpdb->get_var( $wpdb->prepare(
@@ -488,14 +686,45 @@ final class MNU_Payouts_Admin {
 
 		if ( empty( $affected ) ) {
 			$wpdb->query( 'ROLLBACK' );
-			self::push_notice( 'error', __( 'Selected sellers have no available balance to pay out (refunds may have zeroed it out).', 'mynest-unified-marketplace' ) );
+			$msg = __( 'Selected sellers have no available balance to pay out (refunds may have zeroed it out).', 'mynest-unified-marketplace' );
+			if ( ! empty( $held_sellers ) ) {
+				$msg = sprintf(
+					/* translators: %s: comma-separated seller ids currently frozen after a bank-details change */
+					__( 'All selected sellers are currently frozen after a bank-details change: %s. They will be eligible after the 2-day hold.', 'mynest-unified-marketplace' ),
+					implode( ', ', array_map( static fn( $id ) => '#' . (int) $id, $held_sellers ) )
+				);
+			}
+			self::push_notice( 'error', $msg );
 			wp_safe_redirect( self::menu_url() );
 			exit;
 		}
 
-		// Insert batch row first so we can stamp payout_id onto the
-		// ledger rows before flipping status.
+		if ( ! empty( $held_sellers ) ) {
+			self::push_notice(
+				'warning',
+				sprintf(
+					/* translators: %s: comma-separated seller ids */
+					__( 'Skipped sellers in bank-change hold (2 days): %s. They will be paid in a later batch.', 'mynest-unified-marketplace' ),
+					implode( ', ', array_map( static fn( $id ) => '#' . (int) $id, $held_sellers ) )
+				)
+			);
+		}
+
+		// v3.13.30 Fix #12 — payout batch is now two-step. The Create Batch
+		// action ONLY:
+		//   1. Inserts a payout_batches row with status='pending'
+		//   2. Snapshots the affected ledger row IDs into payout_batch_rows
+		//      (via UPDATE ... status='pending_batch' so a concurrent tab or
+		//      the pending-release cron cannot grab the same rows), keeping
+		//      an immutable list of which rows this batch will pay.
+		//
+		// Ledger rows do NOT flip to 'paid' until an admin returns and marks
+		// the batch paid with an ach_reference. This means the copy-card can
+		// still be trusted (rows are locked out of any other batch), but a
+		// batch that never actually made it to the bank can be reverted
+		// without polluting seller balances.
 		$batches_table = tnm_table( 'payout_batches' );
+		$batch_rows    = tnm_table( 'payout_batch_rows' );
 		$user          = wp_get_current_user();
 		$wpdb->insert(
 			$batches_table,
@@ -506,8 +735,9 @@ final class MNU_Payouts_Admin {
 				'total_amount' => $total_paid,
 				'row_count'    => $paid_rows,
 				'memo'         => $memo,
+				'status'       => 'pending',
 			),
-			array( '%s', '%d', '%d', '%f', '%d', '%s' )
+			array( '%s', '%d', '%d', '%f', '%d', '%s', '%s' )
 		);
 		$batch_id = (int) $wpdb->insert_id;
 
@@ -518,22 +748,16 @@ final class MNU_Payouts_Admin {
 			exit;
 		}
 
-		// v3.13.28 — Flip ALL settlement rows (earning + refund + adjustment
-		// + postage) so refund offsets are consumed in the same batch that
-		// paid the underlying earning. Otherwise the negative rows would sit
-		// in "available" forever, silently reducing every FUTURE batch too.
-		//
-		// v3.13.29 — verify affected-row count per seller matches the count
-		// we selected FOR UPDATE. If any UPDATE flipped fewer rows than
-		// expected we roll back, because it means either concurrent code
-		// mutated ledger state during the transaction or our WHERE clause
-		// no longer matches. Either way, showing the ACH copy card with a
-		// stale total_paid would be wrong.
+		// Reserve the ledger rows: flip to a distinct 'pending_batch' status
+		// with payout_id stamped so a concurrent create-batch action or the
+		// hold-release cron can't touch them. Row counts are still verified
+		// to catch races (as in v3.13.29).
 		$flip_mismatch = false;
+		$snapshot_rows = 0;
 		foreach ( $affected as $sid => $info ) {
 			$updated_rows = (int) $wpdb->query( $wpdb->prepare(
 				"UPDATE {$ledger}
-				 SET status='paid', payout_id=%d, updated_at=%s
+				 SET status='pending_batch', payout_id=%d, updated_at=%s
 				 WHERE seller_id=%d
 				   AND ( type='earning' OR type LIKE 'refund_%%' OR type LIKE 'adjustment%%' OR type='postage' )
 				   AND status='available'
@@ -543,7 +767,7 @@ final class MNU_Payouts_Admin {
 			if ( $updated_rows !== (int) $info['rows'] ) {
 				$flip_mismatch = true;
 				error_log( sprintf(
-					'[MNU_Payouts_Admin] Batch %d seller %d: expected %d rows flipped, got %d. Rolling back.',
+					'[MNU_Payouts_Admin] Batch %d seller %d: expected %d rows reserved, got %d. Rolling back.',
 					$batch_id,
 					$sid,
 					(int) $info['rows'],
@@ -551,11 +775,42 @@ final class MNU_Payouts_Admin {
 				) );
 				break;
 			}
+
+			// Snapshot the reserved rows into payout_batch_rows so the
+			// mark-paid step has an authoritative list even if a subsequent
+			// UPDATE changes ledger state.
+			$row_ids = $wpdb->get_results( $wpdb->prepare(
+				"SELECT id, net FROM {$ledger}
+				 WHERE payout_id=%d AND seller_id=%d AND status='pending_batch'",
+				$batch_id, $sid
+			), ARRAY_A );
+			foreach ( (array) $row_ids as $row ) {
+				$ok = $wpdb->insert(
+					$batch_rows,
+					array(
+						'batch_id'      => $batch_id,
+						'seller_id'     => $sid,
+						'ledger_row_id' => (int) $row['id'],
+						'amount'        => (float) $row['net'],
+						'created_at'    => $now,
+					),
+					array( '%d', '%d', '%d', '%f', '%s' )
+				);
+				if ( false === $ok ) {
+					$flip_mismatch = true;
+					error_log( sprintf(
+						'[MNU_Payouts_Admin] Batch %d: could not snapshot ledger row %d: %s',
+						$batch_id, (int) $row['id'], $wpdb->last_error
+					) );
+					break 2;
+				}
+				$snapshot_rows++;
+			}
 		}
 
 		if ( $flip_mismatch ) {
 			$wpdb->query( 'ROLLBACK' );
-			self::push_notice( 'error', __( 'Batch was cancelled: ledger changed during the flip. Please refresh and try again.', 'mynest-unified-marketplace' ) );
+			self::push_notice( 'error', __( 'Batch was cancelled: ledger changed during reservation. Please refresh and try again.', 'mynest-unified-marketplace' ) );
 			wp_safe_redirect( self::menu_url() );
 			exit;
 		}
@@ -566,7 +821,7 @@ final class MNU_Payouts_Admin {
 			'success',
 			sprintf(
 				/* translators: 1: batch id, 2: seller count, 3: total */
-				__( 'Batch #%1$d recorded: %2$d sellers, $%3$s total. Ledger rows flipped to paid.', 'mynest-unified-marketplace' ),
+				__( 'Batch #%1$d reserved: %2$d sellers, $%3$s total. Ledger rows are held pending ACH confirmation — paste the Bluevine transfer id below to mark paid.', 'mynest-unified-marketplace' ),
 				$batch_id,
 				count( $affected ),
 				number_format( $total_paid, 2 )
@@ -621,7 +876,7 @@ final class MNU_Payouts_Admin {
 		return admin_url( 'admin.php?page=' . self::MENU_SLUG );
 	}
 
-	protected static function push_notice( string $type, string $message ): void {
+	public static function push_notice( string $type, string $message ): void {
 		set_transient(
 			'mnu_payouts_notice_' . get_current_user_id(),
 			array( 'type' => $type, 'message' => $message ),
