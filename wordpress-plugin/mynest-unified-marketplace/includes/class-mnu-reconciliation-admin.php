@@ -27,7 +27,9 @@ defined( 'ABSPATH' ) || exit;
 
 class MNU_Reconciliation_Admin {
 
-	public const MENU_SLUG   = 'mnu-reconciliation';
+	// v3.13.22 — renamed from 'mnu-reconciliation' (which collided with the
+	// existing MNU_Reconciliation report page) to 'mnu-bluevine-recon'.
+	public const MENU_SLUG   = 'mnu-bluevine-recon';
 	public const PARENT_SLUG = 'tnm-marketplace';
 	public const CSV_OPTION  = 'mnu_reconciliation_bluevine_csv';
 	public const CACHE_KEY   = 'mnu_reconciliation_stripe_payouts_v1';
@@ -43,8 +45,8 @@ class MNU_Reconciliation_Admin {
 	public static function register_menu(): void {
 		add_submenu_page(
 			self::PARENT_SLUG,
-			__( 'Reconciliation', 'mynest-unified-marketplace' ),
-			__( 'Reconciliation', 'mynest-unified-marketplace' ),
+			__( 'Bluevine Reconciliation', 'mynest-unified-marketplace' ),
+			__( 'Bluevine Reconciliation', 'mynest-unified-marketplace' ),
 			'manage_woocommerce',
 			self::MENU_SLUG,
 			array( __CLASS__, 'render' )
@@ -159,10 +161,14 @@ class MNU_Reconciliation_Admin {
 					$sum['shipping_kept'] += (float) $row['shipping'];
 				}
 			}
-			// v3.8.0 platform-kept shipping lives on the order, not the ledger.
-			$kept_cents = (int) $order->get_meta( '_mnu_platform_shipping_kept_cents', true );
-			if ( $kept_cents > 0 ) {
-				$sum['shipping_kept'] += $kept_cents / 100;
+			// v3.8.0 platform-kept shipping lives on the order meta, not the
+			// ledger. For legacy orders the shipping already appears on earning
+			// rows; we do NOT read the meta there or we'd double-count.
+			if ( '1' === (string) $order->get_meta( '_mnu_v380_model', true ) ) {
+				$kept_cents = (int) $order->get_meta( '_mnu_platform_shipping_kept_cents', true );
+				if ( $kept_cents > 0 ) {
+					$sum['shipping_kept'] += $kept_cents / 100;
+				}
 			}
 		}
 		return $sum;

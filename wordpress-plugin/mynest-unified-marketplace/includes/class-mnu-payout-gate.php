@@ -45,13 +45,17 @@ final class MNU_Payout_Gate {
 			);
 		}
 
-		// Stripe Connect KYC
-		if ( class_exists( 'MNU_Connect' ) ) {
-			$status = MNU_Connect::get_status( $seller_id );
-			if ( ! is_array( $status ) || empty( $status['payouts_enabled'] ) ) {
+		// v3.13.22 — Sellers are OFF Stripe entirely under the v3.8.0 model.
+		// Gate now checks that the seller has a bank account on file for the
+		// manual ACH from platform business checking, not Stripe Connect KYC.
+		// (The Connect check remains for legacy environments where the class
+		// exists AND the seller already has a Connect account provisioned.)
+		if ( class_exists( 'MNU_Bank_Account' ) ) {
+			$has_bank = MNU_Bank_Account::has_bank_account( $seller_id );
+			if ( ! $has_bank ) {
 				return new WP_Error(
-					'payout_stripe_kyc_incomplete',
-					__( 'Finish your Stripe Connect setup before requesting a payout. Your bank details must be verified before we can release funds.', 'mynest-unified-marketplace' ),
+					'payout_bank_missing',
+					__( 'Add your bank account under Seller → Payout Settings before requesting a payout. Payouts are sent by ACH from ShopMyNest’s business checking.', 'mynest-unified-marketplace' ),
 					array( 'status' => 403 )
 				);
 			}
