@@ -435,8 +435,13 @@ final class TNM_REST {
     /**
      * v3.7.75 — buyer-facing OOS check. WC_Product::is_in_stock() covers the
      * common case (Woo stock_status = 'outofstock'), and we also guard against
-     * manage_stock=true products whose quantity has dropped to zero even when
-     * their status hasn't been resynced by Woo yet.
+     * products whose quantity has dropped to zero even when their status
+     * hasn't been resynced by Woo yet.
+     *
+     * v3.13.18 — treat stock_quantity <= 0 as OOS regardless of the
+     * `manage_stock` flag. Sellers on the mobile app can save a listing with
+     * quantity=0 while leaving manage_stock off; that combo used to keep the
+     * item visible in Browse because Woo left stock_status='instock'.
      */
     protected static function is_out_of_stock( $product ): bool {
         if ( ! $product ) {
@@ -445,9 +450,27 @@ final class TNM_REST {
         if ( method_exists( $product, 'is_in_stock' ) && ! $product->is_in_stock() ) {
             return true;
         }
-        if ( method_exists( $product, 'managing_stock' ) && $product->managing_stock() ) {
+        if ( method_exists( $product, 'get_stock_quantity' ) ) {
             $qty = $product->get_stock_quantity();
             if ( null !== $qty && (float) $qty <= 0 ) {
+                return true;
+            }
+        }
+        // Variable products with zero total variation stock should also hide.
+        if ( method_exists( $product, 'is_type' ) && $product->is_type( 'variable' ) && $product instanceof WC_Product_Variable ) {
+            $any_variation_in_stock = false;
+            foreach ( $product->get_children() as $child_id ) {
+                $variation = wc_get_product( $child_id );
+                if ( ! $variation ) { continue; }
+                if ( $variation->is_in_stock() ) {
+                    $vqty = $variation->get_stock_quantity();
+                    if ( null === $vqty || (float) $vqty > 0 ) {
+                        $any_variation_in_stock = true;
+                        break;
+                    }
+                }
+            }
+            if ( ! $any_variation_in_stock ) {
                 return true;
             }
         }
