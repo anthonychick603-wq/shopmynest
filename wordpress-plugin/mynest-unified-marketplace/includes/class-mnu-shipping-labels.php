@@ -75,10 +75,26 @@ function mnu_labels_page(): void {
     $settings = mnu_labels_settings();
     $presets  = function_exists( 'mnu_ship_package_presets' ) ? mnu_ship_package_presets() : array();
     $live_key_in_test_mode = ! empty( $settings['test_mode'] ) && str_starts_with( $settings['shippo_token'], 'shippo_live_' );
+    // v3.13.26 — diagnostic badge so you can see at a glance whether the
+    // saved token is live or test. Every Shippo label buy uses this exact
+    // token; if this says "Test" you'll get test labels regardless of any
+    // other setting.
+    $token       = (string) $settings['shippo_token'];
+    $token_mode  = str_starts_with( strtolower( $token ), 'shippo_live_' ) ? 'live' : ( '' !== $token ? 'test' : 'none' );
+    $token_tail  = '' !== $token && strlen( $token ) > 8 ? substr( $token, -4 ) : '';
     ?>
     <div class="wrap">
         <h1><?php echo esc_html( get_bloginfo( 'name' ) . ' Shipping Labels' ); ?></h1>
         <p>Configure the Shippo account used to rate shipments and purchase seller labels. Start with a Shippo test token. You can also configure the same token under <a href="<?php echo esc_url( admin_url( 'admin.php?page=tnm-settings' ) ); ?>"><?php echo esc_html( get_bloginfo( 'name' ) ); ?> → Settings</a>.</p>
+        <?php
+        $badge_color = 'live' === $token_mode ? '#00761c' : ( 'test' === $token_mode ? '#b56900' : '#8c8f94' );
+        $badge_text  = 'live' === $token_mode
+            ? sprintf( 'LIVE token active (…%s) — real postage will be purchased and charged to your Shippo balance.', esc_html( $token_tail ) )
+            : ( 'test' === $token_mode
+                ? sprintf( 'TEST token active (…%s) — Shippo is returning free test labels that USPS will not accept. Replace with a live token (starts with shippo_live_) to buy real postage.', esc_html( $token_tail ) )
+                : 'No token configured — no rates or labels will be returned.' );
+        ?>
+        <div class="notice notice-info inline" style="border-left-color: <?php echo esc_attr( $badge_color ); ?>;"><p><strong>Current Shippo mode: <?php echo esc_html( strtoupper( $token_mode ) ); ?></strong> — <?php echo esc_html( $badge_text ); ?></p></div>
         <?php if ( $live_key_in_test_mode ) : ?>
             <div class="notice notice-warning inline"><p>A live Shippo token is saved while test mode is enabled. Label purchases are blocked until you use a test token or intentionally disable test mode.</p></div>
         <?php endif; ?>
