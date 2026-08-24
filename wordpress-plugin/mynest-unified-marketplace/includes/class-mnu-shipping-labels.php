@@ -640,6 +640,27 @@ function mnu_labels_order_addresses( WC_Order $order, int $seller_id ): array {
     $profile = is_array( $profile ) ? $profile : array();
     $seller  = get_userdata( $seller_id );
 
+    // v3.13.25 — USPS (via Shippo) rejects labels when the from-address is
+    // missing email or phone. Cascade seller profile → WP user account →
+    // platform store contact so the label buy never fails on this alone.
+    // We (ShopMyNest) are the Shippo account holder and the party actually
+    // paying for the label; using the store contact as a fallback is the
+    // correct "platform of record" behavior.
+    $store_email = (string) get_option( 'woocommerce_email_from_address', get_option( 'admin_email', '' ) );
+    $store_phone = (string) get_option( 'woocommerce_store_phone', '' );
+    if ( '' === $store_phone ) {
+        // WooCommerce stores the phone under a different key depending on
+        // version; fall back to the seller-facing support phone the plugin
+        // itself stores under tnm settings, then the admin's own billing_phone.
+        $tnm_settings = get_option( 'tnm_marketplace_settings', array() );
+        if ( is_array( $tnm_settings ) && ! empty( $tnm_settings['support_phone'] ) ) {
+            $store_phone = (string) $tnm_settings['support_phone'];
+        }
+    }
+
+    $seller_email = (string) ( $profile['ship_from_email'] ?? ( $seller ? $seller->user_email : '' ) );
+    $seller_phone = (string) ( $profile['ship_from_phone'] ?? get_user_meta( $seller_id, 'billing_phone', true ) );
+
     $from = array(
         'name'    => (string) ( $profile['ship_from_name'] ?? ( $seller ? $seller->display_name : tnm_seller_display_name( $seller_id ) ) ),
         'company' => (string) ( $profile['ship_from_company'] ?? '' ),
@@ -649,8 +670,8 @@ function mnu_labels_order_addresses( WC_Order $order, int $seller_id ): array {
         'state'   => (string) ( $profile['ship_from_state'] ?? '' ),
         'zip'     => (string) ( $profile['ship_from_zip'] ?? '' ),
         'country' => (string) ( $profile['ship_from_country'] ?? 'US' ),
-        'phone'   => (string) ( $profile['ship_from_phone'] ?? get_user_meta( $seller_id, 'billing_phone', true ) ),
-        'email'   => $seller ? (string) $seller->user_email : '',
+        'phone'   => '' !== trim( $seller_phone ) ? $seller_phone : $store_phone,
+        'email'   => '' !== trim( $seller_email ) ? $seller_email : $store_email,
     );
 
     $to = array(
@@ -684,6 +705,17 @@ function mnu_labels_validate_address( array $address, string $label ): bool|WP_E
     $country = strtoupper( (string) ( $address['country'] ?? '' ) );
     if ( in_array( $country, array( 'US', 'CA' ), true ) ) {
         $required['state'] = 'state/province';
+    }
+
+    // v3.13.25 — USPS via Shippo rejects labels without contact email AND
+    // phone on the from-address. Enforcing here means the retry button
+    // surfaces a clear "missing X" message instead of relaying Shippo's
+    // opaque "Seller info missing email or phone" back to the admin.
+    // Only enforced on the from-address so historical to-addresses that
+    // never captured buyer phone don't suddenly fail.
+    if ( false !== stripos( $label, 'ship-from' ) || false !== stripos( $label, 'from' ) ) {
+        $required['email'] = 'contact email';
+        $required['phone'] = 'contact phone';
     }
 
     $missing = array();
