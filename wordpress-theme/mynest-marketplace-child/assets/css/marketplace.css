@@ -3,10 +3,11 @@
  * Child theme of "Assembler" for shopmynest.com
  *
  * An Etsy + Vinted–inspired marketplace layer on top of the ShopMyNest
- * brand (Modern Marketplace: Indigo #3A3D8A + Coral #E27055 on warm ivory
- * #F8F5F0). Palette is LOCKED in shopmynest-branding v1.5.0 as the single
- * source of truth. Styles WooCommerce blocks, MyNest's
- * own "tnm-" social feed / dashboard markup, and site chrome.
+ * brand (Warm Nest: Coral #e2856e + Peach #efb9a5 on peach cream
+ * #ffe6dd). Palette is LOCKED in shopmynest-branding v1.6.0 as the single
+ * source of truth, aligned with the app theme.ts v1.0.151. Styles
+ * WooCommerce blocks, MyNest's own "tnm-" social feed / dashboard
+ * markup, and site chrome.
  *
  * Reference: MyNest brand classes were read from the live homepage
  * (https://shopmynest.com/) to ensure selectors match production markup.
@@ -19,18 +20,18 @@
    ========================================================================== */
 
 :root {
-	/* Fallbacks match the LOCKED palette in shopmynest-branding v1.5.0.
+	/* Fallbacks match the LOCKED palette in shopmynest-branding v1.6.0.
 	 * Preferred source: --wp--preset--color--* (from theme.json), which
 	 * itself mirrors the plugin's palette. Naming kept for compatibility
-	 * even though the primary is now Indigo, not teal. */
-	--mynest-teal: var( --wp--preset--color--brand, #3A3D8A );
-	--mynest-teal-dark: var( --wp--preset--color--brand-dark, #26295F );
-	--mynest-terracotta: var( --wp--preset--color--accent-warm, #E27055 );
-	--mynest-white: var( --wp--preset--color--theme-1, #FFFFFF );
-	--mynest-cream: var( --wp--preset--color--theme-2, #F8F5F0 );
-	--mynest-muted: var( --wp--preset--color--theme-3, #E4DED4 );
-	--mynest-text: var( --wp--preset--color--theme-4, #1B1A21 );
-	--mynest-ink: var( --wp--preset--color--theme-5, #26295F );
+	 * even though the primary is now Warm Coral, not teal. */
+	--mynest-teal: var( --wp--preset--color--brand, #e2856e );
+	--mynest-teal-dark: var( --wp--preset--color--brand-dark, #efb9a5 );
+	--mynest-terracotta: var( --wp--preset--color--accent-warm, #e9c770 );
+	--mynest-white: var( --wp--preset--color--theme-1, #ffffff );
+	--mynest-cream: var( --wp--preset--color--theme-2, #ffe6dd );
+	--mynest-muted: var( --wp--preset--color--theme-3, #a27649 );
+	--mynest-text: var( --wp--preset--color--theme-4, #3e2723 );
+	--mynest-ink: var( --wp--preset--color--theme-5, #efb9a5 );
 
 	/* Canonical v1.5.0 aliases so new code doesn't have to think in old names. */
 	--mynest-primary: var( --mynest-teal );

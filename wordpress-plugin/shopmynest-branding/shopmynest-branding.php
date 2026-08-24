@@ -3,7 +3,7 @@
  * Plugin Name:       ShopMyNest Branding
  * Plugin URI:        https://shopmynest.com
  * Description:       Applies the ShopMyNest logo and brand identity across your WordPress + WooCommerce site: custom logo, favicons, wp-admin login screen, admin bar mark, and WooCommerce transactional email header.
- * Version:           1.5.0
+ * Version:           1.6.0
  * Requires at least: 6.0
  * Requires PHP:      7.4
  * Author:            ShopMyNest
@@ -17,11 +17,11 @@ if ( ! defined( 'ABSPATH' ) ) {
     exit;
 }
 
-define( 'SMN_BRANDING_VERSION', '1.5.0' );
+define( 'SMN_BRANDING_VERSION', '1.6.0' );
 
 /**
  * ============================================================
- *  SHOPMYNEST CANONICAL BRAND PALETTE — LOCKED (v1.5.0)
+ *  SHOPMYNEST CANONICAL BRAND PALETTE — LOCKED (v1.6.0)
  * ============================================================
  *  These are the ONE source of truth for ShopMyNest's brand
  *  colors. Every surface — website, child theme, WooCommerce
@@ -32,18 +32,19 @@ define( 'SMN_BRANDING_VERSION', '1.5.0' );
  *  constant here, regenerate the child theme + app tokens from
  *  this file. There is no other place palette hexes can change.
  *
- *  Palette name: Modern Marketplace (Indigo + Coral on Ivory)
+ *  Palette name: Warm Nest (Coral + Peach on Cream)
+ *  Aligned with app theme.ts v1.0.151 — same hexes, same feel.
  * ============================================================
  */
 define( 'SMN_BRAND_PALETTE_LOCKED', wp_json_encode( array(
-    'primary'    => '#3A3D8A', // Brand Indigo
-    'dark'       => '#26295F', // Indigo Dark (hover, headings, footer)
-    'accent'     => '#E27055', // Coral warm accent (CTAs, highlights)
-    'background' => '#F8F5F0', // Warm ivory surface
-    'card'       => '#FFFFFF', // Clean card
-    'ink'        => '#1B1A21', // Near-black body text
-    'border'     => '#E4DED4', // Ivory border
-    'secondary'  => '#E27055', // Alias: legacy code still reads this
+    'primary'    => '#e2856e', // Warm coral brand (app: brand)
+    'dark'       => '#efb9a5', // Peach — matches app brandDark (hover, footer)
+    'accent'     => '#e9c770', // Warm yellow accent (app: yellow)
+    'background' => '#ffe6dd', // Peach cream surface (app: surface)
+    'card'       => '#ffffff', // Clean card (app: surfaceSecondary)
+    'ink'        => '#3e2723', // Deep brown body text (app: onSurface)
+    'border'     => '#a27649', // Amber-brown border (app: border)
+    'secondary'  => '#e9c770', // Alias for legacy code that reads secondary
 ) ) );
 define( 'SMN_BRANDING_DIR', plugin_dir_path( __FILE__ ) );
 define( 'SMN_BRANDING_URL', plugin_dir_url( __FILE__ ) );
@@ -61,6 +62,7 @@ define( 'SMN_BRANDING_ASSETS', SMN_BRANDING_URL . 'assets/' );
  *
  * History: teal+cream (v<=1.2.2) → Studio Clay (v1.3.0)
  *          → Modern Marketplace (v1.4.0, LOCKED at v1.5.0)
+ *          → Warm Nest (v1.6.0, aligned with app theme.ts v1.0.151)
  */
 function smn_branding_palette() {
     $palette = json_decode( SMN_BRAND_PALETTE_LOCKED, true );
@@ -68,14 +70,14 @@ function smn_branding_palette() {
         // Belt-and-suspenders: if the constant ever gets malformed,
         // fall back to the exact same hexes so nothing renders wrong.
         $palette = array(
-            'primary'    => '#3A3D8A',
-            'dark'       => '#26295F',
-            'accent'     => '#E27055',
-            'background' => '#F8F5F0',
-            'card'       => '#FFFFFF',
-            'ink'        => '#1B1A21',
-            'border'     => '#E4DED4',
-            'secondary'  => '#E27055',
+            'primary'    => '#e2856e',
+            'dark'       => '#efb9a5',
+            'accent'     => '#e9c770',
+            'background' => '#ffe6dd',
+            'card'       => '#ffffff',
+            'ink'        => '#3e2723',
+            'border'     => '#a27649',
+            'secondary'  => '#e9c770',
         );
     }
     return apply_filters( 'smn_branding_palette', $palette );
@@ -138,7 +140,7 @@ function smn_branding_login_styles() {
         }
         .login form {
             border-radius: 12px;
-            box-shadow: 0 6px 24px rgba(58, 61, 138, 0.12);
+            box-shadow: 0 6px 24px rgba(62, 39, 35, 0.12);
             border: 1px solid <?php echo esc_attr( $palette['accent'] ); ?>;
         }
         .wp-core-ui .button-primary {
@@ -306,8 +308,8 @@ function smn_branding_enqueue_storefront_css() {
         "--sn-ink:"         . $p['ink']        . ";" .
         "--sn-border:"      . $p['border']     . ";" .
         "--sn-accent:"      . $p['accent']     . ";" .
-        "--sn-shadow:0 6px 24px rgba(58,61,138,0.12);" .
-        "--sn-shadow-lg:0 12px 32px rgba(58,61,138,0.18);" .
+        "--sn-shadow:0 6px 24px rgba(62,39,35,0.12);" .
+        "--sn-shadow-lg:0 12px 32px rgba(62,39,35,0.18);" .
         "--sn-radius:14px;--sn-radius-sm:8px;--sn-radius-lg:24px;" .
         "}";
     wp_add_inline_style( 'shopmynest-storefront', $css );

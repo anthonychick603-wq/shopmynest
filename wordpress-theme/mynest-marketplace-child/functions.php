@@ -126,19 +126,19 @@ if ( ! function_exists( 'mynest_marketplace_palette_from_plugin' ) ) :
 				return $p;
 			}
 		}
-		// Fallback: mirrors the LOCKED Modern Marketplace palette in
-		// shopmynest-branding v1.5.0. Only used if the branding plugin
+		// Fallback: mirrors the LOCKED Warm Nest palette in
+		// shopmynest-branding v1.6.0. Only used if the branding plugin
 		// is deactivated. Keep these EXACT hexes in sync with
 		// SMN_BRAND_PALETTE_LOCKED there.
 		return array(
-			'primary'    => '#3A3D8A',
-			'dark'       => '#26295F',
-			'accent'     => '#E27055',
-			'background' => '#F8F5F0',
-			'card'       => '#FFFFFF',
-			'ink'        => '#1B1A21',
-			'border'     => '#E4DED4',
-			'secondary'  => '#E27055',
+			'primary'    => '#e2856e',
+			'dark'       => '#efb9a5',
+			'accent'     => '#e9c770',
+			'background' => '#ffe6dd',
+			'card'       => '#ffffff',
+			'ink'        => '#3e2723',
+			'border'     => '#a27649',
+			'secondary'  => '#e9c770',
 		);
 	}
 endif;
