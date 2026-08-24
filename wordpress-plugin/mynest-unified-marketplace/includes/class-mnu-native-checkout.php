@@ -1255,11 +1255,32 @@ function mnu_native_create_intent_locked( int $user_id, array $data, string $che
         // as `_mnu_real_shipping_cents` so the auto-label service still buys
         // the label at its actual carrier cost. Skip on free-shipping /
         // no-shipping carts to avoid attaching a fee to a $0 line.
-        $real_shipping_total  = (float) $shipping_total;
-        $processing_fee_cents = 0;
-        if ( $shipping_total > 0 ) {
-            $processing_fee_cents = (int) apply_filters( 'mnu_v380_processing_fee_cents', 105, $order ?? null );
-            $shipping_total       = round( $shipping_total + ( $processing_fee_cents / 100 ), wc_get_price_decimals() );
+        //
+        // v3.13.28 — the fee is added by the quote (see the response
+        // assembly around line ~792 and $shipping_rates[i]['amount']
+        // adjustment). If we get here from any quote-derived source —
+        // meaning $chosen came from $shipping_rates OR $quote['shipping']
+        // was passed through — the fee is ALREADY in $shipping_total.
+        // Adding it again here charged the buyer $2.10 instead of $1.05.
+        //
+        // Only mnu_native_flat_shipping() returns a raw rate with no fee,
+        // and that only happens when we have NO address AND no quote. That
+        // is the sole case where we must add the fee here.
+        $processing_fee_cents = (int) apply_filters( 'mnu_v380_processing_fee_cents', 105, $order ?? null );
+        $processing_fee       = $processing_fee_cents / 100;
+        $quote_carried_fee    = is_array( $quote );  // both with-address (via $shipping_rates) and no-address (via $quote['shipping']) already include it
+        if ( $shipping_total > 0 && ! $quote_carried_fee ) {
+            $shipping_total = round( $shipping_total + $processing_fee, wc_get_price_decimals() );
+        }
+
+        // Recover the true carrier rate for label-purchase accounting. If the
+        // quote carried the fee, subtract it out; otherwise $shipping_total
+        // is already the raw rate.
+        $real_shipping_total = $quote_carried_fee && $shipping_total > 0
+            ? round( max( 0.0, $shipping_total - $processing_fee ), wc_get_price_decimals() )
+            : (float) $shipping_total;
+        if ( $shipping_total <= 0 ) {
+            $processing_fee_cents = 0;
         }
 
         $order = mnu_native_create_order(
@@ -1432,6 +1453,21 @@ function mnu_native_complete( WP_REST_Request $request ): array|WP_Error {
             return new WP_Error( 'payment_amount_mismatch', 'The payment amount did not match this order.', array( 'status' => 409 ) );
         }
         if ( ! $order->is_paid() ) {
+            // v3.13.28 — stamp the v3.8 platform-charge markers BEFORE
+            // payment_complete() fires, because payment_complete() triggers
+            // the ledger capture and the auto-label purchase, both of which
+            // depend on `_mnu_platform_shipping_kept_cents` being set to
+            // keep shipping on the platform side. Previously stamping only
+            // happened in the webhook, and the webhook skipped it when the
+            // order was already paid — causing native-sync-completed orders
+            // to write a negative postage row against the seller. Also stamp
+            // the latest charge id here so refund/dispute lookups have it on
+            // both the sync and webhook paths.
+            $latest_charge = sanitize_text_field( (string) ( $intent['latest_charge'] ?? '' ) );
+            if ( '' !== $latest_charge ) {
+                $order->update_meta_data( '_thenest_stripe_latest_charge', $latest_charge );
+            }
+            mnu_native_issue_seller_transfers( $order, $latest_charge );
             $order->payment_complete( $intent_id );
             $order->add_order_note( 'Paid through The Nest native checkout.' );
             // v3.7.87 — auto-buy the buyer's selected label. Idempotent, so

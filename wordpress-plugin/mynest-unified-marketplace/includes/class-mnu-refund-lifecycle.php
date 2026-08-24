@@ -578,6 +578,54 @@ final class MNU_Refund_Lifecycle {
 		$stripe_id      = (string) ( $refund_object['id'] ?? '' );
 
 		if ( 'succeeded' === $status ) {
+			// v3.13.28 — previously we only updated a state meta here. That
+			// meant a refund issued from the Stripe Dashboard confirmed on our
+			// side WITHOUT creating a Woo refund or a ledger clawback, leaving
+			// the seller's earnings still available or already paid. Now we
+			// idempotently create a matching Woo refund keyed by the Stripe
+			// refund id. wc_create_refund() fires woocommerce_order_refunded,
+			// which TNM_Ledger::on_woo_refunded() hooks to write the negative
+			// adjustment row.
+			$already_recorded = false;
+			$existing_refunds = $order->get_refunds();
+			foreach ( $existing_refunds as $r ) {
+				$recorded_stripe = (string) $r->get_meta( '_mnu_stripe_refund_id', true );
+				if ( $recorded_stripe && hash_equals( $recorded_stripe, $stripe_id ) ) {
+					$already_recorded = true;
+					break;
+				}
+			}
+
+			if ( ! $already_recorded && $amount_dollars > 0 ) {
+				$refund_result = wc_create_refund( array(
+					'order_id'   => $order->get_id(),
+					'amount'     => $amount_dollars,
+					'reason'     => sprintf( 'Refund issued from Stripe (%s)', $stripe_id ),
+					// api_refund=false because Stripe has ALREADY refunded the buyer.
+					// If we let Woo call the gateway again it would try to refund
+					// a second time on top of the already-issued Dashboard refund.
+					'api_refund' => false,
+				) );
+				if ( ! is_wp_error( $refund_result ) && $refund_result instanceof \WC_Order_Refund ) {
+					$refund_result->update_meta_data( '_mnu_stripe_refund_id', $stripe_id );
+					$refund_result->update_meta_data( '_mnu_refund_source', 'stripe_dashboard' );
+					$refund_result->save();
+					$order->add_order_note( sprintf(
+						'Recorded Stripe Dashboard refund %s ($%.2f) as Woo refund #%d.',
+						$stripe_id,
+						$amount_dollars,
+						$refund_result->get_id()
+					) );
+				} else {
+					$err = is_wp_error( $refund_result ) ? $refund_result->get_error_message() : 'unknown';
+					$order->add_order_note( sprintf(
+						'FAILED to record Stripe refund %s locally: %s. Ledger will be out of sync until reconciled manually.',
+						$stripe_id,
+						$err
+					) );
+				}
+			}
+
 			$total_refunded = 0.0;
 			foreach ( $order->get_refunds() as $r ) {
 				$total_refunded += abs( (float) $r->get_amount() );

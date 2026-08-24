@@ -223,6 +223,16 @@ final class MNU_Woo_Gateway extends WC_Payment_Gateway {
 			$params = array_merge( $params, mnu_native_connect_intent_params( $order ) );
 		}
 
+		// v3.13.28 — Stamp the v3.8 platform-charge model BEFORE the PaymentIntent
+		// is created. Without this stamp, TNM_Ledger::create_seller_transfers()
+		// will fire a legacy /transfers call for any seller still carrying a
+		// legacy Connect account on their profile. That would double-pay them
+		// (Stripe transfer + Bluevine ACH). Sellers are OFF Stripe entirely; this
+		// stamp is what the ledger checks to keep them off.
+		if ( function_exists( 'mnu_native_stamp_v380_intent_meta' ) ) {
+			mnu_native_stamp_v380_intent_meta( $order );
+		}
+
 		// Idempotency key is derived from order id + amount so retries for the
 		// same order reuse the same intent. If the amount changes (e.g. shopper
 		// updates cart and comes back) Stripe issues a fresh intent.

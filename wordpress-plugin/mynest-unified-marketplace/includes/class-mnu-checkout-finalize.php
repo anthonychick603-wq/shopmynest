@@ -110,12 +110,44 @@ final class MNU_Checkout_Finalize {
 		}
 
 		$intent_status = (string) ( $intent['status'] ?? '' );
-		$paid_ok       = array( 'succeeded', 'requires_capture', 'processing' );
-		if ( ! in_array( $intent_status, $paid_ok, true ) ) {
+		// v3.13.28 — previously we accepted 'succeeded', 'requires_capture',
+		// and 'processing' as "paid enough" to finalize. That was wrong:
+		//   • 'requires_capture' means Stripe authorised but has not captured;
+		//     funds are not yet debited from the buyer.
+		//   • 'processing' is used by async payment methods (some ACH/bank
+		//     debits, some wallets) that can still fail later.
+		// Finalising in those states triggers payment_complete(), which fires
+		// the ledger capture hook and buys a Shippo label — accruing money
+		// the platform does not yet actually have.
+		//
+		// Only 'succeeded' is safe. Async / auth-only intents finalise later
+		// via the verified payment_intent.succeeded webhook in
+		// class-mnu-native-checkout.php, which retries the same flow once the
+		// intent truly succeeds.
+		if ( 'succeeded' !== $intent_status ) {
 			return new \WP_Error(
 				'mnu_intent_not_paid',
-				sprintf( 'Payment intent is in status "%s"; expected succeeded/processing.', $intent_status ),
+				sprintf( 'Payment intent is in status "%s"; expected "succeeded". The payment will finalise automatically once Stripe confirms it.', $intent_status ),
 				array( 'status' => 402 )
+			);
+		}
+
+		// v3.13.28 — verify the intent amount + currency match what the order
+		// says. Stripe metadata linkage is nice but not sufficient; a client
+		// that persuades the server the wrong intent belongs to this order
+		// could otherwise finalise for a smaller charge.
+		$intent_amount   = (int) ( $intent['amount_received'] ?? $intent['amount'] ?? 0 );
+		$intent_currency = strtolower( (string) ( $intent['currency'] ?? '' ) );
+		$order_amount    = (int) round( ( (float) $order->get_total() ) * 100 );
+		$order_currency  = strtolower( (string) $order->get_currency() );
+		if ( $intent_amount < $order_amount || $intent_currency !== $order_currency ) {
+			return new \WP_Error(
+				'mnu_intent_amount_mismatch',
+				sprintf(
+					'Intent amount/currency mismatch (intent=%d %s, order=%d %s).',
+					$intent_amount, $intent_currency, $order_amount, $order_currency
+				),
+				array( 'status' => 400 )
 			);
 		}
 
@@ -141,6 +173,13 @@ final class MNU_Checkout_Finalize {
 			(string) ( $intent['latest_charge'] ?? 'n/a' )
 		) );
 		$order->save();
+		// v3.13.28 — stamp platform-charge markers BEFORE payment_complete()
+		// so the auto-label service and ledger capture see shipping as kept
+		// by the platform. Without this, web-finalised orders can debit the
+		// seller for postage.
+		if ( function_exists( 'mnu_native_issue_seller_transfers' ) ) {
+			mnu_native_issue_seller_transfers( $order, (string) ( $intent['latest_charge'] ?? '' ) );
+		}
 		$order->payment_complete( $intent_id );
 
 		// Clear the WC session's cached intent so the next order starts

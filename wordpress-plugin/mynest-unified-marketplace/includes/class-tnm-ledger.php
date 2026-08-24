@@ -236,17 +236,36 @@ final class TNM_Ledger {
      * not yet onboarded are left untouched so a later retry can pick them up.
      */
     public static function create_seller_transfers( int $order_id ): void {
-        if ( ! function_exists( 'mnu_native_stripe_request' ) || ! class_exists( 'MNU_Connect' ) ) {
-            return;
-        }
-        // v3.8.0 — new-model orders never generate Stripe Connect transfers.
-        // Sellers are paid via manual ACH from the platform business checking
-        // account after the 7-day holding window. See the admin Payouts page
-        // (WP Admin → MyNest → Payouts) which flips rows from status='available'
-        // to status='paid' when the ACH batch is marked completed.
-        $order = wc_get_order( $order_id );
-        if ( $order && '1' === (string) $order->get_meta( '_mnu_v380_model', true ) ) {
-            return;
+        // v3.13.28 — HARD KILL SWITCH.
+        //
+        // v3.11.0 removed sellers from Stripe Connect entirely; every seller
+        // is paid by manual ACH from Bluevine after the 2-day holding window.
+        // The pre-existing per-order `_mnu_v380_model` guard depended on every
+        // checkout path stamping that meta before payment. The v3.13.27 audit
+        // found the web gateway did not stamp it, so any order created via
+        // the WooCommerce web checkout could still hit the /transfers call
+        // below and double-pay a seller (Stripe transfer + Bluevine ACH).
+        //
+        // Rather than rely on every future checkout path remembering to stamp
+        // the model meta, this function is now an unconditional no-op. The
+        // web gateway also stamps `_mnu_v380_model=1` for audit clarity, but
+        // even without the stamp this method cannot move money.
+        //
+        // If we ever need to revive Stripe Connect payouts (we don't plan to),
+        // reintroduce them as a NEW method on this class — do not re-enable
+        // this one. The historical code below is retained under an impossible
+        // guard so grep archaeology still finds it.
+        return;
+
+        // phpcs:ignore Squiz.PHP.NonExecutableCode.Unreachable
+        if ( false ) {
+            if ( ! function_exists( 'mnu_native_stripe_request' ) || ! class_exists( 'MNU_Connect' ) ) {
+                return;
+            }
+            $order = wc_get_order( $order_id );
+            if ( $order && '1' === (string) $order->get_meta( '_mnu_v380_model', true ) ) {
+                return;
+            }
         }
         global $wpdb;
         // v3.7.81 — include postage-debit rows so the marketplace recovers

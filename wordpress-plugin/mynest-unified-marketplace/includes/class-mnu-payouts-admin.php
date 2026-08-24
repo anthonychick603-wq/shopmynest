@@ -111,18 +111,26 @@ final class MNU_Payouts_Admin {
 		$ids     = array_map( 'intval', array_column( $rows, 'seller_id' ) );
 		$in      = implode( ',', array_fill( 0, count( $ids ), '%d' ) );
 
-		// Aggregate available and pending balances in a single query.
-		// Only 'earning' rows count toward payouts; refunds and adjustments
-		// are already applied to the earning row's net (v3.8.0 refund
-		// reversal writes negative-net adjustments with type='refund',
-		// which we intentionally exclude — they've either been reversed
-		// against the earning row, or booked as seller_debt).
+		// v3.13.28 — Aggregate available and pending balances across ALL
+		// settlement-affecting types, not only earnings. Previously we
+		// filtered to type='earning' which excluded refund_<id> adjustment
+		// rows (created with negative net) written by
+		// TNM_Ledger::record_refund(). That meant a refunded seller could
+		// still be paid the full pre-refund amount via manual ACH.
+		//
+		// The v3.13.27 audit found there is no code path that "applies the
+		// refund to the earning row" and no separate seller_debt table —
+		// the exclusion was based on a stale comment. Include earning +
+		// refund_% + adjustment% rows so SUM(net) reflects true owed
+		// balance; if it goes negative, treat the seller as having a debt
+		// balance (they cannot receive a payout until it's cleared).
 		$sql = "SELECT seller_id,
 		               COALESCE(SUM(CASE WHEN status='available' THEN net ELSE 0 END),0) AS available_total,
 		               COALESCE(SUM(CASE WHEN status='pending'   THEN net ELSE 0 END),0) AS pending_total,
-		               COALESCE(SUM(CASE WHEN status='available' THEN 1   ELSE 0 END),0) AS available_rows
+		               COALESCE(SUM(CASE WHEN status='available' AND type='earning' THEN 1 ELSE 0 END),0) AS available_rows
 		        FROM {$ledger}
-		        WHERE seller_id IN ($in) AND type='earning'
+		        WHERE seller_id IN ($in)
+		          AND ( type='earning' OR type LIKE 'refund_%' OR type LIKE 'adjustment%' OR type='postage' )
 		        GROUP BY seller_id";
 		$totals_raw = $wpdb->get_results( $wpdb->prepare( $sql, $ids ), ARRAY_A );
 		$totals     = array();
@@ -432,21 +440,43 @@ final class MNU_Payouts_Admin {
 		// with FOR UPDATE would be ideal, but WP $wpdb doesn't expose a
 		// transaction wrapper; instead we do a bounded WHERE on the UPDATE
 		// so late-arriving rows aren't accidentally swept into this batch.
+		// v3.13.28 — The batch sum previously filtered to type='earning',
+		// which meant refund_% / adjustment% rows with negative net were
+		// ignored. A refunded seller could get paid their full pre-refund
+		// amount. Now we sum ALL settlement types together, so refunds
+		// naturally offset earnings. If the net is <= 0 the seller has a
+		// zero-or-negative balance and is skipped from the batch.
+		//
+		// Wrap the whole thing in a DB transaction. Two admin tabs
+		// submitting simultaneously would previously each read the same
+		// available balance and each generate an ACH instruction; now the
+		// second one either sees an already-flipped state (0 rows) and
+		// gets a no-op, or blocks until the first commits.
 		$as_of      = $now;
 		$total_paid = 0.0;
 		$paid_rows  = 0;
 		$affected   = array();
+
+		$wpdb->query( 'START TRANSACTION' );
+
 		foreach ( $seller_ids as $sid ) {
+			// Net balance across earning + refund + adjustment + postage rows.
+			// FOR UPDATE keeps a concurrent tab from double-computing this.
 			$sum = (float) $wpdb->get_var( $wpdb->prepare(
 				"SELECT COALESCE(SUM(net),0) FROM {$ledger}
-				 WHERE seller_id=%d AND type='earning' AND status='available'
-				 AND updated_at <= %s",
+				 WHERE seller_id=%d
+				   AND ( type='earning' OR type LIKE 'refund_%%' OR type LIKE 'adjustment%%' OR type='postage' )
+				   AND status='available'
+				   AND updated_at <= %s
+				 FOR UPDATE",
 				$sid, $as_of
 			) );
 			$cnt = (int) $wpdb->get_var( $wpdb->prepare(
 				"SELECT COUNT(*) FROM {$ledger}
-				 WHERE seller_id=%d AND type='earning' AND status='available'
-				 AND updated_at <= %s",
+				 WHERE seller_id=%d
+				   AND ( type='earning' OR type LIKE 'refund_%%' OR type LIKE 'adjustment%%' OR type='postage' )
+				   AND status='available'
+				   AND updated_at <= %s",
 				$sid, $as_of
 			) );
 			if ( $sum > 0.001 && $cnt > 0 ) {
@@ -457,7 +487,8 @@ final class MNU_Payouts_Admin {
 		}
 
 		if ( empty( $affected ) ) {
-			self::push_notice( 'error', __( 'Selected sellers have no available balance to pay out.', 'mynest-unified-marketplace' ) );
+			$wpdb->query( 'ROLLBACK' );
+			self::push_notice( 'error', __( 'Selected sellers have no available balance to pay out (refunds may have zeroed it out).', 'mynest-unified-marketplace' ) );
 			wp_safe_redirect( self::menu_url() );
 			exit;
 		}
@@ -481,20 +512,29 @@ final class MNU_Payouts_Admin {
 		$batch_id = (int) $wpdb->insert_id;
 
 		if ( ! $batch_id ) {
+			$wpdb->query( 'ROLLBACK' );
 			self::push_notice( 'error', __( 'Could not create the batch record; ledger was not modified.', 'mynest-unified-marketplace' ) );
 			wp_safe_redirect( self::menu_url() );
 			exit;
 		}
 
-		// Flip ledger rows.  Same WHERE we counted with.
+		// v3.13.28 — Flip ALL settlement rows (earning + refund + adjustment
+		// + postage) so refund offsets are consumed in the same batch that
+		// paid the underlying earning. Otherwise the negative rows would sit
+		// in "available" forever, silently reducing every FUTURE batch too.
 		foreach ( $affected as $sid => $_info ) {
 			$wpdb->query( $wpdb->prepare(
 				"UPDATE {$ledger}
 				 SET status='paid', payout_id=%d, updated_at=%s
-				 WHERE seller_id=%d AND type='earning' AND status='available' AND updated_at <= %s",
+				 WHERE seller_id=%d
+				   AND ( type='earning' OR type LIKE 'refund_%%' OR type LIKE 'adjustment%%' OR type='postage' )
+				   AND status='available'
+				   AND updated_at <= %s",
 				$batch_id, $now, $sid, $as_of
 			) );
 		}
+
+		$wpdb->query( 'COMMIT' );
 
 		self::push_notice(
 			'success',
