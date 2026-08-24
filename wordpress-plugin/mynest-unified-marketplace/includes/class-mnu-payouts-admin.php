@@ -522,8 +522,16 @@ final class MNU_Payouts_Admin {
 		// + postage) so refund offsets are consumed in the same batch that
 		// paid the underlying earning. Otherwise the negative rows would sit
 		// in "available" forever, silently reducing every FUTURE batch too.
-		foreach ( $affected as $sid => $_info ) {
-			$wpdb->query( $wpdb->prepare(
+		//
+		// v3.13.29 — verify affected-row count per seller matches the count
+		// we selected FOR UPDATE. If any UPDATE flipped fewer rows than
+		// expected we roll back, because it means either concurrent code
+		// mutated ledger state during the transaction or our WHERE clause
+		// no longer matches. Either way, showing the ACH copy card with a
+		// stale total_paid would be wrong.
+		$flip_mismatch = false;
+		foreach ( $affected as $sid => $info ) {
+			$updated_rows = (int) $wpdb->query( $wpdb->prepare(
 				"UPDATE {$ledger}
 				 SET status='paid', payout_id=%d, updated_at=%s
 				 WHERE seller_id=%d
@@ -532,6 +540,24 @@ final class MNU_Payouts_Admin {
 				   AND updated_at <= %s",
 				$batch_id, $now, $sid, $as_of
 			) );
+			if ( $updated_rows !== (int) $info['rows'] ) {
+				$flip_mismatch = true;
+				error_log( sprintf(
+					'[MNU_Payouts_Admin] Batch %d seller %d: expected %d rows flipped, got %d. Rolling back.',
+					$batch_id,
+					$sid,
+					(int) $info['rows'],
+					$updated_rows
+				) );
+				break;
+			}
+		}
+
+		if ( $flip_mismatch ) {
+			$wpdb->query( 'ROLLBACK' );
+			self::push_notice( 'error', __( 'Batch was cancelled: ledger changed during the flip. Please refresh and try again.', 'mynest-unified-marketplace' ) );
+			wp_safe_redirect( self::menu_url() );
+			exit;
 		}
 
 		$wpdb->query( 'COMMIT' );

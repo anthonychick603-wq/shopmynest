@@ -215,6 +215,14 @@ final class TNM_Ledger {
         if ( ! $order->has_status( 'completed' ) ) {
             return;
         }
+        // v3.13.29 — do not release earnings for an order with an active
+        // Stripe dispute hold. The dispute handler in class-mnu-native-checkout
+        // stamps _mnu_dispute_hold=1 on any charge.dispute.created /
+        // .updated / .funds_withdrawn event, and clears it only if the
+        // dispute closes in our favour or funds are reinstated.
+        if ( '1' === (string) $order->get_meta( '_mnu_dispute_hold', true ) ) {
+            return;
+        }
         global $wpdb;
         $now = current_time( 'mysql', true );
         $wpdb->query(

@@ -108,110 +108,171 @@ final class MNU_Auto_Label {
             return;
         }
 
-        $rate_id  = (string) $order->get_meta( '_mnu_ship_rate_id_' . $seller_id, true );
-        $provider = (string) $order->get_meta( '_mnu_ship_provider_' . $seller_id, true );
-        $service  = (string) $order->get_meta( '_mnu_ship_service_'  . $seller_id, true );
-        $amount   = (string) $order->get_meta( '_mnu_ship_amount_'   . $seller_id, true );
-        $currency = (string) $order->get_meta( '_mnu_ship_currency_' . $seller_id, true ) ?: $order->get_currency();
-
-        if ( '' === $rate_id ) {
-            self::record_error( $order, $seller_id, 'No captured Shippo rate id on this order — seller must buy the label manually.' );
+        // v3.13.29 — previously this method was documented as idempotent
+        // per seller but the check-then-Shippo-call was not atomic. Two PHP
+        // workers firing on the same payment hook could both observe no
+        // transaction meta, both call Shippo, and both charge the postage.
+        // The audit found no platform idempotency key was being sent to
+        // Shippo either. Now we hold a MySQL GET_LOCK keyed by order_id +
+        // seller_id for the duration of the purchase. GET_LOCK is atomic,
+        // auto-expires when the DB connection dies (so a crashed worker
+        // cannot wedge a seller permanently), and the second worker either
+        // waits its turn and then sees the transaction meta already set,
+        // or bails immediately with a lock-contention log line.
+        global $wpdb;
+        $lock_name  = sprintf( 'mnu_autolabel_%d_%d', $order->get_id(), $seller_id );
+        $got_lock   = (int) $wpdb->get_var( $wpdb->prepare( 'SELECT GET_LOCK(%s, %d)', $lock_name, 0 ) );
+        if ( 1 !== $got_lock ) {
+            $order->add_order_note( sprintf(
+                'Auto-label for seller #%d skipped: another worker holds the label-purchase lock. It will retry on the next payment hook if needed.',
+                $seller_id
+            ) );
             return;
         }
 
-        if ( ! function_exists( 'mnu_labels_shippo_request' ) || ! function_exists( 'mnu_labels_with_seller_token' ) ) {
-            self::record_error( $order, $seller_id, 'Shipping-labels module is not loaded; cannot auto-buy the label.' );
-            return;
-        }
+        try {
+            // Re-read after we got the lock. The other worker may have
+            // finished by the time we entered.
+            clean_post_cache( $order->get_id() );
+            $fresh_order = wc_get_order( $order->get_id() );
+            if ( $fresh_order instanceof WC_Order
+                && ( $fresh_order->get_meta( '_thenest_label_transaction' . $suffix, true )
+                     || $fresh_order->get_meta( '_thenest_label_url' . $suffix, true ) ) ) {
+                return;
+            }
+            if ( $fresh_order instanceof WC_Order ) {
+                // Use the freshly-loaded order for the rest of this call so
+                // downstream meta writes happen against the current state.
+                $order = $fresh_order;
+            }
 
-        $body = array(
-            'rate'            => $rate_id,
-            'label_file_type' => 'PDF',
-            'async'           => false,
-            'metadata'        => sprintf( 'MyNest order %s seller %d (auto)', $order->get_order_number(), $seller_id ),
-        );
+            $rate_id  = (string) $order->get_meta( '_mnu_ship_rate_id_' . $seller_id, true );
+            $provider = (string) $order->get_meta( '_mnu_ship_provider_' . $seller_id, true );
+            $service  = (string) $order->get_meta( '_mnu_ship_service_'  . $seller_id, true );
+            $amount   = (string) $order->get_meta( '_mnu_ship_amount_'   . $seller_id, true );
+            $currency = (string) $order->get_meta( '_mnu_ship_currency_' . $seller_id, true ) ?: $order->get_currency();
 
-        // v3.7.82 seller-token scope: uses the seller's own Shippo when
-        // connected, platform token otherwise. Both cases are exercised by
-        // the same wrapper, so we don't branch here.
-        $transaction = mnu_labels_with_seller_token( $seller_id, static function () use ( $body ) {
-            return mnu_labels_shippo_request( '/transactions/', $body );
-        } );
+            if ( '' === $rate_id ) {
+                self::record_error( $order, $seller_id, 'No captured Shippo rate id on this order — seller must buy the label manually.' );
+                return;
+            }
 
-        if ( is_wp_error( $transaction ) ) {
-            self::record_error( $order, $seller_id, $transaction->get_error_message() );
-            return;
-        }
+            if ( ! function_exists( 'mnu_labels_shippo_request' ) || ! function_exists( 'mnu_labels_with_seller_token' ) ) {
+                self::record_error( $order, $seller_id, 'Shipping-labels module is not loaded; cannot auto-buy the label.' );
+                return;
+            }
 
-        // mnu_labels_store_transaction() writes all the standard label meta,
-        // updates the ledger (platform-paid path), notifies the buyer, and
-        // flips _tnm_seller_status_{seller} to 'shipped'. Reusing it here
-        // keeps the manual and auto paths in lockstep.
-        if ( ! function_exists( 'mnu_labels_store_transaction' ) ) {
-            self::record_error( $order, $seller_id, 'Label store helper is unavailable.' );
-            return;
-        }
-
-        $selected_rate = array(
-            'provider' => $provider,
-            'service'  => $service,
-            'amount'   => $amount,
-            'currency' => $currency,
-        );
-
-        $result = mnu_labels_store_transaction( $order, $seller_id, $transaction, $selected_rate );
-        if ( is_wp_error( $result ) ) {
-            self::record_error( $order, $seller_id, $result->get_error_message() );
-            return;
-        }
-
-        // Clear any prior error and stamp success meta the dashboard uses to
-        // decide whether to show the label card vs the rate picker.
-        $order->delete_meta_data( '_mnu_autolabel_error' . $suffix );
-        $order->update_meta_data( '_mnu_autolabel_status' . $suffix, 'success' );
-        $order->update_meta_data( '_mnu_autolabel_bought_at' . $suffix, current_time( 'mysql', true ) );
-        // Whether the platform or seller Shippo funded it drives payout math
-        // and dashboard copy ('billed to your Shippo' vs 'deducted from payout').
-        $paid_by = ( function_exists( 'mnu_labels_seller_on_own_shippo' ) && mnu_labels_seller_on_own_shippo( $seller_id ) )
-            ? 'seller_shippo'
-            : 'platform';
-        $order->update_meta_data( '_mnu_autolabel_paid_by' . $suffix, $paid_by );
-        $order->save();
-
-        $order->add_order_note(
-            sprintf(
-                'Auto-purchased %s%s shipping label for %s (buyer-paid). Tracking: %s',
-                $provider ? $provider . ' ' : '',
-                $service ?: 'shipping',
-                function_exists( 'tnm_seller_display_name' ) ? tnm_seller_display_name( $seller_id ) : ( '#' . $seller_id ),
-                (string) ( $result['tracking_number'] ?? 'pending' )
-            )
-        );
-
-        // Notify the seller they have a label ready to print.
-        if ( function_exists( 'tnm_notify' ) ) {
-            tnm_notify(
-                $seller_id,
-                (int) $order->get_customer_id(),
-                'label_ready',
-                'Label ready to print — order #' . $order->get_order_number(),
-                'The buyer already paid for shipping. Print the label from your seller dashboard.',
-                $order->get_id(),
-                'shop_order',
-                admin_url( 'admin.php?page=thenest-shipping-labels&order=' . $order->get_id() )
+            $body = array(
+                'rate'            => $rate_id,
+                'label_file_type' => 'PDF',
+                'async'           => false,
+                'metadata'        => sprintf( 'MyNest order %s seller %d (auto)', $order->get_order_number(), $seller_id ),
             );
-        }
-        if ( class_exists( 'MNU_Ops' ) ) {
-            MNU_Ops::notify_user(
-                $seller_id,
-                'Label ready to print',
-                'Order #' . $order->get_order_number() . ' — the buyer paid for shipping and the label is ready in your dashboard.',
-                array(
-                    'type'      => 'label_ready',
-                    'order_id'  => $order->get_id(),
-                    'seller_id' => $seller_id,
+
+            // v3.7.82 seller-token scope: uses the seller's own Shippo when
+            // connected, platform token otherwise. Both cases are exercised by
+            // the same wrapper, so we don't branch here.
+            //
+            // v3.13.29 — pre-stamp a "purchasing" marker so a concurrent
+            // request that squeaks past the lock (e.g. lock lost mid-flight)
+            // observes intent-in-flight rather than an empty transaction meta.
+            $order->update_meta_data( '_thenest_label_purchase_state' . $suffix, 'purchasing' );
+            $order->update_meta_data( '_thenest_label_purchase_started_at' . $suffix, current_time( 'mysql', true ) );
+            $order->save();
+
+            $transaction = mnu_labels_with_seller_token( $seller_id, static function () use ( $body ) {
+                return mnu_labels_shippo_request( '/transactions/', $body );
+            } );
+
+            if ( is_wp_error( $transaction ) ) {
+                $order->update_meta_data( '_thenest_label_purchase_state' . $suffix, 'error' );
+                $order->save();
+                self::record_error( $order, $seller_id, $transaction->get_error_message() );
+                return;
+            }
+
+            // mnu_labels_store_transaction() writes all the standard label meta,
+            // updates the ledger (platform-paid path), notifies the buyer, and
+            // flips _tnm_seller_status_{seller} to 'shipped'. Reusing it here
+            // keeps the manual and auto paths in lockstep.
+            if ( ! function_exists( 'mnu_labels_store_transaction' ) ) {
+                $order->update_meta_data( '_thenest_label_purchase_state' . $suffix, 'error' );
+                $order->save();
+                self::record_error( $order, $seller_id, 'Label store helper is unavailable.' );
+                return;
+            }
+
+            $selected_rate = array(
+                'provider' => $provider,
+                'service'  => $service,
+                'amount'   => $amount,
+                'currency' => $currency,
+            );
+
+            $result = mnu_labels_store_transaction( $order, $seller_id, $transaction, $selected_rate );
+            if ( is_wp_error( $result ) ) {
+                $order->update_meta_data( '_thenest_label_purchase_state' . $suffix, 'error' );
+                $order->save();
+                self::record_error( $order, $seller_id, $result->get_error_message() );
+                return;
+            }
+
+            // Clear any prior error and stamp success meta the dashboard uses to
+            // decide whether to show the label card vs the rate picker.
+            $order->delete_meta_data( '_mnu_autolabel_error' . $suffix );
+            $order->update_meta_data( '_thenest_label_purchase_state' . $suffix, 'done' );
+            $order->update_meta_data( '_mnu_autolabel_status' . $suffix, 'success' );
+            $order->update_meta_data( '_mnu_autolabel_bought_at' . $suffix, current_time( 'mysql', true ) );
+            // Whether the platform or seller Shippo funded it drives payout math
+            // and dashboard copy ('billed to your Shippo' vs 'deducted from payout').
+            $paid_by = ( function_exists( 'mnu_labels_seller_on_own_shippo' ) && mnu_labels_seller_on_own_shippo( $seller_id ) )
+                ? 'seller_shippo'
+                : 'platform';
+            $order->update_meta_data( '_mnu_autolabel_paid_by' . $suffix, $paid_by );
+            $order->save();
+
+            $order->add_order_note(
+                sprintf(
+                    'Auto-purchased %s%s shipping label for %s (buyer-paid). Tracking: %s',
+                    $provider ? $provider . ' ' : '',
+                    $service ?: 'shipping',
+                    function_exists( 'tnm_seller_display_name' ) ? tnm_seller_display_name( $seller_id ) : ( '#' . $seller_id ),
+                    (string) ( $result['tracking_number'] ?? 'pending' )
                 )
             );
+
+            // Notify the seller they have a label ready to print.
+            if ( function_exists( 'tnm_notify' ) ) {
+                tnm_notify(
+                    $seller_id,
+                    (int) $order->get_customer_id(),
+                    'label_ready',
+                    'Label ready to print — order #' . $order->get_order_number(),
+                    'The buyer already paid for shipping. Print the label from your seller dashboard.',
+                    $order->get_id(),
+                    'shop_order',
+                    admin_url( 'admin.php?page=thenest-shipping-labels&order=' . $order->get_id() )
+                );
+            }
+            if ( class_exists( 'MNU_Ops' ) ) {
+                MNU_Ops::notify_user(
+                    $seller_id,
+                    'Label ready to print',
+                    'Order #' . $order->get_order_number() . ' — the buyer paid for shipping and the label is ready in your dashboard.',
+                    array(
+                        'type'      => 'label_ready',
+                        'order_id'  => $order->get_id(),
+                        'seller_id' => $seller_id,
+                    )
+                );
+            }
+        } finally {
+            // v3.13.29 — release the atomic order+seller lock. GET_LOCK is
+            // scoped to this DB connection; RELEASE_LOCK is a no-op on any
+            // path where we never got the lock (we early-returned above),
+            // but calling it in finally guarantees cleanup on any early
+            // return, wp_die, or thrown exception inside the try.
+            $wpdb->query( $wpdb->prepare( 'SELECT RELEASE_LOCK(%s)', $lock_name ) );
         }
     }
 

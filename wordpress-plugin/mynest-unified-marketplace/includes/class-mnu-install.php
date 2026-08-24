@@ -126,6 +126,96 @@ final class MNU_Install {
         update_option( 'tnm_settings', $merged, false );
         update_option( 'tnm_db_version', MNU_DB_VERSION, false );
         update_option( 'mnu_version', MNU_VERSION, false );
+
+        // v3.13.29 — recompute available_at on in-flight pending earning
+        // rows so a row created under the old 3- or 7-day default doesn't
+        // silently keep its old holding date after the option was moved to
+        // 2 days. Uses each row's own `created_at` as the paid proxy plus
+        // the current holding_days. Skips already-released, refunded, void,
+        // or dispute-held rows. Idempotent — the WHERE clause only touches
+        // rows whose current available_at is later than what today's setting
+        // would produce, so re-running the migration on subsequent
+        // activations is a no-op.
+        self::migrate_pending_available_at( (int) $merged['holding_days'] );
+    }
+
+    /**
+     * v3.13.29 — idempotent data migration for finding #11. Recalculates
+     * available_at on `pending` earning rows so a holding_days change
+     * applies to in-flight orders, not just future ones.
+     *
+     * Bounded to 5000 rows per invocation with a monotonic "last migrated
+     * id" marker so a huge legacy install completes across activations
+     * rather than timing out.
+     */
+    private static function migrate_pending_available_at( int $holding_days ): void {
+        $holding_days = max( 0, $holding_days );
+        global $wpdb;
+        $ledger = tnm_table( 'ledger' );
+
+        $last_id = (int) get_option( 'mnu_available_at_migration_last_id', 0 );
+        $batch   = (int) apply_filters( 'mnu_available_at_migration_batch', 5000 );
+        $now     = current_time( 'mysql', true );
+
+        // Only touch rows whose stored available_at exceeds
+        // created_at + holding_days (i.e. rows still held under the OLD,
+        // longer window). Rows already inside the new window are left as-is.
+        $target_seconds = $holding_days * DAY_IN_SECONDS;
+        $rows = $wpdb->get_results( $wpdb->prepare(
+            "SELECT id, created_at, available_at FROM {$ledger}
+             WHERE id > %d
+               AND type='earning'
+               AND status='pending'
+               AND UNIX_TIMESTAMP(available_at) > UNIX_TIMESTAMP(created_at) + %d
+             ORDER BY id ASC
+             LIMIT %d",
+            $last_id,
+            $target_seconds,
+            $batch
+        ), ARRAY_A );
+
+        if ( empty( $rows ) ) {
+            update_option( 'mnu_available_at_migration_last_id', 0, false );
+            update_option( 'mnu_available_at_migration_completed_at', $now, false );
+            return;
+        }
+
+        $updated = 0;
+        $max_id  = $last_id;
+        foreach ( $rows as $row ) {
+            $id           = (int) $row['id'];
+            $created_ts   = strtotime( (string) $row['created_at'] );
+            if ( ! $created_ts ) {
+                $max_id = max( $max_id, $id );
+                continue;
+            }
+            $new_available_at = gmdate( 'Y-m-d H:i:s', $created_ts + $target_seconds );
+            if ( $new_available_at === (string) $row['available_at'] ) {
+                $max_id = max( $max_id, $id );
+                continue;
+            }
+            $wpdb->update(
+                $ledger,
+                array(
+                    'available_at' => $new_available_at,
+                    'updated_at'   => $now,
+                    'note'         => sprintf( 'available_at migrated from %s to %s by v3.13.29 (holding_days=%d).', $row['available_at'], $new_available_at, $holding_days ),
+                ),
+                array( 'id' => $id ),
+                array( '%s', '%s', '%s' ),
+                array( '%d' )
+            );
+            $updated++;
+            $max_id = max( $max_id, $id );
+        }
+
+        update_option( 'mnu_available_at_migration_last_id', $max_id, false );
+        error_log( sprintf(
+            '[MNU available_at migration] Batch complete: updated=%d, last_id=%d, holding_days=%d.',
+            $updated,
+            $max_id,
+            $holding_days
+        ) );
     }
 
     public static function create_roles(): void {

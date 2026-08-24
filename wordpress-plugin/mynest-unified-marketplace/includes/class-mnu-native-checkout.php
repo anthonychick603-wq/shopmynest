@@ -1026,11 +1026,18 @@ function mnu_native_find_existing_order( int $user_id, string $checkout_token ):
     // both legacy post storage and HPOS — this plugin declares HPOS compatible,
     // and a lookup that silently matched nothing there would hand back a
     // duplicate order for every retry.
+    //
+    // v3.13.29 — include the completed statuses (`processing`, `on-hold`,
+    // `completed`) so a client replaying create-intent after a successful
+    // payment resolves to the SAME order it already paid for, instead of
+    // getting a fresh order + fresh intent (which is the audit's finding #7).
+    // The lookup remains scoped to the same customer so this cannot cross
+    // buyers.
     $orders = wc_get_orders(
         array(
             'customer_id' => $user_id,
             'limit'       => 1,
-            'status'      => array( 'pending', 'failed' ),
+            'status'      => array( 'pending', 'failed', 'processing', 'on-hold', 'completed' ),
             'return'      => 'objects',
             'meta_query'  => array(
                 array(
@@ -1077,9 +1084,19 @@ function mnu_native_create_intent( WP_REST_Request $request ): array|WP_Error {
     $data           = (array) $request->get_json_params();
     $checkout_token = sanitize_text_field( (string) ( $data['checkout_token'] ?? $data['request_id'] ?? '' ) );
 
-    // No token means an older app build with nothing to serialise on.
+    // v3.13.29 — the checkout token is REQUIRED. Previously a missing token
+    // silently bypassed both the existing-order lookup and the mutex, so an
+    // older app build could double-tap Pay and create two Woo orders + two
+    // Stripe PaymentIntents. Reject the request instead of quietly enabling
+    // a duplicate-charge mode. All current app builds (v1.0.x) send a token;
+    // any client without one is running a build old enough that it should
+    // update anyway.
     if ( ! $checkout_token ) {
-        return mnu_native_create_intent_locked( $user_id, $data, '' );
+        return new WP_Error(
+            'checkout_token_required',
+            'This version of the app is too old to check out safely. Please update ShopMyNest and try again.',
+            array( 'status' => 426 )
+        );
     }
 
     $lock = mnu_native_intent_lock_acquire( $user_id, $checkout_token );
@@ -1384,10 +1401,19 @@ function mnu_native_create_intent_locked( int $user_id, array $data, string $che
             'metadata[money_model]'              => 'v380_platform_charge',
             'description'                        => 'MyNest order #' . $order->get_order_number(),
         );
+        // v3.13.29 — idempotency key incorporates the checkout token, so a
+        // late retry that races the lock (or arrives after the lock TTL has
+        // rolled over) still hits the SAME Stripe intent. Order id + token
+        // fully identify one buyer attempt, and Stripe returns the original
+        // intent for a repeat post rather than creating a second one.
+        $idem_key = 'mynest_order_' . $order->get_id();
+        if ( $checkout_token ) {
+            $idem_key .= '_' . substr( md5( $checkout_token ), 0, 16 );
+        }
         $intent = mnu_native_stripe_request(
             '/payment_intents',
             $intent_params,
-            'mynest_order_' . $order->get_id()
+            $idem_key
         );
     }
     if ( is_wp_error( $intent ) ) {
@@ -1733,6 +1759,164 @@ function mnu_native_apply_split_guardrail( WC_Order $order ): array {
     return $eval;
 }
 
+/**
+ * v3.13.29 — Handle a charge.dispute.* webhook. Resolves the disputed
+ * charge to a Woo order using `_thenest_stripe_latest_charge` (stamped by
+ * both the sync and webhook success paths since v3.13.28), stamps the
+ * dispute state, freezes unreserved pending earnings, opens a debt hold if
+ * the seller has already been paid, and notifies the admin.
+ *
+ * Idempotent: `_mnu_dispute_id` is used as the anti-replay key.
+ */
+function mnu_native_handle_dispute_event( string $event_type, array $dispute ): void {
+    $charge_id  = sanitize_text_field( (string) ( $dispute['charge'] ?? '' ) );
+    $dispute_id = sanitize_text_field( (string) ( $dispute['id'] ?? '' ) );
+    $status     = sanitize_key( (string) ( $dispute['status'] ?? '' ) );
+    $reason     = sanitize_text_field( (string) ( $dispute['reason'] ?? '' ) );
+    $amount_cts = (int) ( $dispute['amount'] ?? 0 );
+    $amount_dol = $amount_cts / 100;
+
+    if ( '' === $charge_id || '' === $dispute_id ) {
+        error_log( '[MNU dispute] Received charge.dispute event with no charge/dispute id; ignoring.' );
+        return;
+    }
+
+    // Find the order that paid this charge. Native and web checkout both
+    // stamp `_thenest_stripe_latest_charge` on payment_complete since
+    // v3.13.28.
+    $orders = wc_get_orders( array(
+        'limit'      => 1,
+        'return'     => 'objects',
+        'meta_query' => array(
+            array(
+                'key'     => '_thenest_stripe_latest_charge',
+                'value'   => $charge_id,
+                'compare' => '=',
+            ),
+        ),
+    ) );
+    if ( empty( $orders ) ) {
+        error_log( sprintf( '[MNU dispute] Could not resolve charge %s to an order for event %s (dispute %s).', $charge_id, $event_type, $dispute_id ) );
+        return;
+    }
+    $order = $orders[0];
+
+    // Idempotency: log once per (event_type, dispute_id) combination.
+    $seen = (array) json_decode( (string) $order->get_meta( '_mnu_dispute_events_seen', true ), true );
+    $key  = $event_type . '|' . $dispute_id;
+    if ( in_array( $key, $seen, true ) ) {
+        return;
+    }
+    $seen[] = $key;
+    $order->update_meta_data( '_mnu_dispute_events_seen', wp_json_encode( array_slice( $seen, -25 ) ) );
+
+    $order->update_meta_data( '_mnu_dispute_id', $dispute_id );
+    $order->update_meta_data( '_mnu_dispute_status', $status );
+    $order->update_meta_data( '_mnu_dispute_reason', $reason );
+    $order->update_meta_data( '_mnu_dispute_amount_cents', (string) $amount_cts );
+    $order->update_meta_data( '_mnu_dispute_last_event', $event_type );
+    $order->update_meta_data( '_mnu_dispute_last_seen_at', current_time( 'mysql', true ) );
+
+    $note_lines = array( sprintf( 'Stripe dispute event %s (id %s, status %s, reason %s, $%.2f).', $event_type, $dispute_id, $status, $reason, $amount_dol ) );
+
+    // On dispute.created and any state that removes funds, freeze the order.
+    // The ledger's earning release query respects `_mnu_dispute_hold` so
+    // pending earnings for this order will NOT flip to available until the
+    // hold is cleared.
+    $freezing_events = array(
+        'charge.dispute.created'          => true,
+        'charge.dispute.updated'          => true,
+        'charge.dispute.funds_withdrawn'  => true,
+    );
+    if ( isset( $freezing_events[ $event_type ] ) ) {
+        $order->update_meta_data( '_mnu_dispute_hold', '1' );
+        // Freeze pending earnings for THIS order regardless of hold_until
+        // date. The ledger read side must consult _mnu_dispute_hold before
+        // releasing (see TNM_Ledger::release_available_earnings).
+        global $wpdb;
+        $ledger = tnm_table( 'ledger' );
+        $frozen = (int) $wpdb->query( $wpdb->prepare(
+            "UPDATE {$ledger} SET status='disputed_hold', updated_at=%s
+             WHERE order_id=%d AND status IN ('pending','available') AND type='earning'",
+            current_time( 'mysql', true ),
+            $order->get_id()
+        ) );
+        if ( $frozen > 0 ) {
+            $note_lines[] = sprintf( 'Froze %d ledger earning row(s) to disputed_hold.', $frozen );
+        } else {
+            // If nothing was frozen it means the earnings were already
+            // paid to the seller (status=paid). Record a seller debt row
+            // so the next batch nets it out.
+            $seller_debts = 0;
+            $paid_rows = $wpdb->get_results( $wpdb->prepare(
+                "SELECT seller_id, SUM(net) AS owed_net FROM {$ledger}
+                 WHERE order_id=%d AND status='paid' AND type='earning'
+                 GROUP BY seller_id",
+                $order->get_id()
+            ), ARRAY_A );
+            foreach ( (array) $paid_rows as $row ) {
+                $sid = (int) $row['seller_id'];
+                if ( $sid <= 0 ) { continue; }
+                $wpdb->insert( $ledger, array(
+                    'order_id'        => $order->get_id(),
+                    'seller_id'       => $sid,
+                    'type'            => 'dispute_debt_' . $dispute_id,
+                    'gross'           => 0,
+                    'fee'             => 0,
+                    'net'             => -1 * (float) $row['owed_net'],
+                    'currency'        => $order->get_currency() ?: 'USD',
+                    'status'          => 'available',
+                    'available_at'    => current_time( 'mysql', true ),
+                    'created_at'      => current_time( 'mysql', true ),
+                    'updated_at'      => current_time( 'mysql', true ),
+                ) );
+                $seller_debts++;
+            }
+            if ( $seller_debts > 0 ) {
+                $note_lines[] = sprintf(
+                    'Earnings already paid — opened dispute debt row(s) for %d seller(s) at -$%.2f. Next payout batch will net this out.',
+                    $seller_debts,
+                    (float) $order->get_meta( '_mnu_v380_seller_kept_cents', true ) / 100
+                );
+            }
+        }
+    }
+
+    // On close/win/reinstated: clear the hold if the ruling was in our
+    // favour, otherwise leave the hold in place (the funds have been
+    // permanently withdrawn from the platform).
+    if ( 'charge.dispute.closed' === $event_type || 'charge.dispute.funds_reinstated' === $event_type ) {
+        if ( 'won' === $status || 'charge.dispute.funds_reinstated' === $event_type ) {
+            $order->delete_meta_data( '_mnu_dispute_hold' );
+            $note_lines[] = 'Dispute resolved in our favour — hold cleared. Any disputed_hold ledger rows must be reviewed manually before re-releasing.';
+        } else {
+            $note_lines[] = 'Dispute closed against the platform — hold remains in place.';
+        }
+    }
+
+    // Admin alert.
+    if ( class_exists( 'MNU_Ops' ) ) {
+        MNU_Ops::notify_admin(
+            sprintf( 'Stripe dispute %s on order #%d ($%.2f)', $status, $order->get_id(), $amount_dol ),
+            implode( "\n", $note_lines ),
+            array( 'order_id' => $order->get_id(), 'dispute_id' => $dispute_id )
+        );
+    } else {
+        // Fallback: email the admin.
+        $admin_email = get_option( 'admin_email' );
+        if ( $admin_email ) {
+            wp_mail(
+                $admin_email,
+                sprintf( '[ShopMyNest] Stripe dispute on order #%d', $order->get_id() ),
+                implode( "\n\n", $note_lines )
+            );
+        }
+    }
+
+    $order->add_order_note( implode( ' ', $note_lines ) );
+    $order->save();
+}
+
 function mnu_native_verify_webhook_signature( string $payload, string $signature_header, string $secret ): bool {
     if ( ! $payload || ! $signature_header || ! $secret ) {
         return false;
@@ -1801,6 +1985,22 @@ function mnu_native_webhook( WP_REST_Request $request ): array|WP_Error {
         if ( class_exists( 'MNU_Refund_Guardrail' ) ) {
             MNU_Refund_Guardrail::handle_charge_refunded( (array) ( $event['data']['object'] ?? array() ) );
         }
+        return array( 'received' => true );
+    }
+
+    // v3.13.29 — dispute lifecycle. Previously charge.dispute.* events fell
+    // through to the intent-metadata branch below, which failed to match
+    // (dispute objects carry the charge, not the intent) and silently
+    // returned received:true — no hold, no debt, no admin alert. That is
+    // especially dangerous now that sellers can be paid manually after only
+    // 2 days: a dispute opened on day 3 would find the money already out.
+    // Handle .created, .updated, .closed, .funds_withdrawn, .funds_reinstated
+    // all in one dispatch that resolves charge -> order and marks the order
+    // as disputed (which blocks any pending earnings from becoming
+    // available in TNM_Ledger::release_available_earnings via the meta
+    // check).
+    if ( 0 === strpos( $event_type, 'charge.dispute.' ) ) {
+        mnu_native_handle_dispute_event( $event_type, (array) ( $event['data']['object'] ?? array() ) );
         return array( 'received' => true );
     }
 
