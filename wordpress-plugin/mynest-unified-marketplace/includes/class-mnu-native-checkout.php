@@ -779,12 +779,14 @@ function mnu_native_quote( WP_REST_Request $request ): array|WP_Error {
         $shipping = 0.0;
     }
 
-    // v3.8.0 — bake the flat $0.43 processing fee into every non-zero shipping
-    // amount the buyer sees (the cheapest quote AND each selectable rate). This
-    // must match the same fee applied in mnu_native_create_intent_locked() so
-    // the quote total the buyer confirmed equals the amount actually charged.
-    // Free shipping stays free (no fee attached to a $0 line).
-    $processing_fee_cents = (int) apply_filters( 'mnu_v380_processing_fee_cents', 43, null );
+    // v3.13.23 — bake the flat $1.05 shipping-&-handling fee into every non-zero
+    // shipping amount the buyer sees (the cheapest quote AND each selectable
+    // rate). Was $0.43 in v3.8.0 — raised to better cover Stripe's real
+    // 2.9% + 30¢ card fee across common order sizes. This must match the same
+    // fee applied in mnu_native_create_intent_locked() so the quote total the
+    // buyer confirmed equals the amount actually charged. Free shipping stays
+    // free (no fee attached to a $0 line).
+    $processing_fee_cents = (int) apply_filters( 'mnu_v380_processing_fee_cents', 105, null );
     $processing_fee       = $processing_fee_cents / 100;
     if ( $shipping > 0 ) {
         $shipping = round( $shipping + $processing_fee, wc_get_price_decimals() );
@@ -1097,7 +1099,7 @@ function mnu_native_create_intent( WP_REST_Request $request ): array|WP_Error {
 
 /**
  * v3.8.0 — new money model. Buyer pays product + shipping (real Shippo rate
- * + $0.43 processing fee baked into the shipping line). 100% of the charge
+ * + $1.05 handling fee baked into the shipping line). 100% of the charge
  * lands in the platform Stripe account: no destination charge, no
  * application_fee_amount, no Connect involvement at intent creation. Sellers
  * are paid later via manual ACH from the platform's business checking
@@ -1247,7 +1249,7 @@ function mnu_native_create_intent_locked( int $user_id, array $data, string $che
             $shipping_method = 'thenest_standard';
         }
 
-        // v3.8.0 — bake the flat $0.43 buyer-paid processing fee INTO the
+        // v3.13.23 — bake the flat $1.05 buyer-paid handling fee INTO the
         // shipping line so the buyer sees a single Shipping row. The real
         // Shippo rate ($shipping_total pre-adjust) is preserved separately
         // as `_mnu_real_shipping_cents` so the auto-label service still buys
@@ -1256,7 +1258,7 @@ function mnu_native_create_intent_locked( int $user_id, array $data, string $che
         $real_shipping_total  = (float) $shipping_total;
         $processing_fee_cents = 0;
         if ( $shipping_total > 0 ) {
-            $processing_fee_cents = (int) apply_filters( 'mnu_v380_processing_fee_cents', 43, $order ?? null );
+            $processing_fee_cents = (int) apply_filters( 'mnu_v380_processing_fee_cents', 105, $order ?? null );
             $shipping_total       = round( $shipping_total + ( $processing_fee_cents / 100 ), wc_get_price_decimals() );
         }
 
