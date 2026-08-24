@@ -726,6 +726,28 @@ final class TNM_Marketplace {
             }
         }
 
+        // v3.13.19 — auto-republish drafts once every shipping field is filled.
+        // Sellers who fix a package weight (oz) or ship-from ZIP in the mobile
+        // edit form expect the listing to go live; forcing them to also toggle
+        // status is footgun UX. Only auto-flip when: current status is draft,
+        // caller did not explicitly set status, the seller has a bank account
+        // on file, and both ship-from + parcel helpers report no missing field.
+        if ( 'draft' === $product->get_status() && ! array_key_exists( 'status', $data ) ) {
+            $can_publish = class_exists( 'MNU_Bank_Account' )
+                ? MNU_Bank_Account::has_bank_account( $seller_id )
+                : true;
+            $missing_from = function_exists( 'mnu_seller_ship_from_missing_field' )
+                ? mnu_seller_ship_from_missing_field( $seller_id )
+                : '';
+            $missing_pkg = function_exists( 'mnu_product_parcel_missing_field' )
+                ? mnu_product_parcel_missing_field( (int) $product_id )
+                : '';
+            if ( $can_publish && '' === $missing_from && '' === $missing_pkg ) {
+                $product->set_status( 'publish' );
+                $product->save();
+            }
+        }
+
         return $product_id;
     }
 
