@@ -456,13 +456,29 @@ final class TNM_REST {
 
     public static function product( WP_REST_Request $request ): WP_REST_Response|WP_Error {
         $product = wc_get_product( absint( $request['id'] ) );
-        if ( ! $product || 'publish' !== $product->get_status() ) {
+        if ( ! $product ) {
             return tnm_json_error( 'product_not_found', 'Product not found.', 404 );
         }
-        // v3.7.75 — don't return OOS products to shoppers browsing the app.
-        // Existing deep links still 404 gracefully.
-        if ( self::is_out_of_stock( $product ) ) {
-            return tnm_json_error( 'product_not_found', 'Product not found.', 404 );
+        // v3.13.17 — owners (and admins) can fetch their own listing in any
+        // status. The mobile edit form calls this endpoint to pre-fill fields
+        // when the seller taps a draft on the listings screen; before this,
+        // drafts 404'd and the app showed "That listing is no longer available."
+        $viewer   = get_current_user_id();
+        $author   = (int) get_post_field( 'post_author', $product->get_id() );
+        $is_owner = $viewer && $viewer === $author;
+        $is_admin = current_user_can( 'manage_woocommerce' );
+        $status   = $product->get_status();
+
+        if ( ! $is_owner && ! $is_admin ) {
+            if ( 'publish' !== $status ) {
+                return tnm_json_error( 'product_not_found', 'Product not found.', 404 );
+            }
+            // v3.7.75 — don't return OOS products to shoppers browsing the app.
+            // Existing deep links still 404 gracefully. Owners keep visibility so
+            // the edit form can restock the item.
+            if ( self::is_out_of_stock( $product ) ) {
+                return tnm_json_error( 'product_not_found', 'Product not found.', 404 );
+            }
         }
         return rest_ensure_response( TNM_Marketplace::product_to_array( $product ) );
     }
