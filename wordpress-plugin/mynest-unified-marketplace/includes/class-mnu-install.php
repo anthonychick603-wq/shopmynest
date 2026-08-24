@@ -91,7 +91,7 @@ final class MNU_Install {
         $defaults = array(
             'fee_percent'              => 10,
             'fee_label'                => 'Nest Service Fee',
-            'holding_days'             => 7,
+            'holding_days'             => 2,
             'minimum_payout'           => 25,
             'automatic_payouts'        => 'no',
             'payout_schedule'          => 'weekly',
@@ -113,15 +113,14 @@ final class MNU_Install {
         $current = is_array( $current ) ? $current : array();
         $merged  = wp_parse_args( $current, $defaults );
 
-        // v3.13.15/16 — seller hold is 7 days. If the current stored
-        // value is 3, put it back to 7. This runs whenever set_defaults()
-        // is called and the value is still the v3.13.14 default; it is
-        // a no-op once holding_days is 7 or anything else operator-set.
-        // Not flag-guarded because a prior activation may have set the
-        // flag without actually coercing (e.g. if an upgrade path skipped
-        // set_defaults entirely, pre-v3.13.16).
-        if ( 3 === (int) ( $merged['holding_days'] ?? 0 ) ) {
-            $merged['holding_days'] = 7;
+        // v3.13.27 — seller hold is 2 days (matches Stripe's ~2-day
+        // payout cycle so seller earnings become available the same day
+        // Stripe drops the funds into Bluevine). Migrate any legacy value
+        // (3 or 7) forward on activation; operator-set overrides survive
+        // because they won't match either of those historical defaults.
+        $legacy_hold = (int) ( $merged['holding_days'] ?? 0 );
+        if ( 3 === $legacy_hold || 7 === $legacy_hold ) {
+            $merged['holding_days'] = 2;
         }
 
         update_option( 'tnm_settings', $merged, false );

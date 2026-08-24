@@ -128,7 +128,7 @@ final class TNM_Ledger {
         // their earnings are written directly as 'available' with
         // available_at=now so a cancellation or refund can be issued
         // against real funds without waiting on the release cron.
-        $holding_days     = max( 0, (int) tnm_get_option( 'holding_days', 7 ) );
+        $holding_days     = max( 0, (int) tnm_get_option( 'holding_days', 2 ) );
         $paid_date        = $order->get_date_paid() ?: $order->get_date_created();
         $paid_ts          = $paid_date ? $paid_date->getTimestamp() : time();
         $seller_available = gmdate( 'Y-m-d H:i:s', $paid_ts + ( $holding_days * DAY_IN_SECONDS ) );

@@ -3,7 +3,7 @@
  * Plugin Name: ShopMyNest Legal Pages
  * Plugin URI:  https://shopmynest.com/
  * Description: Seeds Terms of Service, Privacy Policy, Return & Refund Policy, and Shipping Policy pages on activation. Provides a settings screen so the legal entity name, business address, contact email, and effective date can be updated without editing page content. Values are substituted at render time via the_content filter.
- * Version:     1.1.6
+ * Version:     1.1.7
  * Author:      MyNest
  * Text Domain: shopmynest-legal-pages
  * Requires at least: 6.5
@@ -14,7 +14,7 @@
 defined( 'ABSPATH' ) || exit;
 
 final class ShopMyNest_Legal_Pages {
-    private const VERSION       = '1.1.6';
+    private const VERSION       = '1.1.7';
     private const OPT           = 'shopmynest_legal_settings';
     private const OPT_PAGE_IDS  = 'shopmynest_legal_page_ids';
     // v1.1.6 — tracks the plugin version whose bundled content/*.html was
@@ -268,7 +268,13 @@ final class ShopMyNest_Legal_Pages {
         return array(
             // v1.1.6 — rewritten Fees & Payouts (manual ACH, 7-day hold,
             // 10% platform fee) and stripped all Stripe brand references.
-            'terms' => '1.1.6',
+            'terms'   => '1.1.7',
+            // v1.1.7 — Terms updated: seller hold 7 → 2 days, added $25
+            // minimum payout language. Refund policy rewritten around
+            // Buyer→Seller→Admin escalation with an explicit reserved
+            // right for ShopMyNest to refund from Seller balance on SNAD
+            // or fraud.
+            'refunds' => '1.1.7',
         );
     }
 
