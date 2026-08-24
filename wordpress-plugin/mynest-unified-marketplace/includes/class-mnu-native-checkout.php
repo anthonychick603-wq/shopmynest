@@ -1394,6 +1394,11 @@ function mnu_native_create_intent_locked( int $user_id, array $data, string $che
         'shipping_label'     => $ship_summary['label'],
         'shipping_method_id' => $ship_summary['method_id'],
         'shipping_selection_changed' => $shipping_changed,
+        // v3.13.24 — items subtotal the server just computed from live WC
+        // prices. The mobile client compares this against the cart display
+        // to catch stale-price drift (seller edited a listing after the
+        // buyer added it to cart) and re-prompt before charging.
+        'subtotal'           => round( (float) $subtotal, wc_get_price_decimals() + 2 ),
     );
 }
 
