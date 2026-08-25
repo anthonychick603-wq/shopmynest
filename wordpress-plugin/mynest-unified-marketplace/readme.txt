@@ -4,7 +4,7 @@ Tags: woocommerce, marketplace, multivendor, seller, mobile-api
 Requires at least: 6.5
 Requires PHP: 8.0
 Requires Plugins: woocommerce
-Stable tag: 3.0.8
+Stable tag: 3.13.37
 License: GPLv2 or later
 
 One complete custom marketplace plugin for the MyNest website and The Nest mobile app.
@@ -28,6 +28,14 @@ The plugin adds seller roles without replacing administrator roles. Automatic pa
 7. Clear cache and complete the included test plan.
 
 == Changelog ==
+
+= 3.13.37 =
+* Added built-in nest-trust/v1 buyer-protection disputes and server-side refund/dispute locking.
+* Authorized accepted custom-order private products for the assigned buyer in native checkout, with idempotent quote acceptance.
+* Standardized seller hold defaults to 7 days and kept dispute-held earnings out of payout release.
+* Hardened manual payouts: ACH/reference required before paid, failed/returned retries reset safely to requested.
+* Unified admin operations APIs for seller applications, refunds, payouts, disputes, shipping and order exceptions.
+
 
 = 3.0.8 =
 * Fixes blank labels in the buyer Order breakdown on mobile.

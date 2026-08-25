@@ -71,7 +71,7 @@ final class MNU_Connect {
 	 * copy. Callers should stop calling this endpoint entirely; there is no
 	 * replacement — sellers save a bank account on the mobile `/seller/bank`
 	 * screen and payouts are issued by manual ACH from platform business
-	 * checking after the 2-day holding window.
+	 * checking after the 7-day holding window once the seller requests a payout.
 	 */
 	public static function retired_response(): WP_Error {
 		return new WP_Error(

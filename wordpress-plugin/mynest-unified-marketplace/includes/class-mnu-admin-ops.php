@@ -160,10 +160,14 @@ final class MNU_Admin_Ops {
         // Disputes — open on trust plugin's own table.
         $disputes_pending = 0;
         $disputes_oldest  = 0;
-        if ( class_exists( 'TNM_Trust_DB' ) ) {
+        if ( class_exists( 'MNU_Trust' ) ) {
+            $table = MNU_Trust::table();
+            $disputes_pending = (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$table} WHERE status IN ('open','awaiting_seller','awaiting_buyer','escalated')" );
+            $disputes_oldest  = self::hours_since( (string) $wpdb->get_var( "SELECT MIN(created_at) FROM {$table} WHERE status IN ('open','awaiting_seller','awaiting_buyer','escalated')" ) );
+        } elseif ( class_exists( 'TNM_Trust_DB' ) ) {
             $table = TNM_Trust_DB::table( 'disputes' );
-            $disputes_pending = (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$table} WHERE status IN ('open','needs_seller','needs_buyer','escalated')" );
-            $disputes_oldest  = self::hours_since( (string) $wpdb->get_var( "SELECT MIN(created_at) FROM {$table} WHERE status IN ('open','needs_seller','needs_buyer','escalated')" ) );
+            $disputes_pending = (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$table} WHERE status IN ('open','awaiting_seller','awaiting_buyer','escalated')" );
+            $disputes_oldest  = self::hours_since( (string) $wpdb->get_var( "SELECT MIN(created_at) FROM {$table} WHERE status IN ('open','awaiting_seller','awaiting_buyer','escalated')" ) );
         }
 
         // Payouts pending / failed
@@ -527,14 +531,15 @@ final class MNU_Admin_Ops {
         if ( ! $payout ) {
             return tnm_json_error( 'payout_not_found', 'Payout not found.', 404 );
         }
-        // Retry only makes sense for stuck / errored payouts.
-        if ( ! in_array( $payout['status'], array( 'requested', 'processing', 'failed', 'returned' ), true ) ) {
-            return tnm_json_error( 'invalid_payout_status', 'This payout cannot be retried in its current state.', 409, array( 'status' => $payout['status'] ) );
+        // A retry is a state reset, not proof that money was sent. Failed or
+        // returned payouts go back to requested; PayPal can then be submitted
+        // automatically, while manual ACH waits for a new bank reference.
+        if ( ! in_array( $payout['status'], array( 'failed', 'returned' ), true ) ) {
+            return tnm_json_error( 'invalid_payout_status', 'Only failed or returned payouts can be retried.', 409, array( 'status' => $payout['status'] ) );
         }
-        if ( 'paypal' === $payout['method'] ) {
+        $result = TNM_Payouts::retry( $id, 'Retry requested from mobile operations.' );
+        if ( ! is_wp_error( $result ) && 'paypal' === $payout['method'] ) {
             $result = TNM_Payouts::process_paypal( $id );
-        } else {
-            $result = TNM_Payouts::mark_paid( $id );
         }
         if ( is_wp_error( $result ) ) {
             return $result;

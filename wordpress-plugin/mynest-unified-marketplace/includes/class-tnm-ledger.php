@@ -128,7 +128,7 @@ final class TNM_Ledger {
         // their earnings are written directly as 'available' with
         // available_at=now so a cancellation or refund can be issued
         // against real funds without waiting on the release cron.
-        $holding_days     = max( 0, (int) tnm_get_option( 'holding_days', 2 ) );
+        $holding_days     = max( 0, (int) tnm_get_option( 'holding_days', 7 ) );
         $paid_date        = $order->get_date_paid() ?: $order->get_date_created();
         $paid_ts          = $paid_date ? $paid_date->getTimestamp() : time();
         $seller_available = gmdate( 'Y-m-d H:i:s', $paid_ts + ( $holding_days * DAY_IN_SECONDS ) );
@@ -240,7 +240,8 @@ final class TNM_Ledger {
         // stamps _mnu_dispute_hold=1 on any charge.dispute.created /
         // .updated / .funds_withdrawn event, and clears it only if the
         // dispute closes in our favour or funds are reinstated.
-        if ( '1' === (string) $order->get_meta( '_mnu_dispute_hold', true ) ) {
+        if ( '1' === (string) $order->get_meta( '_mnu_dispute_hold', true )
+            || '' !== (string) $order->get_meta( '_mnu_buyer_dispute_hold', true ) ) {
             return;
         }
         global $wpdb;
@@ -267,7 +268,7 @@ final class TNM_Ledger {
         // v3.13.28 — HARD KILL SWITCH.
         //
         // v3.11.0 removed sellers from Stripe Connect entirely; every seller
-        // is paid by manual ACH from Bluevine after the 2-day holding window.
+        // is paid by manual ACH from Bluevine after the 7-day holding window.
         // The pre-existing per-order `_mnu_v380_model` guard depended on every
         // checkout path stamping that meta before payment. The v3.13.27 audit
         // found the web gateway did not stamp it, so any order created via

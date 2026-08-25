@@ -91,7 +91,7 @@ final class MNU_Install {
         $defaults = array(
             'fee_percent'              => 10,
             'fee_label'                => 'Nest Service Fee',
-            'holding_days'             => 2,
+            'holding_days'             => 7,
             'minimum_payout'           => 25,
             'automatic_payouts'        => 'no',
             'payout_schedule'          => 'weekly',
@@ -113,29 +113,23 @@ final class MNU_Install {
         $current = is_array( $current ) ? $current : array();
         $merged  = wp_parse_args( $current, $defaults );
 
-        // v3.13.27 — seller hold is 2 days (matches Stripe's ~2-day
-        // payout cycle so seller earnings become available the same day
-        // Stripe drops the funds into Bluevine). Migrate any legacy value
-        // (3 or 7) forward on activation; operator-set overrides survive
-        // because they won't match either of those historical defaults.
+        // v3.13.37 — the marketplace buyer-protection policy is a seven-day
+        // seller hold. Migrate the historical 2/3-day defaults to seven so
+        // the app, ledger and payout operations all use one rule. Explicit
+        // operator values other than those old defaults are preserved.
         $legacy_hold = (int) ( $merged['holding_days'] ?? 0 );
-        if ( 3 === $legacy_hold || 7 === $legacy_hold ) {
-            $merged['holding_days'] = 2;
+        if ( 2 === $legacy_hold || 3 === $legacy_hold ) {
+            $merged['holding_days'] = 7;
         }
 
         update_option( 'tnm_settings', $merged, false );
         update_option( 'tnm_db_version', MNU_DB_VERSION, false );
         update_option( 'mnu_version', MNU_VERSION, false );
 
-        // v3.13.29 — recompute available_at on in-flight pending earning
-        // rows so a row created under the old 3- or 7-day default doesn't
-        // silently keep its old holding date after the option was moved to
-        // 2 days. Uses each row's own `created_at` as the paid proxy plus
-        // the current holding_days. Skips already-released, refunded, void,
-        // or dispute-held rows. Idempotent — the WHERE clause only touches
-        // rows whose current available_at is later than what today's setting
-        // would produce, so re-running the migration on subsequent
-        // activations is a no-op.
+        // Recompute available_at on in-flight pending earning rows after a
+        // holding-period policy change. Uses each row's created_at as the paid
+        // proxy plus the current holding_days and never touches released,
+        // refunded, void, or dispute-held rows.
         self::migrate_pending_available_at( (int) $merged['holding_days'] );
     }
 
@@ -465,6 +459,30 @@ final class MNU_Install {
         // (/auth/signup/start) stashes the desired credentials + a 6-digit
         // code + a magic-link token here. Step 2 (/auth/signup/verify)
         // consumes the row and creates the real user via wp_create_user.
+        // v3.13.37 — Built-in buyer-protection cases. One case per order keeps
+        // refund/dispute resolution closed-loop and prevents duplicate cases.
+        $queries[] = 'CREATE TABLE ' . tnm_table( 'disputes' ) . " (
+            id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+            order_id bigint(20) unsigned NOT NULL,
+            buyer_id bigint(20) unsigned NOT NULL,
+            seller_id bigint(20) unsigned NOT NULL DEFAULT 0,
+            status varchar(32) NOT NULL DEFAULT 'awaiting_seller',
+            reason varchar(64) NOT NULL,
+            description text NOT NULL,
+            resolution_note text NULL,
+            refund_amount decimal(12,2) NULL,
+            evidence longtext NULL,
+            contacted_seller_at datetime NULL,
+            escalated_at datetime NULL,
+            resolved_at datetime NULL,
+            created_at datetime NOT NULL,
+            updated_at datetime NOT NULL,
+            PRIMARY KEY  (id),
+            UNIQUE KEY order_id (order_id),
+            KEY buyer_status (buyer_id,status,updated_at),
+            KEY seller_status (seller_id,status,updated_at)
+        ) $charset;";
+
         // v3.13.0 — Customization requests. Buyer opens a request against a
         // seller's product marked `_mnu_customizable=yes`. Seller can post
         // messages, attach a quote (price + lead time), then buyer accepts and

@@ -105,7 +105,7 @@ final class TNM_Admin {
                 <table class="form-table" role="presentation">
                     <?php self::number_row( 'Platform fee percentage', 'fee_percent', $settings, 10, '0.01', '0', '100', 'Applied to each product line after discounts, excluding tax and shipping.' ); ?>
                     <?php self::text_row( 'Fee label', 'fee_label', $settings, 'Nest Service Fee', 'Shown in seller transaction breakdowns.' ); ?>
-                    <?php self::number_row( 'Holding period (days)', 'holding_days', $settings, 2, '1', '0', '180', 'Completed-order earnings become available after this period. Defaults to 2 days to match Stripe’s payout cycle. Admins bypass the hold and see earnings immediately.' ); ?>
+                    <?php self::number_row( 'Holding period (days)', 'holding_days', $settings, 7, '1', '0', '180', 'Completed-order earnings become available after this period. Defaults to 7 days to match MyNest buyer protection. Admins bypass the hold and see earnings immediately.' ); ?>
                     <?php self::number_row( 'Minimum payout', 'minimum_payout', $settings, 25, '0.01', '0', '', 'A seller cannot request less than this available balance.' ); ?>
                     <?php // v3.13.5 — seller listings always auto-publish. The old
                     // "Require admin review" gate was retired in v3.7.109 (see
@@ -153,8 +153,7 @@ final class TNM_Admin {
                 <h2>Payouts</h2>
                 <table class="form-table" role="presentation">
                     <?php self::select_row( 'Default payout method', 'payout_method', $settings, array( 'manual' => 'Manual', 'paypal' => 'PayPal Payouts' ), 'manual' ); ?>
-                    <?php self::select_row( 'Automatic payouts', 'automatic_payouts', $settings, array( 'no' => 'Disabled', 'yes' => 'Enabled' ), 'no' ); ?>
-                    <?php self::select_row( 'Automatic payout frequency', 'payout_schedule', $settings, array( 'weekly' => 'Weekly', 'biweekly' => 'Every two weeks', 'monthly' => 'Every 30 days' ), 'weekly' ); ?>
+                    <tr><th scope="row">Payout initiation</th><td><strong>Seller-requested only</strong><p class="description">Earnings become available after the holding period; the seller then requests a payout in the mobile app. Automatic payout generation is disabled to keep one operational model.</p></td></tr>
                     <?php self::select_row( 'PayPal environment', 'paypal_environment', $settings, array( 'sandbox' => 'Sandbox', 'live' => 'Live' ), 'sandbox' ); ?>
                     <?php self::text_row( 'PayPal client ID', 'paypal_client_id', $settings, '', 'Use credentials for the selected environment.' ); ?>
                     <tr><th scope="row"><label for="paypal_client_secret">PayPal client secret</label></th><td><input type="password" class="regular-text" id="paypal_client_secret" name="paypal_client_secret" value="" autocomplete="new-password"><p class="description">Leave blank to keep the currently saved secret. Store production secrets in a protected environment whenever possible.</p></td></tr>
@@ -199,7 +198,7 @@ final class TNM_Admin {
         $new = array(
             'fee_percent'              => max( 0, min( 100, (float) ( $_POST['fee_percent'] ?? 10 ) ) ),
             'fee_label'                => sanitize_text_field( wp_unslash( $_POST['fee_label'] ?? 'Nest Service Fee' ) ),
-            'holding_days'             => max( 0, min( 180, absint( $_POST['holding_days'] ?? 2 ) ) ),
+            'holding_days'             => max( 0, min( 180, absint( $_POST['holding_days'] ?? 7 ) ) ),
             'minimum_payout'           => max( 0, (float) ( $_POST['minimum_payout'] ?? 25 ) ),
             // v3.13.5 — always publish immediately (setting removed from UI).
             'seller_can_publish'       => 'yes',
@@ -211,8 +210,8 @@ final class TNM_Admin {
             'seller_order_emails'      => 'no' === ( $_POST['seller_order_emails'] ?? 'yes' ) ? 'no' : 'yes',
             'remove_local_pickup'      => 'no' === ( $_POST['remove_local_pickup'] ?? 'yes' ) ? 'no' : 'yes',
             'payout_method'            => 'paypal' === ( $_POST['payout_method'] ?? 'manual' ) ? 'paypal' : 'manual',
-            'automatic_payouts'        => 'yes' === ( $_POST['automatic_payouts'] ?? 'no' ) ? 'yes' : 'no',
-            'payout_schedule'          => in_array( $_POST['payout_schedule'] ?? '', array( 'weekly', 'biweekly', 'monthly' ), true ) ? sanitize_key( $_POST['payout_schedule'] ) : 'weekly',
+            'automatic_payouts'        => 'no',
+            'payout_schedule'          => 'weekly', // legacy value retained for backwards compatibility; automatic generation is disabled.
             'paypal_environment'       => 'live' === ( $_POST['paypal_environment'] ?? 'sandbox' ) ? 'live' : 'sandbox',
             'paypal_client_id'         => sanitize_text_field( wp_unslash( $_POST['paypal_client_id'] ?? '' ) ),
             'paypal_client_secret'     => ! empty( $_POST['paypal_client_secret'] ) ? sanitize_text_field( wp_unslash( $_POST['paypal_client_secret'] ) ) : (string) ( $old['paypal_client_secret'] ?? '' ),

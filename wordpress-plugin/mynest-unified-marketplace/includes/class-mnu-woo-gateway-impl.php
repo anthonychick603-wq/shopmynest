@@ -45,7 +45,7 @@ final class MNU_Woo_Gateway extends WC_Payment_Gateway {
 		// Connect. Buyers still pay on the platform Stripe account; sellers
 		// are paid by ACH from platform business checking after the 2-day
 		// holding window via MNU_Bank_Account.
-		$this->method_description = __( 'Accept credit and debit cards on the ShopMyNest platform Stripe account. Sellers are paid via ACH from platform business checking after the 2-day holding window; no per-seller Stripe Connect account is required.', 'mynest-unified-marketplace' );
+		$this->method_description = __( 'Accept credit and debit cards on the ShopMyNest platform Stripe account. Seller earnings become payout-eligible after the 7-day holding window and are paid by ACH from platform business checking after a payout request; no per-seller Stripe Connect account is required.', 'mynest-unified-marketplace' );
 		$this->has_fields         = true;
 		$this->supports           = array( 'products', 'refunds' );
 

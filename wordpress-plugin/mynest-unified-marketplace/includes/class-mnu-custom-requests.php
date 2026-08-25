@@ -371,12 +371,35 @@ final class MNU_Custom_Requests {
         if ( $user_id !== (int) $row->buyer_id ) {
             return tnm_json_error( 'buyer_permission_denied', 'Only the buyer can accept this quote.', 403 );
         }
+        // Idempotent replay: if the buyer already accepted this quote, return
+        // the existing one-off product instead of creating a duplicate.
+        if ( 'accepted' === (string) $row->status && (int) $row->private_product_id > 0 ) {
+            return rest_ensure_response( self::accept_payload( $row, $user_id ) );
+        }
         if ( 'quoted' !== (string) $row->status ) {
             return tnm_json_error( 'invalid_request_status', 'Only quoted requests can be accepted.', 422 );
         }
         if ( ! class_exists( 'WC_Product_Simple' ) ) {
             return tnm_json_error( 'woocommerce_unavailable', 'WooCommerce is required to accept this quote.', 503 );
         }
+
+        // Atomic quoted -> accepting claim prevents two simultaneous taps from
+        // creating two private products. A failure resets the request to quoted.
+        $claimed = $wpdb->update(
+            tnm_table( 'custom_requests' ),
+            array( 'status' => 'accepting', 'updated_at' => self::now() ),
+            array( 'id' => $row->id, 'status' => 'quoted' ),
+            array( '%s', '%s' ),
+            array( '%d', '%s' )
+        );
+        if ( 1 !== $claimed ) {
+            $fresh = self::get_row( (int) $row->id );
+            if ( $fresh && 'accepted' === (string) $fresh->status && (int) $fresh->private_product_id > 0 ) {
+                return rest_ensure_response( self::accept_payload( $fresh, $user_id ) );
+            }
+            return tnm_json_error( 'custom_request_accept_in_progress', 'This quote is already being accepted. Refresh and try again.', 409 );
+        }
+        $row->status = 'accepting';
 
         $product = new WC_Product_Simple();
         $product->set_name( sprintf( 'Custom: %s (Request #%d)', $row->title, $row->id ) );
@@ -386,9 +409,10 @@ final class MNU_Custom_Requests {
         $product->set_regular_price( $price );
         $product->set_price( $price );
         $product->set_manage_stock( true );
-        $product->set_stock_quantity( max( 1, (int) $row->quantity ) );
+        $product->set_stock_quantity( 1 );
         $product->set_stock_status( 'instock' );
-        $product->set_sold_individually( false );
+        $product->set_sold_individually( true );
+        $product->update_meta_data( '_mnu_custom_quantity', max( 1, (int) $row->quantity ) );
         $buyer = get_userdata( (int) $row->buyer_id );
         $product->set_short_description( 'Custom order for ' . ( $buyer ? sanitize_text_field( $buyer->display_name ) : __( 'buyer', 'mynest-unified-marketplace' ) ) );
         $product->set_description( wp_kses_post( (string) $row->description ) );
@@ -400,6 +424,7 @@ final class MNU_Custom_Requests {
         $product->update_meta_data( '_mnu_custom_request_id', (int) $row->id );
         $private_product_id = $product->save();
         if ( $private_product_id <= 0 ) {
+            $wpdb->update( tnm_table( 'custom_requests' ), array( 'status' => 'quoted', 'updated_at' => self::now() ), array( 'id' => $row->id, 'status' => 'accepting' ), array( '%s', '%s' ), array( '%d', '%s' ) );
             return tnm_json_error( 'private_product_create_failed', 'Could not create the custom product.', 500 );
         }
 
@@ -419,12 +444,14 @@ final class MNU_Custom_Requests {
                 'last_activity_at'   => $now,
                 'updated_at'         => $now,
             ),
-            array( 'id' => $row->id ),
+            array( 'id' => $row->id, 'status' => 'accepting' ),
             array( '%s', '%d', '%s', '%s' ),
-            array( '%d' )
+            array( '%d', '%s' )
         );
-        if ( false === $updated ) {
-            return tnm_json_error( 'custom_request_accept_failed', 'The custom product was created but the request could not be updated.', 500 );
+        if ( 1 !== $updated ) {
+            wp_delete_post( $private_product_id, true );
+            $wpdb->update( tnm_table( 'custom_requests' ), array( 'status' => 'quoted', 'updated_at' => self::now() ), array( 'id' => $row->id, 'status' => 'accepting' ), array( '%s', '%s' ), array( '%d', '%s' ) );
+            return tnm_json_error( 'custom_request_accept_failed', 'The custom product could not be attached to this request. Please try again.', 500 );
         }
 
         $message = self::insert_message( (int) $row->id, $user_id, 'system_accept', 'Buyer accepted the quote.' );
@@ -433,15 +460,42 @@ final class MNU_Custom_Requests {
         }
 
         $updated_row = self::get_row( (int) $row->id );
-        $slug = (string) get_post_field( 'post_name', $private_product_id );
-        return rest_ensure_response(
-            array(
-                'request'              => self::hydrate_request( $updated_row, $user_id ),
-                'private_product_id'   => $private_product_id,
-                'private_product_slug' => $slug,
-                'add_to_cart_url'      => add_query_arg( 'add-to-cart', $private_product_id, home_url( '/' ) ),
-            )
+        return rest_ensure_response( self::accept_payload( $updated_row, $user_id ) );
+    }
+
+    /** Build the stable acceptance response used by first-call and replay. */
+    private static function accept_payload( object $row, int $user_id ): array {
+        $product_id = absint( $row->private_product_id ?? 0 );
+        return array(
+            'request'              => self::hydrate_request( $row, $user_id ),
+            'private_product_id'   => $product_id,
+            'private_product_slug' => $product_id ? (string) get_post_field( 'post_name', $product_id ) : '',
+            // Kept for legacy web clients. Native mobile no longer depends on it.
+            'add_to_cart_url'      => $product_id ? add_query_arg( 'add-to-cart', $product_id, home_url( '/' ) ) : '',
         );
+    }
+
+    /** True when this private custom product belongs to this buyer's request. */
+    public static function buyer_can_access_product( int $product_id, int $buyer_id ): bool {
+        if ( $product_id <= 0 || $buyer_id <= 0 ) { return false; }
+        global $wpdb;
+        $row = $wpdb->get_row( $wpdb->prepare(
+            'SELECT buyer_id,status FROM ' . tnm_table( 'custom_requests' ) . ' WHERE private_product_id=%d LIMIT 1',
+            $product_id
+        ) );
+        return $row && (int) $row->buyer_id === $buyer_id
+            && in_array( (string) $row->status, array( 'accepted', 'paid', 'completed' ), true );
+    }
+
+    /** Checkout is allowed only while the accepted quote is still unpaid. */
+    public static function buyer_can_purchase_product( int $product_id, int $buyer_id ): bool {
+        if ( $product_id <= 0 || $buyer_id <= 0 ) { return false; }
+        global $wpdb;
+        $row = $wpdb->get_row( $wpdb->prepare(
+            'SELECT buyer_id,status FROM ' . tnm_table( 'custom_requests' ) . ' WHERE private_product_id=%d LIMIT 1',
+            $product_id
+        ) );
+        return $row && (int) $row->buyer_id === $buyer_id && 'accepted' === (string) $row->status;
     }
 
     /**

@@ -123,7 +123,7 @@ final class TNM_Payouts {
         );
     }
 
-    public static function mark_paid( int $payout_id, string $external_id = '', string $notes = '' ): bool|WP_Error {
+    public static function mark_paid( int $payout_id, string $external_id = '', string $notes = '', bool $provider_already_sent = false ): bool|WP_Error {
         global $wpdb;
         $payout = self::get( $payout_id );
         if ( ! $payout ) {
@@ -135,11 +135,21 @@ final class TNM_Payouts {
         if ( ! in_array( $payout['status'], array( 'requested', 'processing' ), true ) ) {
             return tnm_json_error( 'invalid_payout_status', 'This payout cannot be marked paid.', 409 );
         }
+        if ( ! $provider_already_sent ) {
+            $held_order = self::held_order_for_payout( $payout_id );
+            if ( $held_order > 0 ) {
+                return tnm_json_error( 'payout_order_on_hold', 'This payout contains earnings from an order with an active dispute or buyer-protection hold.', 409, array( 'order_id' => $held_order ) );
+            }
+        }
+        $resolved_external_id = sanitize_text_field( $external_id ?: (string) $payout['external_id'] );
+        if ( 'manual' === (string) $payout['method'] && '' === trim( $resolved_external_id ) ) {
+            return tnm_json_error( 'payout_reference_required', 'Enter the ACH or bank confirmation reference before marking this payout paid.', 422 );
+        }
         $wpdb->update(
             tnm_table( 'payouts' ),
             array(
                 'status'       => 'paid',
-                'external_id'  => sanitize_text_field( $external_id ?: $payout['external_id'] ),
+                'external_id'  => $resolved_external_id,
                 'notes'        => trim( $payout['notes'] . ' ' . sanitize_textarea_field( $notes ) ),
                 'processed_at' => current_time( 'mysql', true ),
             ),
@@ -153,7 +163,31 @@ final class TNM_Payouts {
         return true;
     }
 
-    public static function cancel( int $payout_id, string $notes = '' ): bool|WP_Error {
+    public static function retry( int $payout_id, string $notes = '' ): bool|WP_Error {
+        global $wpdb;
+        $payout = self::get( $payout_id );
+        if ( ! $payout ) {
+            return tnm_json_error( 'payout_not_found', 'Payout not found.', 404 );
+        }
+        if ( ! in_array( (string) $payout['status'], array( 'failed', 'returned' ), true ) ) {
+            return tnm_json_error( 'invalid_payout_status', 'Only failed or returned payouts can be retried.', 409 );
+        }
+        $wpdb->update(
+            tnm_table( 'payouts' ),
+            array(
+                'status'       => 'requested',
+                'external_id'  => '',
+                'notes'        => trim( (string) $payout['notes'] . ' ' . sanitize_textarea_field( $notes ?: 'Retry requested by administrator.' ) ),
+                'processed_at' => null,
+            ),
+            array( 'id' => $payout_id ),
+            array( '%s', '%s', '%s', '%s' ),
+            array( '%d' )
+        );
+        return true;
+    }
+
+    public static function cancel( int $payout_id, string $notes = '', bool $provider_confirmed_cancelled = false ): bool|WP_Error {
         global $wpdb;
         $payout = self::get( $payout_id );
         if ( ! $payout ) {
@@ -161,6 +195,10 @@ final class TNM_Payouts {
         }
         if ( in_array( $payout['status'], array( 'paid', 'cancelled' ), true ) ) {
             return tnm_json_error( 'invalid_payout_status', 'This payout cannot be cancelled.', 409 );
+        }
+        if ( 'paypal' === (string) $payout['method'] && 'processing' === (string) $payout['status']
+            && '' !== trim( (string) $payout['external_id'] ) && ! $provider_confirmed_cancelled ) {
+            return tnm_json_error( 'paypal_payout_already_submitted', 'This PayPal payout has already been submitted to the provider and cannot be cancelled locally.', 409 );
         }
         $wpdb->update(
             tnm_table( 'payouts' ),
@@ -187,8 +225,23 @@ final class TNM_Payouts {
         if ( 'paypal' !== $payout['method'] ) {
             return tnm_json_error( 'invalid_payout_method', 'This payout is not configured for PayPal.', 409 );
         }
+        if ( 'paid' === (string) $payout['status'] ) {
+            return true;
+        }
+        if ( 'processing' === (string) $payout['status'] && '' !== trim( (string) $payout['external_id'] ) ) {
+            // Already submitted to PayPal. Never submit a second batch for the
+            // same payout id; the sync job owns the transition to paid/failed.
+            return true;
+        }
+        if ( 'requested' !== (string) $payout['status'] ) {
+            return tnm_json_error( 'invalid_payout_status', 'This payout cannot be submitted to PayPal from its current state.', 409 );
+        }
         if ( ! is_email( $payout['destination'] ) ) {
             return tnm_json_error( 'invalid_payout_destination', 'A valid PayPal email is required.', 422 );
+        }
+        $held_order = self::held_order_for_payout( $payout_id );
+        if ( $held_order > 0 ) {
+            return tnm_json_error( 'payout_order_on_hold', 'This payout contains earnings from an order with an active dispute or buyer-protection hold.', 409, array( 'order_id' => $held_order ) );
         }
         $token = self::paypal_access_token();
         if ( is_wp_error( $token ) ) {
@@ -245,9 +298,27 @@ final class TNM_Payouts {
             array( '%d' )
         );
         if ( 'SUCCESS' === $status ) {
-            self::mark_paid( $payout_id, $external_id, 'PayPal batch completed.' );
+            self::mark_paid( $payout_id, $external_id, 'PayPal batch completed.', true );
         }
         return true;
+    }
+
+    /** Return an order id if this payout currently contains dispute-held earnings. */
+    private static function held_order_for_payout( int $payout_id ): int {
+        global $wpdb;
+        $order_ids = $wpdb->get_col( $wpdb->prepare(
+            'SELECT DISTINCT order_id FROM ' . tnm_table( 'ledger' ) . " WHERE payout_id=%d AND status='reserved' AND order_id>0",
+            $payout_id
+        ) );
+        foreach ( $order_ids ?: array() as $order_id ) {
+            $order = wc_get_order( (int) $order_id );
+            if ( ! $order ) { continue; }
+            if ( '1' === (string) $order->get_meta( '_mnu_dispute_hold', true )
+                || '' !== (string) $order->get_meta( '_mnu_buyer_dispute_hold', true ) ) {
+                return (int) $order_id;
+            }
+        }
+        return 0;
     }
 
     private static function paypal_access_token(): string|WP_Error {
@@ -313,32 +384,18 @@ final class TNM_Payouts {
             $json   = json_decode( wp_remote_retrieve_body( $response ), true );
             $status = strtoupper( sanitize_text_field( (string) ( $json['batch_header']['batch_status'] ?? '' ) ) );
             if ( 'SUCCESS' === $status ) {
-                self::mark_paid( (int) $payout['id'], $payout['external_id'], 'PayPal batch confirmed successful.' );
+                self::mark_paid( (int) $payout['id'], $payout['external_id'], 'PayPal batch confirmed successful.', true );
             } elseif ( in_array( $status, array( 'DENIED', 'CANCELED' ), true ) ) {
-                self::cancel( (int) $payout['id'], 'PayPal batch status: ' . $status );
+                self::cancel( (int) $payout['id'], 'PayPal batch status: ' . $status, true );
             }
         }
     }
 
     public static function maybe_generate_automatic_payouts(): void {
+        // v3.13.37 — payout initiation is seller-requested only. Keep this hook
+        // for backwards compatibility and for PayPal status synchronization,
+        // but never create a new payout automatically.
         self::sync_paypal_processing();
-        if ( 'yes' !== tnm_get_option( 'automatic_payouts', 'no' ) ) {
-            return;
-        }
-        $schedule = (string) tnm_get_option( 'payout_schedule', 'weekly' );
-        $days     = array( 'weekly' => 7, 'biweekly' => 14, 'monthly' => 30 )[ $schedule ] ?? 7;
-        $last     = (int) get_option( 'tnm_last_auto_payout_run', 0 );
-        if ( $last && time() - $last < $days * DAY_IN_SECONDS ) {
-            return;
-        }
-        update_option( 'tnm_last_auto_payout_run', time(), false );
-        $sellers = get_users( array( 'role__in' => array( 'tnm_seller', 'mynest_seller' ), 'fields' => 'ID' ) );
-        foreach ( array_unique( array_map( 'intval', $sellers ) ) as $seller_id ) {
-            $balances = TNM_Ledger::balances( (int) $seller_id );
-            if ( $balances['available'] >= (float) tnm_get_option( 'minimum_payout', 25 ) ) {
-                self::request( (int) $seller_id, 0, (string) tnm_get_option( 'payout_method', 'manual' ), '', true );
-            }
-        }
     }
 
     public static function admin_action(): void {

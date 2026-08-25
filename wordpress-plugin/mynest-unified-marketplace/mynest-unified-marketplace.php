@@ -3,7 +3,7 @@
  * Plugin Name: MyNest Unified Marketplace
  * Plugin URI:  https://shopmynest.com/
  * Description: One complete WooCommerce marketplace plugin for MyNest sellers, fees, payouts, orders, social features, mobile APIs, checkout, and shipping.
- * Version:     3.13.36
+ * Version:     3.13.37
  * Author:      MyNest
  * Text Domain: mynest-unified-marketplace
  * Requires at least: 6.5
@@ -16,7 +16,7 @@
 
 defined( 'ABSPATH' ) || exit;
 
-define( 'MNU_VERSION', '3.13.36' );
+define( 'MNU_VERSION', '3.13.37' );
 
 // v3.13.5 — seller listings always auto-publish. If a legacy install still
 // has `seller_can_publish=no` saved from the pre-v3.7.109 moderation queue,
@@ -30,7 +30,7 @@ add_filter( 'option_thenest_settings', function ( $settings ) {
 	}
 	return $settings;
 }, 5 );
-define( 'MNU_DB_VERSION', '3.0.18' );
+define( 'MNU_DB_VERSION', '3.0.19' );
 define( 'MNU_FILE', __FILE__ );
 define( 'MNU_BASENAME', plugin_basename( __FILE__ ) );
 define( 'MNU_PATH', plugin_dir_path( __FILE__ ) );
@@ -146,6 +146,8 @@ function mnu_load_files(): void {
 		// browsing site as native WordPress surfaces.
 		'includes/class-mnu-web-parity.php',
 		'includes/class-mnu-custom-requests.php',
+		// v3.13.37 — built-in buyer-protection/disputes REST surface.
+		'includes/class-mnu-trust.php',
 		// v3.13.1 — native password reset via 6-digit code (replaces the
 		// wp-login.php?action=lostpassword WebView flow).
 		'includes/class-mnu-password-reset.php',
@@ -340,6 +342,7 @@ final class MNU_Plugin {
 		// which is only initialized on the 'init' hook. Defer to 'init'.
 		MNU_Web_Parity::init();
 		MNU_Custom_Requests::init();
+		MNU_Trust::init();
 		MNU_Admin_Console::init();
 		MNU_Admin_Ops::init();
 		TNM_Order_Review_Card::init();

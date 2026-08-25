@@ -135,7 +135,7 @@ function mnu_native_cents( float|string $amount ): int {
     return (int) round( (float) $amount * 100 );
 }
 
-function mnu_native_calc_items( array $items ): array|WP_Error {
+function mnu_native_calc_items( array $items, int $buyer_id = 0 ): array|WP_Error {
     $lines    = array();
     $subtotal = 0.0;
     foreach ( $items as $row ) {
@@ -147,7 +147,9 @@ function mnu_native_calc_items( array $items ): array|WP_Error {
         $quantity     = max( 1, absint( $row['quantity'] ?? 1 ) );
         $parent       = wc_get_product( $product_id );
         $product      = $variation_id ? wc_get_product( $variation_id ) : $parent;
-        if ( ! $product || ! $product->is_purchasable() ) {
+        $custom_buyer_purchase = $product && $buyer_id > 0 && class_exists( 'MNU_Custom_Requests' )
+            && MNU_Custom_Requests::buyer_can_purchase_product( $product_id, $buyer_id );
+        if ( ! $product || ( ! $product->is_purchasable() && ! $custom_buyer_purchase ) ) {
             return new WP_Error( 'invalid_product', 'One or more products are unavailable.', array( 'status' => 409, 'product_id' => $product_id ) );
         }
         if ( $variation_id && $product instanceof WC_Product_Variation ) {
@@ -729,7 +731,7 @@ function mnu_native_quote( WP_REST_Request $request ): array|WP_Error {
         return new WP_Error( 'not_logged_in', 'You must be logged in.', array( 'status' => 401 ) );
     }
     $data   = (array) $request->get_json_params();
-    $result = mnu_native_calc_items( is_array( $data['items'] ?? null ) ? $data['items'] : array() );
+    $result = mnu_native_calc_items( is_array( $data['items'] ?? null ) ? $data['items'] : array(), $user_id );
     if ( is_wp_error( $result ) ) {
         return $result;
     }
@@ -1196,7 +1198,7 @@ function mnu_native_create_intent_locked( int $user_id, array $data, string $che
             $source_items = is_array( $data['items'] ?? null ) ? $data['items'] : array();
         }
 
-        $result = mnu_native_calc_items( $source_items );
+        $result = mnu_native_calc_items( $source_items, $user_id );
         if ( is_wp_error( $result ) ) {
             return $result;
         }
@@ -1994,7 +1996,7 @@ function mnu_native_webhook( WP_REST_Request $request ): array|WP_Error {
     // (dispute objects carry the charge, not the intent) and silently
     // returned received:true — no hold, no debt, no admin alert. That is
     // especially dangerous now that sellers can be paid manually after only
-    // 2 days: a dispute opened on day 3 would find the money already out.
+    // 7 days: a dispute opened after the hold could find the money already reserved or paid.
     // Handle .created, .updated, .closed, .funds_withdrawn, .funds_reinstated
     // all in one dispatch that resolves charge -> order and marks the order
     // as disputed (which blocks any pending earnings from becoming

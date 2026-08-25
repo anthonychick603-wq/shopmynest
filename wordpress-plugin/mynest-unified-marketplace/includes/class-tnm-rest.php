@@ -499,13 +499,15 @@ final class TNM_REST {
         // status. The mobile edit form calls this endpoint to pre-fill fields
         // when the seller taps a draft on the listings screen; before this,
         // drafts 404'd and the app showed "That listing is no longer available."
-        $viewer   = get_current_user_id();
+        $viewer   = class_exists( 'MNU_Ops' ) ? MNU_Ops::get_bearer_user_id( $request ) : get_current_user_id();
         $author   = (int) get_post_field( 'post_author', $product->get_id() );
         $is_owner = $viewer && $viewer === $author;
-        $is_admin = current_user_can( 'manage_woocommerce' );
+        $is_admin = $viewer > 0 && ( user_can( $viewer, 'manage_woocommerce' ) || user_can( $viewer, 'manage_options' ) );
+        $is_custom_buyer = $viewer && class_exists( 'MNU_Custom_Requests' )
+            && MNU_Custom_Requests::buyer_can_access_product( $product->get_id(), $viewer );
         $status   = $product->get_status();
 
-        if ( ! $is_owner && ! $is_admin ) {
+        if ( ! $is_owner && ! $is_admin && ! $is_custom_buyer ) {
             if ( 'publish' !== $status ) {
                 return tnm_json_error( 'product_not_found', 'Product not found.', 404 );
             }

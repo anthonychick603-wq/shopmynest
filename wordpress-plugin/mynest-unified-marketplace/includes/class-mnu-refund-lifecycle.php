@@ -293,6 +293,10 @@ final class MNU_Refund_Lifecycle {
 		if ( ! $order ) {
 			return new WP_Error( 'order_not_found', 'Order not found.', array( 'status' => 404 ) );
 		}
+		if ( class_exists( 'MNU_Trust' ) && MNU_Trust::has_active_for_order( $order->get_id() ) ) {
+			return new WP_Error( 'dispute_already_open', 'A buyer-protection case is already open for this order.', array( 'status' => 409 ) );
+		}
+
 		$current = self::get( $order );
 		if ( in_array( $current['state'], array( self::STATE_REQUESTED, self::STATE_APPROVED, self::STATE_PROCESSING ), true ) ) {
 			return new WP_Error( 'refund_already_open', 'A refund request is already open for this order.', array( 'status' => 409 ) );

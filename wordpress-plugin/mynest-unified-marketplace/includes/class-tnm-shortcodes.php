@@ -136,7 +136,7 @@ final class TNM_Shortcodes {
         // v3.13.35 — Stripe Connect onboarding retired. The Payouts tab now
         // reflects the seller's saved bank account (managed in the mobile app
         // on /seller/bank); payouts are sent by manual ACH from platform
-        // business checking after the 2-day holding window.
+        // business checking after the 7-day holding window and a seller payout request.
         $has_bank_account = class_exists( 'MNU_Bank_Account' ) && MNU_Bank_Account::has_bank_account( $seller_id );
         $listing_blocked  = tnm_seller_listing_blocked( $seller_id );
 
@@ -203,7 +203,7 @@ final class TNM_Shortcodes {
                         <?php if ( $listing_blocked ) : ?>
                             <div class="tnm-notice tnm-error">
                                 <p><strong>Add your bank account first.</strong></p>
-                                <p>Save a routing and account number in the ShopMyNest mobile app (Seller &rarr; Bank account) before you can list products for sale. Payouts are sent by ACH from ShopMyNest after the 2-day holding window.</p>
+                                <p>Save a routing and account number in the ShopMyNest mobile app (Seller &rarr; Bank account) before you can list products for sale. Earnings become payout-eligible after the 7-day holding window; request an ACH payout from the ShopMyNest mobile app.</p>
                             </div>
                         <?php endif; ?>
                         <?php // Hidden rather than omitted while onboarding is unfinished: editing an existing listing is still allowed, and the edit button reuses this same form. ?>
@@ -378,10 +378,10 @@ final class TNM_Shortcodes {
                     <h2>Bank payouts</h2>
                     <?php if ( $has_bank_account ) : ?>
                         <p class="tnm-connection-status is-connected"><strong>Bank account on file</strong></p>
-                        <p>ShopMyNest sends your earnings by ACH to the bank account you saved in the mobile app, after the 2-day holding window. Update your routing and account number any time on the Seller &rarr; Bank account screen in the app.</p>
+                        <p>After the 7-day holding window, request a payout in the ShopMyNest mobile app and ShopMyNest sends the approved amount by ACH to the bank account you saved. Update your routing and account number any time on the Seller &rarr; Bank account screen in the app.</p>
                     <?php else : ?>
                         <p class="tnm-connection-status is-disconnected"><strong>No bank account on file</strong></p>
-                        <p>Save a routing and account number in the ShopMyNest mobile app (Seller &rarr; Bank account) before you list products. Payouts are sent by ACH from ShopMyNest after the 2-day holding window.</p>
+                        <p>Save a routing and account number in the ShopMyNest mobile app (Seller &rarr; Bank account) before you list products. Earnings become payout-eligible after the 7-day holding window; request an ACH payout from the ShopMyNest mobile app.</p>
                     <?php endif; ?>
                 </div>
                 <?php /* v3.13.35 — Manual/PayPal "Request payout" card was retired
@@ -412,7 +412,7 @@ final class TNM_Shortcodes {
                     <label>About your shop<textarea name="about" rows="7"><?php echo esc_textarea( (string) get_user_meta( $seller_id, 'tnm_store_about', true ) ); ?></textarea>
                     <?php /* v3.13.35 — PayPal + Stripe Connect payout fields removed.
                        Payouts are sent by ACH from ShopMyNest business checking after
-                       the 2-day holding window; see the Bank payouts card on the
+                       the 7-day holding window and seller request; see the Bank payouts card on the
                        Earnings & payouts tab. */ ?></label>
                     <label class="tnm-form-check"><input type="checkbox" name="email_optout_messages" value="1" <?php checked( '1', (string) get_user_meta( $seller_id, 'tnm_email_optout_messages', true ) ); ?>> Don't email me when I get a new buyer message. (You'll still see unread messages on the dashboard and in the app.)</label>
                     <button class="tnm-button" type="submit">Save profile</button>
