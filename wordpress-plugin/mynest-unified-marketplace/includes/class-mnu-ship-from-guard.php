@@ -172,13 +172,26 @@ function mnu_ship_from_guard_insert_data( array $data, array $postarr ): array {
 		return $data;
 	}
 
-	$missing_from = mnu_seller_ship_from_missing_field( $seller );
-	$missing_pkg  = $product_id > 0 ? mnu_product_parcel_missing_field( $product_id ) : '';
-	if ( '' === $missing_from && '' === $missing_pkg ) {
+	$missing_from    = mnu_seller_ship_from_missing_field( $seller );
+	$missing_pkg     = $product_id > 0 ? mnu_product_parcel_missing_field( $product_id ) : '';
+	// v3.13.32 — downgrade to draft when the seller is missing contact info too.
+	$missing_contact = class_exists( 'MNU_Contact_Guard' )
+		? MNU_Contact_Guard::seller_missing_contact_field( $seller )
+		: '';
+	if ( '' === $missing_from && '' === $missing_pkg && '' === $missing_contact ) {
 		return $data;
 	}
 
 	$data['post_status'] = 'draft';
+	if ( '' !== $missing_contact ) {
+		mnu_ship_from_flash_notice(
+			$seller,
+			'phone' === $missing_contact
+				? __( 'This product was saved as a draft because your account phone number is missing.', 'mynest-unified-marketplace' )
+				: __( 'This product was saved as a draft because your account email is missing.', 'mynest-unified-marketplace' )
+		);
+		return $data;
+	}
 	$missing = '' !== $missing_from ? $missing_from : $missing_pkg;
 	mnu_ship_from_flash_notice(
 		$seller,
@@ -245,8 +258,23 @@ function mnu_ship_from_guard_pre_rest_insert( mixed $prepared, WP_REST_Request $
 	if ( $seller <= 0 ) {
 		return $prepared;
 	}
-	$missing_from = mnu_seller_ship_from_missing_field( $seller );
-	$missing_pkg  = $product_id > 0 ? mnu_product_parcel_missing_field( $product_id ) : '';
+	$missing_from    = mnu_seller_ship_from_missing_field( $seller );
+	$missing_pkg     = $product_id > 0 ? mnu_product_parcel_missing_field( $product_id ) : '';
+	// v3.13.32 — the seller must be reachable by email and phone before
+	// they can list. This lets us email order/payout notifications and lets
+	// carriers reach them if a shipment has issues.
+	$missing_contact = class_exists( 'MNU_Contact_Guard' )
+		? MNU_Contact_Guard::seller_missing_contact_field( $seller )
+		: '';
+	if ( '' !== $missing_contact ) {
+		return new WP_Error(
+			'mnu_incomplete_seller_contact',
+			'phone' === $missing_contact
+				? __( 'Add a phone number to your account before publishing. ShopMyNest and carriers use it if a shipment needs your attention.', 'mynest-unified-marketplace' )
+				: __( 'Add an account email before publishing so ShopMyNest can send you order and payout notifications.', 'mynest-unified-marketplace' ),
+			array( 'status' => 400, 'missing_field' => 'account_' . $missing_contact )
+		);
+	}
 	if ( '' !== $missing_from || '' !== $missing_pkg ) {
 		$missing = '' !== $missing_from ? $missing_from : $missing_pkg;
 		return new WP_Error(
@@ -288,9 +316,12 @@ function mnu_ship_from_guard_save_post( int $post_id, WP_Post $post, bool $updat
 	if ( $seller <= 0 ) {
 		return;
 	}
-	$missing_from = mnu_seller_ship_from_missing_field( $seller );
-	$missing_pkg  = mnu_product_parcel_missing_field( $post_id );
-	if ( '' === $missing_from && '' === $missing_pkg ) {
+	$missing_from    = mnu_seller_ship_from_missing_field( $seller );
+	$missing_pkg     = mnu_product_parcel_missing_field( $post_id );
+	$missing_contact = class_exists( 'MNU_Contact_Guard' )
+		? MNU_Contact_Guard::seller_missing_contact_field( $seller )
+		: '';
+	if ( '' === $missing_from && '' === $missing_pkg && '' === $missing_contact ) {
 		return;
 	}
 
@@ -303,6 +334,15 @@ function mnu_ship_from_guard_save_post( int $post_id, WP_Post $post, bool $updat
 	);
 	add_action( 'save_post_product', 'mnu_ship_from_guard_save_post', 20, 3 );
 
+	if ( '' !== $missing_contact ) {
+		mnu_ship_from_flash_notice(
+			$seller,
+			'phone' === $missing_contact
+				? __( 'This product was reverted to draft because your account phone number is missing.', 'mynest-unified-marketplace' )
+				: __( 'This product was reverted to draft because your account email is missing.', 'mynest-unified-marketplace' )
+		);
+		return;
+	}
 	$missing = '' !== $missing_from ? $missing_from : $missing_pkg;
 	mnu_ship_from_flash_notice(
 		$seller,
