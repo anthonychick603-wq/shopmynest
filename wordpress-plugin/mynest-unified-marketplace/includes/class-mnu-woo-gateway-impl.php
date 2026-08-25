@@ -152,7 +152,17 @@ final class MNU_Woo_Gateway extends WC_Payment_Gateway {
 		);
 		wp_add_inline_script( $handle, 'window.MNUGateway = ' . wp_json_encode( $config ) . ';', 'before' );
 		wp_add_inline_script( $handle, self::inline_js() );
-		wp_add_inline_style( 'woocommerce-general', '#mnu-stripe-elements-mount .StripeElement{background:#fff;padding:.5rem;border-radius:6px;border:1px solid #ecdfcd;}' );
+		wp_add_inline_style(
+			'woocommerce-general',
+			'#mnu-stripe-elements-mount .StripeElement{background:#fff;padding:.5rem;border-radius:6px;border:1px solid #ecdfcd;}' .
+			/* v3.13.31 — 3DS return overlay so the buyer never sees the raw
+			   checkout page reload behind Stripe’s challenge redirect. */
+			'#mnu-pi-return-overlay{position:fixed;inset:0;z-index:999999;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1rem;background:#fffdf7;font-family:inherit;color:#28251d;text-align:center;padding:2rem;}' .
+			'#mnu-pi-return-overlay .mnu-spin{width:44px;height:44px;border:3px solid #ecdfcd;border-top-color:#01696f;border-radius:50%;animation:mnuspin 0.8s linear infinite;}' .
+			'#mnu-pi-return-overlay .mnu-msg{font-size:1.05rem;font-weight:500;}' .
+			'#mnu-pi-return-overlay .mnu-sub{font-size:.9rem;color:#7a7974;max-width:22rem;}' .
+			'@keyframes mnuspin{to{transform:rotate(360deg);}}'
+		);
 	}
 
 	/**
@@ -415,6 +425,19 @@ final class MNU_Woo_Gateway extends WC_Payment_Gateway {
 		if (typeof MNUGateway === 'undefined') { return; }
 		var stripe = null, elements = null, paymentElement = null, mounted = false;
 
+		// v3.13.31 — Paint the 3DS-return overlay before jQuery.ready fires
+		// so a slow-hydrating checkout template never flashes underneath.
+		try {
+			if (/[?&]mnu_pi_return=1(?:&|$)/.test(window.location.search) && !document.getElementById('mnu-pi-return-overlay')) {
+				var boot = document.createElement('div');
+				boot.id = 'mnu-pi-return-overlay';
+				boot.innerHTML = '<div class="mnu-spin" aria-hidden="true"></div>' +
+					'<div class="mnu-msg">Finalising your payment…</div>' +
+					'<div class="mnu-sub">Please don\u2019t close this tab — we\u2019re confirming your order with your bank.</div>';
+				(document.body || document.documentElement).appendChild(boot);
+			}
+		} catch(e) {}
+
 		function log(err){ var el = document.getElementById('mnu-stripe-errors'); if (el) { el.textContent = err || ''; } }
 
 		function ensureStripe(){
@@ -462,6 +485,78 @@ final class MNU_Woo_Gateway extends WC_Payment_Gateway {
 		$(document).on('updated_checkout', function(){ mounted = false; maybeMount(); });
 		$(document).on('change', 'input[name="payment_method"]', maybeMount);
 		$(document).ready(maybeMount);
+
+		// v3.13.31 — 3DS return handler. Stripe redirects buyers here after
+		// an issuer challenge with ?mnu_pi_return=1&order=X&payment_intent=pi_…
+		// &payment_intent_client_secret=…&redirect_status=succeeded. Show a
+		// full-viewport spinner immediately so the raw checkout page never
+		// flashes, then retrieve the intent and hand off to finalize().
+		function showReturnOverlay(msg, sub){
+			var existing = document.getElementById('mnu-pi-return-overlay');
+			if (existing) { existing.parentNode.removeChild(existing); }
+			var overlay = document.createElement('div');
+			overlay.id = 'mnu-pi-return-overlay';
+			overlay.innerHTML = '<div class="mnu-spin" aria-hidden="true"></div>' +
+				'<div class="mnu-msg">' + (msg || 'Finalising your payment…') + '</div>' +
+				'<div class="mnu-sub">' + (sub || 'Please don\u2019t close this tab — we\u2019re confirming your order with your bank.') + '</div>';
+			document.body.appendChild(overlay);
+			return overlay;
+		}
+		function hideReturnOverlay(){
+			var el = document.getElementById('mnu-pi-return-overlay');
+			if (el && el.parentNode) el.parentNode.removeChild(el);
+		}
+		function qs(name){
+			try {
+				var p = new URLSearchParams(window.location.search);
+				return p.get(name) || '';
+			} catch(e) { return ''; }
+		}
+		function handlePiReturn(){
+			if (qs('mnu_pi_return') !== '1') return;
+			var orderId      = parseInt(qs('order') || '0', 10);
+			var clientSecret = qs('payment_intent_client_secret');
+			var intentId     = qs('payment_intent');
+			var status       = qs('redirect_status');
+			if (!orderId || !clientSecret || !intentId) {
+				// Missing pieces — fall back to the normal checkout page so the
+				// buyer can retry manually. Better than a stuck overlay.
+				return;
+			}
+			showReturnOverlay();
+			if (!ensureStripe()) {
+				showReturnOverlay('Payment finalising…', 'Stripe.js failed to load. Refresh this page to check your order status.');
+				return;
+			}
+			// Prefer the query param status (Stripe already told us). Fall back
+			// to retrievePaymentIntent for a definitive answer.
+			var okStatuses = ['succeeded','processing','requires_capture'];
+			var quickOk = status && okStatuses.indexOf(status) >= 0;
+			var next = quickOk
+				? Promise.resolve({ paymentIntent: { id: intentId, status: status } })
+				: stripe.retrievePaymentIntent(clientSecret);
+			next.then(function(res){
+				if (res && res.error) throw new Error(res.error.message || 'Could not verify payment.');
+				var pi = res && res.paymentIntent;
+				if (!pi || okStatuses.indexOf(pi.status) < 0) {
+					throw new Error('Your bank did not authorise the payment (' + (pi && pi.status) + '). Please try again with a different card.');
+				}
+				return finalize(orderId, intentId, MNUGateway.restNonce);
+			}).then(function(fin){
+				if (fin && fin.result === 'success' && fin.redirect) {
+					window.location = fin.redirect;
+					return;
+				}
+				throw new Error((fin && fin.message) || 'Order could not be finalised.');
+			}).catch(function(err){
+				hideReturnOverlay();
+				log(err && err.message ? err.message : 'Payment could not be verified.');
+				// Strip the return params from the URL so a page refresh doesn’t
+				// re-trigger the handler on the same failed intent.
+				try { history.replaceState({}, '', window.location.pathname); } catch(e) {}
+			});
+		}
+		$(document).ready(handlePiReturn);
 
 		// Before the form submits: validate the Payment Element locally so
 		// the shopper sees inline card errors. If validation passes, allow
