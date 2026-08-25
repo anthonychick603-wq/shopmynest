@@ -3,7 +3,7 @@
  * Plugin Name: MyNest Unified Marketplace
  * Plugin URI:  https://shopmynest.com/
  * Description: One complete WooCommerce marketplace plugin for MyNest sellers, fees, payouts, orders, social features, mobile APIs, checkout, and shipping.
- * Version:     3.13.35
+ * Version:     3.13.36
  * Author:      MyNest
  * Text Domain: mynest-unified-marketplace
  * Requires at least: 6.5
@@ -16,7 +16,7 @@
 
 defined( 'ABSPATH' ) || exit;
 
-define( 'MNU_VERSION', '3.13.35' );
+define( 'MNU_VERSION', '3.13.36' );
 
 // v3.13.5 — seller listings always auto-publish. If a legacy install still
 // has `seller_can_publish=no` saved from the pre-v3.7.109 moderation queue,
@@ -153,6 +153,9 @@ function mnu_load_files(): void {
 		'includes/class-mnu-abandoned-carts.php',
 		// v3.7.114 — admin console REST routes powering the mobile admin drawer.
 		'includes/class-mnu-admin-console.php',
+		// v3.13.36 — unified admin operational queues + actions (seller apps,
+		// refunds, payouts) for the mobile admin drawer.
+		'includes/class-mnu-admin-ops.php',
 	);
 
 	foreach ( $files as $file ) {
@@ -338,6 +341,7 @@ final class MNU_Plugin {
 		MNU_Web_Parity::init();
 		MNU_Custom_Requests::init();
 		MNU_Admin_Console::init();
+		MNU_Admin_Ops::init();
 		TNM_Order_Review_Card::init();
 		TNM_Review_Nudge::init();
 		if ( get_option( 'mnu_web_parity_pages_version', '' ) !== MNU_VERSION ) {

@@ -881,11 +881,22 @@ final class MyNest_Mobile_App_Bridge {
         }
         $application = $applications[0];
         $status      = sanitize_key( (string) get_post_meta( $application->ID, '_tnm_status', true ) ) ?: 'pending';
+
+        // v3.13.36 — include rejection metadata + resubmit flag so the mobile
+        // "Become a seller" screen can render the right empty state (retry vs.
+        // permanently rejected) without a second round trip.
+        $reviewed_at  = (string) get_post_meta( $application->ID, '_tnm_reviewed_at', true );
+        $resub_meta   = get_post_meta( $application->ID, '_tnm_can_resubmit', true );
+        $can_resubmit = '' === $resub_meta ? ( 'rejected' === $status ) : (bool) $resub_meta;
+
         return rest_ensure_response(
             array(
-                'status'         => $status,
-                'application_id' => $application->ID,
-                'submitted_at'   => get_post_time( DATE_ATOM, true, $application ),
+                'status'           => $status,
+                'application_id'   => $application->ID,
+                'submitted_at'     => get_post_time( DATE_ATOM, true, $application ),
+                'rejection_reason' => (string) get_post_meta( $application->ID, '_tnm_rejection_reason', true ),
+                'reviewed_at'      => $reviewed_at ? mysql_to_rfc3339( $reviewed_at ) : '',
+                'can_resubmit'     => $can_resubmit,
             )
         );
     }

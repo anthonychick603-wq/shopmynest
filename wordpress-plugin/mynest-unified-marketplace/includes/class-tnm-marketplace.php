@@ -1375,8 +1375,40 @@ final class TNM_Marketplace {
             'stripe_fee'              => $stripe_fee_seller,
             'seller_net'              => $seller_net,
             'platform_keeps_shipping' => $platform_keeps_shipping,
+            // v3.13.36 — explicit shipping accounting for mobile.
+            // On new-model (v3.8.0+) orders the platform buys and owns the
+            // shipping label; the seller never sees the label cost. We still
+            // return `label_cost` (from the captured Shippo rate) so the
+            // seller dashboard can show "Platform paid $X.XX for shipping"
+            // for transparency.
+            'label_cost_responsibility' => $platform_keeps_shipping ? 'platform' : 'seller',
+            'label_cost'                => $platform_keeps_shipping ? (float) $order->get_meta( '_mnu_ship_amount_' . $seller_id, true ) : 0.0,
+            // Fulfillment state machine — what the seller UI is allowed to do next.
+            'allowed_actions'           => self::seller_order_allowed_actions( (string) ( $order->get_meta( '_tnm_seller_status_' . $seller_id, true ) ?: 'processing' ) ),
             'currency'        => $order->get_currency(),
         );
+    }
+
+    /**
+     * v3.13.36 — fulfillment state machine for seller-driven order updates.
+     * Transitions the seller UI is allowed to make on the mobile app.
+     *
+     *   processing → shipped | cancelled
+     *   shipped    → (delivery only from tracking/admin)
+     *   completed  → terminal
+     *   cancelled  → terminal
+     */
+    public static function seller_order_allowed_actions( string $current ): array {
+        $current = sanitize_key( $current );
+        switch ( $current ) {
+            case 'processing':
+                return array( 'shipped', 'cancelled' );
+            case 'shipped':
+            case 'completed':
+            case 'cancelled':
+            default:
+                return array();
+        }
     }
 
     public static function update_seller_order_status( int $seller_id, int $order_id, string $status, string $tracking = '' ): bool|WP_Error {
@@ -1391,6 +1423,40 @@ final class TNM_Marketplace {
         if ( ! in_array( $status, $allowed, true ) ) {
             return tnm_json_error( 'invalid_seller_status', 'Invalid seller order status.', 422 );
         }
+
+        // v3.13.36 — enforce the seller-side fulfillment state machine.
+        // The mobile UI keys off `allowed_actions` returned on the order
+        // payload but any client (or a curl) can still POST anything, so we
+        // gate it server-side too. Admins (manage_woocommerce) bypass because
+        // they need to be able to correct bad state from wp-admin.
+        $current_seller_status = (string) ( $order->get_meta( '_tnm_seller_status_' . $seller_id, true ) ?: 'processing' );
+        if ( ! tnm_is_admin_or_manager() ) {
+            $allowed_next = self::seller_order_allowed_actions( $current_seller_status );
+            if ( $status !== $current_seller_status && ! in_array( $status, $allowed_next, true ) ) {
+                return tnm_json_error(
+                    'invalid_seller_transition',
+                    sprintf( 'Cannot move seller order from %s to %s.', $current_seller_status, $status ),
+                    409,
+                    array(
+                        'current'         => $current_seller_status,
+                        'allowed_actions' => $allowed_next,
+                    )
+                );
+            }
+            // Manual shipped MUST carry a tracking number — either supplied
+            // now or already stored on the order.
+            if ( 'shipped' === $status ) {
+                $existing_tracking = (string) $order->get_meta( '_tnm_tracking_' . $seller_id, true );
+                if ( '' === trim( (string) $tracking ) && '' === trim( $existing_tracking ) ) {
+                    return tnm_json_error(
+                        'tracking_required',
+                        'A tracking number is required when marking a seller order as shipped.',
+                        422
+                    );
+                }
+            }
+        }
+
         $order->update_meta_data( '_tnm_seller_status_' . $seller_id, $status );
         // v3.7.95 - stamp shipped/completed timestamps so the buyer order
         // payload can render "Shipped Aug 17" / "Delivered Aug 20" per seller.
