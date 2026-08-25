@@ -41,7 +41,11 @@ final class MNU_Woo_Gateway extends WC_Payment_Gateway {
 	public function __construct() {
 		$this->id                 = 'mnu_marketplace';
 		$this->method_title       = __( 'MyNest Marketplace (Stripe)', 'mynest-unified-marketplace' );
-		$this->method_description = __( 'Accept credit and debit cards through the MyNest Marketplace Stripe Connect platform. Application fees and per-seller transfers are handled automatically.', 'mynest-unified-marketplace' );
+		// v3.13.35 — description rewritten now that sellers are off Stripe
+		// Connect. Buyers still pay on the platform Stripe account; sellers
+		// are paid by ACH from platform business checking after the 2-day
+		// holding window via MNU_Bank_Account.
+		$this->method_description = __( 'Accept credit and debit cards on the ShopMyNest platform Stripe account. Sellers are paid via ACH from platform business checking after the 2-day holding window; no per-seller Stripe Connect account is required.', 'mynest-unified-marketplace' );
 		$this->has_fields         = true;
 		$this->supports           = array( 'products', 'refunds' );
 
@@ -229,9 +233,11 @@ final class MNU_Woo_Gateway extends WC_Payment_Gateway {
 		if ( $stripe_customer_id ) {
 			$params['customer'] = $stripe_customer_id;
 		}
-		if ( function_exists( 'mnu_native_connect_intent_params' ) ) {
-			$params = array_merge( $params, mnu_native_connect_intent_params( $order ) );
-		}
+		// v3.13.35 — `mnu_native_connect_intent_params()` has been a no-op
+		// shim returning array() since v3.8.0 (destination-charge params
+		// were retired). The merge is removed for clarity; the shim itself
+		// remains in class-mnu-native-checkout.php so any third-party code
+		// that still calls it continues to function.
 
 		// v3.13.28 — Stamp the v3.8 platform-charge model BEFORE the PaymentIntent
 		// is created. Without this stamp, TNM_Ledger::create_seller_transfers()

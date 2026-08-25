@@ -33,41 +33,71 @@ final class MNU_Connect {
 	const BRIDGE_PATH = '/mnu-connect-bridge/';
 
 	public static function init(): void {
+		// v3.13.35 — Stripe Connect onboarding fully retired. The two `init`
+		// hooks that served the browser-side onboarding flow
+		// (`maybe_render_bridge` and `maybe_start_onboarding`) are unregistered
+		// so no code path can start a new Connect account. The REST namespace
+		// stays registered so any lingering mobile / web client discovers the
+		// change via a 410 Gone instead of a bare 404.
 		add_action( 'rest_api_init', array( __CLASS__, 'register_routes' ) );
-		// Served as a plain, unauthenticated browser page. Handled on `init`
-		// (matching the plugin's REQUEST_URI convention in MNU_Compat) so it
-		// needs no rewrite rule and therefore no rewrite-rule flush.
-		add_action( 'init', array( __CLASS__, 'maybe_render_bridge' ) );
-			add_action( 'init', array( __CLASS__, 'maybe_start_onboarding' ) );
 	}
 
 	public static function register_routes(): void {
-		register_rest_route(
-			self::NS,
-			'/onboard-link',
-			array(
-				'methods'             => WP_REST_Server::CREATABLE,
-				'callback'            => array( __CLASS__, 'onboard_link' ),
-				'permission_callback' => array( __CLASS__, 'seller' ),
-			)
+		// v3.13.35 — all three routes now return the retired-state payload
+		// unauthenticated so clients see a stable response even after user
+		// tokens are rotated. Nothing in the plugin (or the mobile app v1.0.128+)
+		// still calls these paths; the stubs exist purely so third-party or
+		// stale clients get a clear signal.
+		$retired_write = array(
+			'methods'             => WP_REST_Server::CREATABLE,
+			'callback'            => array( __CLASS__, 'retired_response' ),
+			'permission_callback' => '__return_true',
 		);
-		register_rest_route(
-			self::NS,
-			'/status',
-			array(
-				'methods'             => WP_REST_Server::READABLE,
-				'callback'            => array( __CLASS__, 'status' ),
-				'permission_callback' => array( __CLASS__, 'seller' ),
-			)
+		$retired_read = array(
+			'methods'             => WP_REST_Server::READABLE,
+			'callback'            => array( __CLASS__, 'retired_status_response' ),
+			'permission_callback' => '__return_true',
 		);
-		register_rest_route(
-			self::NS,
-			'/dashboard-link',
-			array(
-				'methods'             => WP_REST_Server::CREATABLE,
-				'callback'            => array( __CLASS__, 'dashboard_link' ),
-				'permission_callback' => array( __CLASS__, 'seller' ),
-			)
+		register_rest_route( self::NS, '/onboard-link',   $retired_write );
+		register_rest_route( self::NS, '/dashboard-link', $retired_write );
+		register_rest_route( self::NS, '/status',         $retired_read );
+	}
+
+	/**
+	 * Retired-endpoint response for /onboard-link and /dashboard-link.
+	 *
+	 * Returns HTTP 410 Gone with a machine-readable code so any stale mobile
+	 * build or third-party client can detect the migration without parsing
+	 * copy. Callers should stop calling this endpoint entirely; there is no
+	 * replacement — sellers save a bank account on the mobile `/seller/bank`
+	 * screen and payouts are issued by manual ACH from platform business
+	 * checking after the 2-day holding window.
+	 */
+	public static function retired_response(): WP_Error {
+		return new WP_Error(
+			'connect_retired',
+			'Stripe Connect onboarding has been retired. Sellers are paid via ACH to a bank account saved on the mobile app.',
+			array( 'status' => 410 )
+		);
+	}
+
+	/**
+	 * Retired-endpoint response for /status.
+	 *
+	 * Kept as a 200 with a shape compatible with the historical status
+	 * payload so any stale reader (e.g. an old admin screen) can still parse
+	 * it, but with a top-level `connect_retired` flag that new callers should
+	 * key off.
+	 */
+	public static function retired_status_response(): array {
+		return array(
+			'connect_retired'   => true,
+			'connected'         => false,
+			'charges_enabled'   => false,
+			'payouts_enabled'   => false,
+			'details_submitted' => false,
+			'account_id'        => '',
+			'message'           => 'Stripe Connect onboarding has been retired. See the Bank account screen in the ShopMyNest mobile app.',
 		);
 	}
 

@@ -96,7 +96,7 @@ final class MNU_Email_Verify {
 				0,
 				'email_verified',
 				__( 'Email verified', 'mynest-unified-marketplace' ),
-				__( 'Thanks for verifying your email address. Payouts can now be requested once your Stripe Connect account is fully set up.', 'mynest-unified-marketplace' ),
+				__( 'Thanks for verifying your email address. Save a bank account in the mobile app and payouts will run automatically by ACH after the 2-day holding window.', 'mynest-unified-marketplace' ),
 				0,
 				'',
 				function_exists( 'tnm_page_url' ) ? tnm_page_url( 'seller_dashboard' ) : ''

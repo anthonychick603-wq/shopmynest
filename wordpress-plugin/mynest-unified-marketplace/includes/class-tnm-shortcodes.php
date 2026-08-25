@@ -133,11 +133,11 @@ final class TNM_Shortcodes {
         $payouts          = TNM_Payouts::list_for_seller( $seller_id );
         $shipping_profile = function_exists( 'mnu_ship_get_profile' ) ? mnu_ship_get_profile( $seller_id ) : array();
         $label_settings   = function_exists( 'mnu_labels_settings' ) ? mnu_labels_settings() : array( 'shippo_token' => '', 'test_mode' => 1 );
-        // v3.7.107 - Use fresh_status() so a seller who finished onboarding in
-        // Stripe still sees "Connected & ready" here even if the account.updated
-        // webhook never made it to us. fresh_status() only hits Stripe when the
-        // cache says onboarding is incomplete, and is rate-limited to once/min.
-        $connect          = class_exists( 'MNU_Connect' ) ? MNU_Connect::fresh_status( $seller_id ) : null;
+        // v3.13.35 — Stripe Connect onboarding retired. The Payouts tab now
+        // reflects the seller's saved bank account (managed in the mobile app
+        // on /seller/bank); payouts are sent by manual ACH from platform
+        // business checking after the 2-day holding window.
+        $has_bank_account = class_exists( 'MNU_Bank_Account' ) && MNU_Bank_Account::has_bank_account( $seller_id );
         $listing_blocked  = tnm_seller_listing_blocked( $seller_id );
 
         ob_start();
@@ -202,9 +202,8 @@ final class TNM_Shortcodes {
                         <h2 data-tnm-form-title>Add product</h2>
                         <?php if ( $listing_blocked ) : ?>
                             <div class="tnm-notice tnm-error">
-                                <p><strong>Connect your bank account first.</strong></p>
-                                <p>Connect your Stripe account before you can list products for sale, so you can get paid when something sells.</p>
-                                <p><button type="button" class="tnm-button" data-tnm-open-tab="payouts">Connect with Stripe</button></p>
+                                <p><strong>Add your bank account first.</strong></p>
+                                <p>Save a routing and account number in the ShopMyNest mobile app (Seller &rarr; Bank account) before you can list products for sale. Payouts are sent by ACH from ShopMyNest after the 2-day holding window.</p>
                             </div>
                         <?php endif; ?>
                         <?php // Hidden rather than omitted while onboarding is unfinished: editing an existing listing is still allowed, and the edit button reuses this same form. ?>
@@ -375,33 +374,21 @@ final class TNM_Shortcodes {
                 <?php self::render_ledger_table( $ledger['entries'] ); ?></div></section>
 
             <section class="tnm-tab-panel" data-tnm-panel="payouts">
-                <?php if ( null !== $connect ) : ?>
-                <div class="tnm-card" data-tnm-connect-card>
-                    <h2>Bank payouts (Stripe)</h2>
-                    <?php if ( ! $connect['connected'] ) : ?>
-                        <p class="tnm-connection-status is-disconnected"><strong>Not connected</strong></p>
-                        <p>Connect your bank account with Stripe so your sales are paid directly to you. You must finish this before you can list new products.</p>
-                        <p><a class="tnm-button" data-tnm-connect-onboard href="<?php echo esc_url( home_url( '/mnu-connect-start/' ) ); ?>">Connect your bank account with Stripe</a></p>
-                    <?php elseif ( ! $connect['payouts_enabled'] || ! $connect['charges_enabled'] ) : ?>
-                        <p class="tnm-connection-status is-disconnected"><strong>Onboarding incomplete</strong></p>
-                        <p>Your Stripe account still needs more information before payouts can be enabled. Finish onboarding to start selling.</p>
-                        <p>
-                            <a class="tnm-button" data-tnm-connect-onboard href="<?php echo esc_url( home_url( '/mnu-connect-start/' ) ); ?>">Finish Stripe onboarding</a>
-                            <button type="button" class="tnm-button tnm-button-secondary" data-tnm-connect-dashboard>View Stripe balance &amp; payout history</button>
-                        </p>
+                <div class="tnm-card">
+                    <h2>Bank payouts</h2>
+                    <?php if ( $has_bank_account ) : ?>
+                        <p class="tnm-connection-status is-connected"><strong>Bank account on file</strong></p>
+                        <p>ShopMyNest sends your earnings by ACH to the bank account you saved in the mobile app, after the 2-day holding window. Update your routing and account number any time on the Seller &rarr; Bank account screen in the app.</p>
                     <?php else : ?>
-                        <p class="tnm-connection-status is-connected"><strong>Connected &amp; ready</strong></p>
-                        <p>Your earnings are transferred to your connected Stripe account automatically as orders complete.</p>
-                        <p><button type="button" class="tnm-button tnm-button-secondary" data-tnm-connect-dashboard>View Stripe balance &amp; payout history</button></p>
+                        <p class="tnm-connection-status is-disconnected"><strong>No bank account on file</strong></p>
+                        <p>Save a routing and account number in the ShopMyNest mobile app (Seller &rarr; Bank account) before you list products. Payouts are sent by ACH from ShopMyNest after the 2-day holding window.</p>
                     <?php endif; ?>
-                    <p class="tnm-muted" data-tnm-connect-msg hidden></p>
                 </div>
-                <?php endif; ?>
-                <?php /* v3.7.107 — Legacy manual/PayPal "Request payout" card removed.
-                   ShopMyNest pays sellers automatically via Stripe Connect (see the
-                   Bank payouts card above). The manual/PayPal form was a holdover
-                   from The Nest Marketplace baseline plugin. Historical payout rows
-                   are still shown so sellers can see any legacy manual entries. */ ?>
+                <?php /* v3.13.35 — Manual/PayPal "Request payout" card was retired
+                   in v3.7.107; the Stripe Connect card that replaced it was retired
+                   in v3.13.35 when sellers moved to platform-issued ACH from
+                   business checking. Historical payout rows still show for legacy
+                   entries. */ ?>
                 <div class="tnm-card"><h2>Payout history</h2><?php self::render_payouts_table( $payouts ); ?></div>
             </section>
 
@@ -423,87 +410,20 @@ final class TNM_Shortcodes {
                     <label>Store name<input type="text" name="store_name" value="<?php echo esc_attr( tnm_seller_display_name( $seller_id ) ); ?>" required></label>
                     <label>Shop tagline <span style="color:#7a6b57;font-weight:400;font-size:.85em">(one short line, shown on the Discover Shops page)</span><input type="text" name="tagline" maxlength="140" value="<?php echo esc_attr( (string) get_user_meta( $seller_id, 'tnm_store_tagline', true ) ); ?>"></label>
                     <label>About your shop<textarea name="about" rows="7"><?php echo esc_textarea( (string) get_user_meta( $seller_id, 'tnm_store_about', true ) ); ?></textarea>
-                    <?php /* v3.7.107 — PayPal payout email field removed from seller-facing Profile tab.
-                       Payouts run on Stripe Connect (Bank payouts card on Earnings & payouts tab). */ ?></label>
+                    <?php /* v3.13.35 — PayPal + Stripe Connect payout fields removed.
+                       Payouts are sent by ACH from ShopMyNest business checking after
+                       the 2-day holding window; see the Bank payouts card on the
+                       Earnings & payouts tab. */ ?></label>
                     <label class="tnm-form-check"><input type="checkbox" name="email_optout_messages" value="1" <?php checked( '1', (string) get_user_meta( $seller_id, 'tnm_email_optout_messages', true ) ); ?>> Don't email me when I get a new buyer message. (You'll still see unread messages on the dashboard and in the app.)</label>
                     <button class="tnm-button" type="submit">Save profile</button>
                 </form>
             </div></section>
         </div>
         <?php
-        if ( null !== $connect ) {
-            self::enqueue_connect_script();
-        }
+        // v3.13.35 — Stripe Connect card JS is retired. The Payouts tab is
+        // now a static status message driven by MNU_Bank_Account, so no
+        // client-side wiring is needed here.
         return (string) ob_get_clean();
-    }
-
-    /**
-     * Attach the Stripe Connect card JS to the tnm-frontend handle so it prints
-     * in the footer AFTER the localized TNMFrontend object and after
-     * frontend.js. Printing it inline in the shortcode body ran it before the
-     * footer-localized TNMFrontend existed, so the handler never bound.
-     */
-    private static function enqueue_connect_script(): void {
-        static $added = false;
-        if ( $added ) {
-            return;
-        }
-        $added = true;
-
-        $js = <<<'JS'
-        (function(){
-            var card = document.querySelector('[data-tnm-connect-card]');
-            if (!card || typeof TNMFrontend === 'undefined') { return; }
-            var msg = card.querySelector('[data-tnm-connect-msg]');
-            function show(text){ if (msg){ msg.textContent = text; msg.hidden = false; } }
-            function post(path, body){
-                return fetch(TNMFrontend.restRoot + path, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json', 'X-WP-Nonce': TNMFrontend.restNonce },
-                    body: JSON.stringify(body || {})
-                }).then(function(r){ return r.json(); });
-            }
-            var onboard = card.querySelector('[data-tnm-connect-onboard]');
-            if (onboard) {
-                onboard.addEventListener('click', function(ev){
-                    // If this is a plain anchor with an href (e.g. /mnu-connect-start/),
-                    // let the browser do a normal same-tab navigation. The server
-                    // route creates/updates the Stripe account and 302s to Stripe,
-                    // so no XHR is needed and the flow works even if TNMFrontend
-                    // localize didn't land in the footer.
-                    if (onboard.tagName === 'A' && onboard.getAttribute('href')) {
-                        show('Opening Stripe onboarding…');
-                        return; // do not preventDefault; navigate via href
-                    }
-                    if (ev && ev.preventDefault) { ev.preventDefault(); }
-                    onboard.disabled = true;
-                    show('Opening Stripe onboarding…');
-                    post('nest-connect/v1/onboard-link', { return_url: window.location.href, refresh_url: window.location.href })
-                        .then(function(res){
-                            if (res && res.url) { window.location = res.url; }
-                            else { onboard.disabled = false; show((res && res.message) || 'Could not start Stripe onboarding.'); }
-                        })
-                        .catch(function(){ onboard.disabled = false; show('Could not start Stripe onboarding.'); });
-                });
-            }
-            var dash = card.querySelector('[data-tnm-connect-dashboard]');
-            if (dash) {
-                dash.addEventListener('click', function(){
-                    dash.disabled = true;
-                    show('Opening your Stripe dashboard…');
-                    post('nest-connect/v1/dashboard-link', {})
-                        .then(function(res){
-                            dash.disabled = false;
-                            if (res && res.url) { window.open(res.url, '_blank'); show(''); if (msg) { msg.hidden = true; } }
-                            else { show((res && res.message) || 'Could not open the Stripe dashboard.'); }
-                        })
-                        .catch(function(){ dash.disabled = false; show('Could not open the Stripe dashboard.'); });
-                });
-            }
-        })();
-        JS;
-
-        wp_add_inline_script( 'tnm-frontend', $js );
     }
 
     private static function handle_dashboard_action( int $seller_id ): string {

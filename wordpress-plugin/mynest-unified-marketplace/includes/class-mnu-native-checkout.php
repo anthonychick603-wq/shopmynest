@@ -165,17 +165,16 @@ function mnu_native_calc_items( array $items ): array|WP_Error {
         // touching Stripe in v3.8.0. Fall back to the Stripe gate only when
         // MNU_Bank_Account is missing (defensive; the class is always loaded
         // once the plugin has booted).
+        // v3.13.35 — Stripe Connect readiness is retired; the only gate
+        // now is whether the seller has a bank account on file. The old
+        // `elseif ( class_exists( 'MNU_Connect' ) )` fallback that read
+        // charges_enabled / payouts_enabled from MNU_Connect has been
+        // removed because those fields no longer reflect payout
+        // eligibility (sellers are paid by manual ACH, not Stripe Connect).
         $seller_id = (int) tnm_get_product_seller_id( $parent ?: $product );
-        if ( $seller_id > 0 ) {
-            if ( class_exists( 'MNU_Bank_Account' ) ) {
-                if ( ! MNU_Bank_Account::has_bank_account( $seller_id ) ) {
-                    return new WP_Error( 'seller_not_ready', ( $parent ? $parent->get_name() : $product->get_name() ) . ' is temporarily unavailable because its seller has not finished payment setup.', array( 'status' => 409, 'product_id' => $product_id ) );
-                }
-            } elseif ( class_exists( 'MNU_Connect' ) ) {
-                $seller_status = MNU_Connect::cached_status( $seller_id );
-                if ( ! $seller_status['charges_enabled'] || ! $seller_status['payouts_enabled'] ) {
-                    return new WP_Error( 'seller_not_ready', ( $parent ? $parent->get_name() : $product->get_name() ) . ' is temporarily unavailable because its seller has not finished payment setup.', array( 'status' => 409, 'product_id' => $product_id ) );
-                }
+        if ( $seller_id > 0 && class_exists( 'MNU_Bank_Account' ) ) {
+            if ( ! MNU_Bank_Account::has_bank_account( $seller_id ) ) {
+                return new WP_Error( 'seller_not_ready', ( $parent ? $parent->get_name() : $product->get_name() ) . ' is temporarily unavailable because its seller has not finished payment setup.', array( 'status' => 409, 'product_id' => $product_id ) );
             }
         }
         $price      = (float) wc_get_price_excluding_tax( $product );
@@ -1962,9 +1961,11 @@ function mnu_native_webhook( WP_REST_Request $request ): array|WP_Error {
     $event_type = sanitize_text_field( (string) ( $event['type'] ?? '' ) );
 
     if ( 'account.updated' === $event_type ) {
-        if ( class_exists( 'MNU_Connect' ) ) {
-            MNU_Connect::handle_account_updated( (array) ( $event['data']['object'] ?? array() ) );
-        }
+        // v3.13.35 — Stripe Connect retired; ignore lifecycle events for
+        // legacy connected accounts. Stripe will keep firing these while any
+        // pre-cutover accounts exist (and after they are rejected), but the
+        // platform no longer reads charges_enabled / payouts_enabled from
+        // them, so there is nothing to sync back to user meta.
         return array( 'received' => true );
     }
 
