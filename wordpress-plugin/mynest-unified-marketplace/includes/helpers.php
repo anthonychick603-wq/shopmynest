@@ -465,6 +465,10 @@ function tnm_rest_user_data( WP_User $user ): array {
         'id'           => $user->ID,
         'username'     => $user->user_login,
         'email'        => $user->user_email,
+        // v3.13.33 — expose billing_phone so the mobile app can hydrate the
+        // "Account contact" section on the address-edit screen without needing
+        // a second round trip.
+        'phone'        => (string) get_user_meta( $user->ID, 'billing_phone', true ),
         'display_name' => $user->display_name,
         'avatar'       => tnm_user_avatar_url( $user->ID, 256 ),
         'roles'        => array_values( $user->roles ),

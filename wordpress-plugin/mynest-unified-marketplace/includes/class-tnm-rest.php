@@ -349,6 +349,19 @@ final class TNM_REST {
             }
             $args['user_email'] = $email;
         }
+        // v3.13.33 — accept `phone` and persist as `billing_phone` user meta
+        // so the mobile app can fix the buyer_contact_incomplete gate from a
+        // single profile screen. Validate at least 10 digits to match the
+        // MNU_Contact_Guard threshold.
+        $phone_raw = $request->get_param( 'phone' );
+        if ( null !== $phone_raw ) {
+            $phone   = sanitize_text_field( (string) $phone_raw );
+            $digits  = preg_replace( '/\D+/', '', $phone ) ?? '';
+            if ( '' !== $phone && strlen( (string) $digits ) < 10 ) {
+                return tnm_json_error( 'invalid_phone', 'Enter a phone number with at least 10 digits.', 422 );
+            }
+            update_user_meta( $user_id, 'billing_phone', $phone );
+        }
         $updated = wp_update_user( $args );
         if ( is_wp_error( $updated ) ) {
             return $updated;
