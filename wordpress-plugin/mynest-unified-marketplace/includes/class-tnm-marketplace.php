@@ -553,13 +553,22 @@ final class TNM_Marketplace {
         if ( ! tnm_current_user_can_manage_seller( $seller_id ) || ( ! tnm_is_seller( $seller_id ) && ! tnm_is_admin_or_manager() ) ) {
             return tnm_json_error( 'seller_permission_denied', 'You cannot create products for this seller.', 403 );
         }
+
+        // v3.13.34 — Draft mode. When the caller passes status=draft we treat
+        // this as "save what I've got for later" and relax the publish-time
+        // gates (bank account, photo, name+price). We still require at least
+        // a name so the draft has something to find in the seller's listings.
+        $requested_status = sanitize_key( (string) tnm_array_get( $data, 'status', 'publish' ) );
+        $is_draft         = ( 'draft' === $requested_status );
+
         // v3.9.2 — sellers must save a bank account (routing + account number)
         // before they can list products. The old Stripe Connect gate is gone;
         // payouts run as manual ACH from the platform's business checking after
         // the 7-day holding window. The filter name is preserved for anything
         // (like the bulk CSV importer) that already opts out of the pre-list gate.
+        // v3.13.34 — Skip on drafts; the gate re-runs when they publish.
         $skip_bank_gate = (bool) apply_filters( 'mnu_skip_stripe_onboarding_gate', false, $seller_id, $data );
-        if ( ! $skip_bank_gate && ! tnm_is_admin_or_manager() && class_exists( 'MNU_Bank_Account' ) && ! MNU_Bank_Account::has_bank_account( $seller_id ) ) {
+        if ( ! $is_draft && ! $skip_bank_gate && ! tnm_is_admin_or_manager() && class_exists( 'MNU_Bank_Account' ) && ! MNU_Bank_Account::has_bank_account( $seller_id ) ) {
             return tnm_json_error( 'bank_account_required', 'Add a bank account before you can list new products. Open your seller dashboard → Payout account and enter your routing and account numbers.', 403 );
         }
 
@@ -577,10 +586,22 @@ final class TNM_Marketplace {
         $sku         = wc_clean( (string) tnm_array_get( $data, 'sku', '' ) );
         // v3.7.109 — products auto-publish. The Stripe onboarding gate above
         // is the real-money guardrail; the moderation queue was pure friction.
-        $status      = 'publish';
+        // v3.13.34 — Except when the caller explicitly asked for a draft.
+        $status      = $is_draft ? 'draft' : 'publish';
 
-        if ( ! $name || '' === $price || (float) $price < 0 ) {
-            return tnm_json_error( 'invalid_product', 'Product name and a valid non-negative price are required.', 422 );
+        if ( $is_draft ) {
+            // Drafts only need a name. Missing price becomes 0 so WC has
+            // something to save; the seller fills it in before publishing.
+            if ( ! $name ) {
+                return tnm_json_error( 'invalid_product', 'Product name is required to save a draft.', 422 );
+            }
+            if ( '' === $price || (float) $price < 0 ) {
+                $price = '0';
+            }
+        } else {
+            if ( ! $name || '' === $price || (float) $price < 0 ) {
+                return tnm_json_error( 'invalid_product', 'Product name and a valid non-negative price are required.', 422 );
+            }
         }
 
         // v3.7.77 — every listing must ship with at least one photo. The
@@ -590,7 +611,9 @@ final class TNM_Marketplace {
         // can bypass via the `mnu_skip_photo_required_gate` filter so the
         // CSV importer keeps working when it sources images from a URL
         // column processed later in the same request.
-        $skip_photo_gate = (bool) apply_filters( 'mnu_skip_photo_required_gate', false, $seller_id, $data );
+        // v3.13.34 — Drafts skip the photo gate too; a seller can save a
+        // half-written listing before they have photos ready.
+        $skip_photo_gate = $is_draft || (bool) apply_filters( 'mnu_skip_photo_required_gate', false, $seller_id, $data );
         if ( ! $skip_photo_gate ) {
             $primary_image_id = absint( tnm_array_get( $data, 'image_id', 0 ) );
             $gallery_ids      = array_filter( array_map( 'absint', (array) tnm_array_get( $data, 'image_ids', array() ) ) );
