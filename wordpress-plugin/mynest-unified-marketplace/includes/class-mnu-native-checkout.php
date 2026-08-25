@@ -1180,8 +1180,11 @@ function mnu_native_estimate_stripe_fee_cents( int $total_cents ): int {
 }
 
 function mnu_native_create_intent_locked( int $user_id, array $data, string $checkout_token ): array|WP_Error {
-    $order          = mnu_native_find_existing_order( $user_id, $checkout_token );
+    $order            = mnu_native_find_existing_order( $user_id, $checkout_token );
     $shipping_changed = false;
+    // The response always reports a subtotal, including idempotent retries that
+    // reuse an existing pending order after the buyer reviewed final tax/total.
+    $subtotal         = $order ? (float) $order->get_subtotal() : 0.0;
 
     if ( ! $order ) {
         $quote_token = sanitize_text_field( (string) ( $data['quote_token'] ?? '' ) );
@@ -1216,6 +1219,13 @@ function mnu_native_create_intent_locked( int $user_id, array $data, string $che
         $address_raw  = is_array( $data['shipping_address'] ?? null ) ? $data['shipping_address'] : $shipping_raw;
         $address      = mnu_native_sanitize_address( $address_raw );
         $has_address  = '' !== ( mnu_native_map_destination( $address )['country'] );
+
+        // Track whether the current shipping number already includes the
+        // buyer-visible handling fee. Live Shippo options are always raw carrier
+        // rates; quote['shipping'] is already buyer-visible and therefore already
+        // includes the fee. Keeping this explicit prevents quote/create-intent
+        // drift and preserves the true postage amount for accounting.
+        $shipping_includes_processing_fee = false;
 
         if ( $has_address ) {
             $options      = mnu_native_shipping_options( $lines, $subtotal, $address );
@@ -1259,45 +1269,34 @@ function mnu_native_create_intent_locked( int $user_id, array $data, string $che
                 }
             }
         } else {
-            // No address: preserve the historical behaviour exactly.
+            // No address: a signed quote already carries the buyer-visible
+            // handling fee. The legacy no-quote compatibility path returns a raw
+            // flat rate and therefore still needs the fee added below.
             $shipping_total  = is_array( $quote )
                 ? max( 0, (float) $quote['shipping'] )
                 : mnu_native_flat_shipping( $subtotal );
+            $shipping_includes_processing_fee = is_array( $quote ) && $shipping_total > 0;
             $shipping_title  = 'Standard shipping';
             $shipping_method = 'thenest_standard';
         }
 
-        // v3.13.23 — bake the flat $1.05 buyer-paid handling fee INTO the
-        // shipping line so the buyer sees a single Shipping row. The real
-        // Shippo rate ($shipping_total pre-adjust) is preserved separately
-        // as `_mnu_real_shipping_cents` so the auto-label service still buys
-        // the label at its actual carrier cost. Skip on free-shipping /
-        // no-shipping carts to avoid attaching a fee to a $0 line.
-        //
-        // v3.13.28 — the fee is added by the quote (see the response
-        // assembly around line ~792 and $shipping_rates[i]['amount']
-        // adjustment). If we get here from any quote-derived source —
-        // meaning $chosen came from $shipping_rates OR $quote['shipping']
-        // was passed through — the fee is ALREADY in $shipping_total.
-        // Adding it again here charged the buyer $2.10 instead of $1.05.
-        //
-        // Only mnu_native_flat_shipping() returns a raw rate with no fee,
-        // and that only happens when we have NO address AND no quote. That
-        // is the sole case where we must add the fee here.
+        // v3.13.38 — one authoritative shipping calculation.
+        // Live carrier choices above are RAW postage even when a quote token is
+        // present, while quote['shipping'] (the no-address path) is already the
+        // buyer-visible amount. Never infer fee inclusion merely from the
+        // existence of a quote token: doing so dropped $1.05 from live-rate
+        // create-intent charges and understated real postage by the same amount.
         $processing_fee_cents = (int) apply_filters( 'mnu_v380_processing_fee_cents', 105, $order ?? null );
         $processing_fee       = $processing_fee_cents / 100;
-        $quote_carried_fee    = is_array( $quote );  // both with-address (via $shipping_rates) and no-address (via $quote['shipping']) already include it
-        if ( $shipping_total > 0 && ! $quote_carried_fee ) {
-            $shipping_total = round( $shipping_total + $processing_fee, wc_get_price_decimals() );
-        }
-
-        // Recover the true carrier rate for label-purchase accounting. If the
-        // quote carried the fee, subtract it out; otherwise $shipping_total
-        // is already the raw rate.
-        $real_shipping_total = $quote_carried_fee && $shipping_total > 0
-            ? round( max( 0.0, $shipping_total - $processing_fee ), wc_get_price_decimals() )
-            : (float) $shipping_total;
-        if ( $shipping_total <= 0 ) {
+        $real_shipping_total  = 0.0;
+        if ( $shipping_total > 0 ) {
+            if ( $shipping_includes_processing_fee ) {
+                $real_shipping_total = round( max( 0.0, $shipping_total - $processing_fee ), wc_get_price_decimals() );
+            } else {
+                $real_shipping_total = round( $shipping_total, wc_get_price_decimals() );
+                $shipping_total      = round( $shipping_total + $processing_fee, wc_get_price_decimals() );
+            }
+        } else {
             $processing_fee_cents = 0;
         }
 
@@ -1345,6 +1344,10 @@ function mnu_native_create_intent_locked( int $user_id, array $data, string $che
                         $ship_item->set_total( '0' );
                         $ship_item->save();
                     }
+                    // Free shipping means the buyer paid neither postage nor the
+                    // handling surcharge. Keep real postage metadata intact for
+                    // label/accounting purposes, but do not report handling revenue.
+                    $order->update_meta_data( '_mnu_processing_fee_cents', '0' );
                 }
                 $order->update_meta_data( '_mnu_coupon_code', $coupon_result['code'] );
                 $order->update_meta_data( '_mnu_coupon_discount', (string) $coupon_result['discount'] );
@@ -1438,6 +1441,11 @@ function mnu_native_create_intent_locked( int $user_id, array $data, string $che
         'order_id'           => $order->get_id(),
         'amount'             => (float) $order->get_total(),
         'currency'           => strtolower( $settings['currency'] ),
+        // Final server-calculated money breakdown. The quote intentionally has
+        // estimated tax; the app must show these final values for review before
+        // opening PaymentSheet when the total changed.
+        'tax_total'          => (float) $order->get_total_tax(),
+        'discount_total'     => (float) $order->get_discount_total(),
         'shipping_total'     => $ship_summary['amount'],
         'shipping_label'     => $ship_summary['label'],
         'shipping_method_id' => $ship_summary['method_id'],

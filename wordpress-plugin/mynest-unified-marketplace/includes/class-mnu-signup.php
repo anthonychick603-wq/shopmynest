@@ -167,7 +167,7 @@ final class MNU_Signup {
 				'username'      => $username,
 				'display_name'  => $name,
 				'password_hash' => $hash,
-				'code'          => $code,
+				'code'          => self::hash_code( $code ),
 				'token'         => $token,
 				'attempts'      => 0,
 				'last_sent_at'  => $now,
@@ -216,7 +216,7 @@ final class MNU_Signup {
 			$wpdb->delete( $table, array( 'id' => $pending_id ), array( '%d' ) );
 			return tnm_json_error( 'too_many_attempts', 'Too many incorrect codes. Please start signup again.', 429 );
 		}
-		if ( ! hash_equals( (string) $row['code'], $code ) ) {
+		if ( ! self::code_matches( $code, (string) $row['code'] ) ) {
 			$wpdb->update( $table, array( 'attempts' => (int) $row['attempts'] + 1 ), array( 'id' => $pending_id ), array( '%d' ), array( '%d' ) );
 			return tnm_json_error( 'incorrect_code', 'That code did not match. Please check your email and try again.', 422 );
 		}
@@ -247,7 +247,7 @@ final class MNU_Signup {
 		$wpdb->update(
 			$table,
 			array(
-				'code'         => $code,
+				'code'         => self::hash_code( $code ),
 				'attempts'     => 0,
 				'last_sent_at' => $now,
 				'expires_at'   => $now + self::CODE_TTL,
@@ -385,7 +385,21 @@ final class MNU_Signup {
 		);
 	}
 
-	private static function random_code(): string {
+		/** Store short email codes as password hashes so a database read cannot
+	 * reveal an active six-digit signup code. Legacy six-character rows remain
+	 * verifiable during the schema migration window. */
+	private static function hash_code( string $code ): string {
+		return wp_hash_password( $code );
+	}
+
+	private static function code_matches( string $code, string $stored ): bool {
+		if ( strlen( $stored ) <= 6 ) {
+			return hash_equals( $stored, $code );
+		}
+		return wp_check_password( $code, $stored );
+	}
+
+private static function random_code(): string {
 		return str_pad( (string) random_int( 0, 999999 ), 6, '0', STR_PAD_LEFT );
 	}
 

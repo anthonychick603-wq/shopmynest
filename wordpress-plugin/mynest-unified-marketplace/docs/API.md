@@ -111,3 +111,10 @@ Seller calls are limited to that seller's items. An administrator may pass `sell
 - `POST /seller/products/{id}/shipping`
 
 Product weight is stored in ounces and dimensions in inches for Shippo compatibility. Values are mirrored into WooCommerce's configured weight and dimension units.
+
+
+### Atomic contact + address save
+
+`POST /the-nest/v1/me/contact-address` validates account email/phone and a complete shipping address before writing either. Supply `{ contact: { email, phone }, address, address_id? }`.
+
+`POST /nest-native/v1/checkout/create-intent` returns final `tax_total`, `discount_total`, `shipping_total`, and `amount`; clients must review any changed final total before presenting payment.

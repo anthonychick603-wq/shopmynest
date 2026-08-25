@@ -178,6 +178,7 @@ final class MNU_Refund_Lifecycle {
 				'details'          => '',
 				'denial_note'      => '',
 				'stripe_refund_id' => '',
+				'request_type'     => '',
 			)
 		);
 	}
@@ -205,7 +206,7 @@ final class MNU_Refund_Lifecycle {
 	 * Check the "unused AND <14 days old" refund policy. Returns
 	 * eligibility + list of specific blockers so the UI can show them.
 	 *
-	 * @return array{eligible:bool,blockers:array<int,string>,days_since_delivery:?int,days_since_purchase:int,delivered:bool}
+	 * @return array{eligible:bool,blockers:array<int,string>,days_since_delivery:?int,days_since_purchase:int,delivered:bool,request_type:string}
 	 */
 	public static function eligibility( WC_Order $order ): array {
 		$blockers            = array();
@@ -254,16 +255,29 @@ final class MNU_Refund_Lifecycle {
 			? (int) floor( ( $now - $delivered_at ) / DAY_IN_SECONDS )
 			: null;
 
-		// Refund window: 14 days measured from delivery when available, from
-		// purchase otherwise (this matches the customer-facing policy page).
-		$reference_days = null !== $days_since_delivery ? $days_since_delivery : $days_since_purchase;
-		if ( $reference_days > self::POLICY_DAYS ) {
+		// v3.13.38 — distinguish cancellation from return. The 14-day RETURN
+		// window starts at delivery, never purchase. Before shipment the buyer may
+		// request cancellation. Once any seller has shipped but the order is not yet
+		// delivered, neither path is automatically eligible and support can handle
+		// true exceptions without pretending the return window has started.
+		$any_shipped = false;
+		foreach ( array_keys( $sellers ) as $sid ) {
+			$status = (string) $order->get_meta( '_tnm_seller_status_' . $sid, true );
+			if ( in_array( $status, array( 'shipped', 'delivered', 'completed' ), true ) ) {
+				$any_shipped = true;
+				break;
+			}
+		}
+		$request_type = $delivered ? 'return' : ( $any_shipped ? 'in_transit' : 'cancellation' );
+		if ( 'return' === $request_type && null !== $days_since_delivery && $days_since_delivery > self::POLICY_DAYS ) {
 			$blockers[] = sprintf(
-				'It has been %d days since %s. Refunds are only available within %d days.',
-				$reference_days,
-				null !== $days_since_delivery ? 'delivery' : 'purchase',
+				'It has been %d days since delivery. Returns are only available within %d days of delivery.',
+				$days_since_delivery,
 				self::POLICY_DAYS
 			);
+		}
+		if ( 'in_transit' === $request_type ) {
+			$blockers[] = 'This order is already in transit. The 14-day return window begins when it is delivered.';
 		}
 
 		// Status guard: cancelled, failed, or already fully-refunded orders
@@ -283,6 +297,7 @@ final class MNU_Refund_Lifecycle {
 			'days_since_delivery' => $days_since_delivery,
 			'days_since_purchase' => $days_since_purchase,
 			'delivered'           => $delivered,
+			'request_type'        => $request_type,
 		);
 	}
 
@@ -321,6 +336,7 @@ final class MNU_Refund_Lifecycle {
 		}
 
 		$user = wp_get_current_user();
+		$request_type = (string) ( $eligibility['request_type'] ?? 'return' );
 		$lifecycle = self::set(
 			$order,
 			array(
@@ -328,9 +344,10 @@ final class MNU_Refund_Lifecycle {
 				'requested_amount' => (float) $order->get_total(),
 				'reason'           => $reason,
 				'details'          => $details,
+				'request_type'     => $request_type,
 			),
 			'buyer:' . $user->user_login,
-			'Refund requested'
+			'cancellation' === $request_type ? 'Cancellation requested' : 'Return/refund requested'
 		);
 
 		$order->add_order_note( sprintf( 'Buyer requested a refund: %s%s',
@@ -475,12 +492,15 @@ final class MNU_Refund_Lifecycle {
 			'currency'         => $order->get_currency(),
 			'order_total'      => (float) $order->get_total(),
 			'state'            => (string) $lifecycle['state'],
-			'label'            => self::state_label( (string) $lifecycle['state'] ),
+			'label'            => self::STATE_REQUESTED === (string) $lifecycle['state'] && 'cancellation' === (string) ( $lifecycle['request_type'] ?? '' )
+				? 'Cancellation requested'
+				: self::state_label( (string) $lifecycle['state'] ),
 			'requested_amount' => (float) $lifecycle['requested_amount'],
 			'refunded_amount'  => (float) $lifecycle['refunded_amount'],
 			'reason'           => (string) $lifecycle['reason'],
 			'details'          => (string) $lifecycle['details'],
 			'denial_note'      => (string) $lifecycle['denial_note'],
+			'request_type'     => (string) ( $lifecycle['request_type'] ?: ( $eligibility['request_type'] ?? '' ) ),
 			'timeline'         => array_map(
 				static function ( $entry ) {
 					return array(
@@ -496,7 +516,8 @@ final class MNU_Refund_Lifecycle {
 					&& ! in_array( (string) $lifecycle['state'], array( self::STATE_REQUESTED, self::STATE_APPROVED, self::STATE_PROCESSING ), true )
 					&& ( self::STATE_COMPLETED !== (string) $lifecycle['state'] || (float) $lifecycle['refunded_amount'] < (float) $order->get_total() ),
 				'blockers'    => array_values( (array) $eligibility['blockers'] ),
-				'policy_days' => self::POLICY_DAYS,
+				'policy_days'  => self::POLICY_DAYS,
+				'request_type' => (string) ( $eligibility['request_type'] ?? '' ),
 			),
 		);
 	}

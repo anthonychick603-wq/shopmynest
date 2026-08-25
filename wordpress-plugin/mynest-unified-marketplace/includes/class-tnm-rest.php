@@ -88,6 +88,10 @@ final class TNM_REST {
         // DELETE removes. Multi-address support (existing /ops/addresses is single-shipping).
         register_rest_route( self::NS, '/me/addresses', array( array( 'methods' => WP_REST_Server::READABLE, 'callback' => array( __CLASS__, 'address_book_list' ), 'permission_callback' => array( __CLASS__, 'logged_in' ) ), array( 'methods' => WP_REST_Server::CREATABLE, 'callback' => array( __CLASS__, 'address_book_create' ), 'permission_callback' => array( __CLASS__, 'logged_in' ) ) ) );
         register_rest_route( self::NS, '/me/addresses/(?P<id>[a-z0-9-]+)', array( array( 'methods' => WP_REST_Server::EDITABLE, 'callback' => array( __CLASS__, 'address_book_update' ), 'permission_callback' => array( __CLASS__, 'logged_in' ) ), array( 'methods' => WP_REST_Server::DELETABLE, 'callback' => array( __CLASS__, 'address_book_delete' ), 'permission_callback' => array( __CLASS__, 'logged_in' ) ) ) );
+        // v3.13.38 — atomically validate and save account contact + one
+        // address-book row. The mobile Edit Address screen uses this so an email
+        // update can never succeed while the address save fails (or vice versa).
+        register_rest_route( self::NS, '/me/contact-address', array( array( 'methods' => WP_REST_Server::CREATABLE, 'callback' => array( __CLASS__, 'save_contact_address' ), 'permission_callback' => array( __CLASS__, 'logged_in' ) ) ) );
         // v3.7.120 (Build #14) — buyer alert preferences. Currently only
         // exposes the price-drop toggle; other per-buyer alert prefs will
         // grow into this endpoint over time.
@@ -1821,6 +1825,135 @@ final class TNM_REST {
         return $row;
     }
 
+    /** Validate one stored shipping address against the exact same fields
+     * required by MNU_Contact_Guard at checkout. */
+    private static function validate_complete_address_row( array $row ): WP_Error|null {
+        $required = class_exists( 'MNU_Contact_Guard' )
+            ? MNU_Contact_Guard::address_required_fields()
+            : array( 'first_name', 'last_name', 'address_1', 'city', 'state', 'postcode', 'country', 'phone' );
+        $missing = array();
+        foreach ( $required as $field ) {
+            if ( '' === trim( (string) ( $row[ $field ] ?? '' ) ) ) {
+                $missing[] = $field;
+            }
+        }
+        $digits = preg_replace( '/\D+/', '', (string) ( $row['phone'] ?? '' ) ) ?? '';
+        if ( ! in_array( 'phone', $missing, true ) && strlen( $digits ) < 10 ) {
+            $missing[] = 'phone';
+        }
+        if ( $missing ) {
+            return tnm_json_error(
+                'incomplete_address',
+                'First name, last name, street, city, state, ZIP, country, and a valid phone number are required.',
+                422,
+                array( 'missing_fields' => array_values( array_unique( $missing ) ) )
+            );
+        }
+        return null;
+    }
+
+    /**
+     * Validate everything first, then persist account email/phone and the address
+     * as one operation with rollback of prior values if a later write fails.
+     */
+    public static function save_contact_address( WP_REST_Request $request ): WP_REST_Response|WP_Error {
+        $payload = (array) ( $request->get_json_params() ?: $request->get_params() );
+        $contact = is_array( $payload['contact'] ?? null ) ? $payload['contact'] : array();
+        $address = is_array( $payload['address'] ?? null ) ? $payload['address'] : array();
+        $address_id = sanitize_key( (string) ( $payload['address_id'] ?? '' ) );
+        $user_id = get_current_user_id();
+        $user = get_userdata( $user_id );
+        if ( ! $user ) {
+            return tnm_json_error( 'user_not_found', 'Account not found.', 404 );
+        }
+
+        $email = sanitize_email( (string) ( $contact['email'] ?? $user->user_email ) );
+        $phone = sanitize_text_field( (string) ( $contact['phone'] ?? get_user_meta( $user_id, 'billing_phone', true ) ) );
+        if ( ! is_email( $email ) ) {
+            return tnm_json_error( 'invalid_email', 'Enter a valid email address.', 422 );
+        }
+        $existing_email = email_exists( $email );
+        if ( $existing_email && (int) $existing_email !== $user_id ) {
+            return tnm_json_error( 'email_exists', 'That email is already in use.', 409 );
+        }
+        $digits = preg_replace( '/\D+/', '', $phone ) ?? '';
+        if ( strlen( $digits ) < 10 ) {
+            return tnm_json_error( 'invalid_phone', 'Enter a phone number with at least 10 digits.', 422 );
+        }
+
+        // One visible phone field in the app is authoritative for both account
+        // contact and carrier recipient phone.
+        $address['phone'] = $phone;
+        $row = self::sanitize_address_row( $address, $address_id );
+        $address_error = self::validate_complete_address_row( $row );
+        if ( $address_error ) {
+            return $address_error;
+        }
+
+        $old_email = (string) $user->user_email;
+        $old_phone = (string) get_user_meta( $user_id, 'billing_phone', true );
+        $old_book  = self::address_book();
+        $book      = $old_book;
+        $saved_row = null;
+
+        if ( $address_id ) {
+            $found = false;
+            foreach ( $book as &$existing ) {
+                if ( (string) ( $existing['id'] ?? '' ) === $address_id ) {
+                    $found = true;
+                    $existing = self::sanitize_address_row( array_merge( $existing, $address ), $address_id );
+                    $saved_row = $existing;
+                    break;
+                }
+            }
+            unset( $existing );
+            if ( ! $found ) {
+                return tnm_json_error( 'address_not_found', 'Address not found.', 404 );
+            }
+        } else {
+            $saved_row = $row;
+            if ( ! $book ) {
+                $saved_row['is_default'] = true;
+            }
+            $book[] = $saved_row;
+        }
+        if ( ! empty( $saved_row['is_default'] ) ) {
+            foreach ( $book as &$existing ) {
+                if ( (string) ( $existing['id'] ?? '' ) !== (string) $saved_row['id'] ) {
+                    $existing['is_default'] = false;
+                }
+            }
+            unset( $existing );
+        }
+
+        $updated = wp_update_user( array( 'ID' => $user_id, 'user_email' => $email ) );
+        if ( is_wp_error( $updated ) ) {
+            return $updated;
+        }
+        $phone_changed = $old_phone !== $phone;
+        $phone_ok = update_user_meta( $user_id, 'billing_phone', $phone );
+        if ( $phone_changed && false === $phone_ok ) {
+            wp_update_user( array( 'ID' => $user_id, 'user_email' => $old_email ) );
+            return tnm_json_error( 'contact_save_failed', 'Nothing was changed. Please try again.', 500 );
+        }
+        $book_changed = maybe_serialize( array_values( $book ) ) !== maybe_serialize( array_values( $old_book ) );
+        $book_ok = update_user_meta( $user_id, 'tnm_address_book', array_values( $book ) );
+        if ( $book_changed && false === $book_ok ) {
+            // Roll back contact writes to avoid the partial-save behavior the
+            // combined endpoint exists to eliminate.
+            wp_update_user( array( 'ID' => $user_id, 'user_email' => $old_email ) );
+            update_user_meta( $user_id, 'billing_phone', $old_phone );
+            update_user_meta( $user_id, 'tnm_address_book', $old_book );
+            return tnm_json_error( 'address_save_failed', 'Nothing was changed. Please try again.', 500 );
+        }
+
+        return rest_ensure_response( array(
+            'ok'      => true,
+            'user'    => tnm_rest_user_data( get_userdata( $user_id ) ),
+            'address' => $saved_row,
+        ) );
+    }
+
     public static function address_book_list(): WP_REST_Response {
         $book = self::address_book();
         // Ensure at most one is default.
@@ -1836,14 +1969,12 @@ final class TNM_REST {
 
     public static function address_book_create( WP_REST_Request $request ): WP_REST_Response|WP_Error {
         $data = $request->get_json_params() ?: $request->get_params();
-        if ( empty( $data['address_1'] ) && empty( $data['address'] ) ) {
-            return tnm_json_error( 'invalid_address', 'Street address is required.', 422 );
-        }
-        if ( empty( $data['city'] ) || empty( $data['postcode'] ) ) {
-            return tnm_json_error( 'invalid_address', 'City and postcode are required.', 422 );
-        }
         $book = self::address_book();
         $row  = self::sanitize_address_row( (array) $data );
+        $validation = self::validate_complete_address_row( $row );
+        if ( $validation ) {
+            return $validation;
+        }
         if ( ! empty( $row['is_default'] ) ) {
             foreach ( $book as &$existing ) { $existing['is_default'] = false; }
             unset( $existing );
@@ -1863,7 +1994,12 @@ final class TNM_REST {
         foreach ( $book as &$existing ) {
             if ( $existing['id'] === $id ) {
                 $found = true;
-                $existing = self::sanitize_address_row( array_merge( $existing, (array) $data ), $id );
+                $candidate = self::sanitize_address_row( array_merge( $existing, (array) $data ), $id );
+                $validation = self::validate_complete_address_row( $candidate );
+                if ( $validation ) {
+                    return $validation;
+                }
+                $existing = $candidate;
                 $updated = $existing;
                 break;
             }

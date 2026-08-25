@@ -457,7 +457,7 @@ final class MNU_Install {
         // v3.7.122.16 — pending signups.
         // A signup does NOT create a wp_users row anymore. Step 1
         // (/auth/signup/start) stashes the desired credentials + a 6-digit
-        // code + a magic-link token here. Step 2 (/auth/signup/verify)
+        // hashed code + a magic-link token here. Step 2 (/auth/signup/verify)
         // consumes the row and creates the real user via wp_create_user.
         // v3.13.37 — Built-in buyer-protection cases. One case per order keeps
         // refund/dispute resolution closed-loop and prevents duplicate cases.
@@ -559,7 +559,7 @@ final class MNU_Install {
             username varchar(60) NOT NULL,
             display_name varchar(190) NOT NULL DEFAULT '',
             password_hash varchar(255) NOT NULL,
-            code varchar(6) NOT NULL,
+            code varchar(255) NOT NULL,
             token varchar(64) NOT NULL,
             attempts smallint(5) unsigned NOT NULL DEFAULT 0,
             last_sent_at int(11) unsigned NOT NULL DEFAULT 0,

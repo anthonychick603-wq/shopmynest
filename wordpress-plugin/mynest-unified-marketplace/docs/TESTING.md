@@ -96,3 +96,17 @@ Open an existing order under **My Account → Orders → View**. Confirm there i
 ## Rollback
 
 Keep the previous version 2.0.1 ZIP and all legacy source ZIPs archived. If a critical issue appears, replace version 3.0.0 with the previous **MyNest Unified Marketplace** ZIP using the same WordPress replacement workflow. Do not activate multiple marketplace plugins together.
+
+
+## v3.13.38 regression cases
+
+- Quote a live carrier rate and assert create-intent charges exactly `raw postage + $1.05` once, never zero or twice.
+- Assert `_mnu_real_shipping_cents` remains raw postage and `_mnu_processing_fee_cents` is the handling fee (zero for free shipping).
+- Create a taxed order and assert create-intent returns final `tax_total` and `amount`.
+- Attempt to save an incomplete address and assert no account email/phone is changed.
+- Verify pre-shipment requests are classified as cancellation, in-transit requests are blocked, and the return clock begins at delivery.
+- Inspect pending signup rows and assert `code` contains a password hash, not a six-digit plaintext value.
+
+### Automated staging smoke test
+
+Run `node tests/staging-e2e.mjs` with `MNU_BASE_URL`, `MNU_EMAIL`, `MNU_PASSWORD`, and `MNU_PRODUCT_ID` set. It exercises real login → quote → create-intent contracts without confirming a card payment, and fails if the quoted shipping drifts from the PaymentIntent order or final tax/amount fields are absent.

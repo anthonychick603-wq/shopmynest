@@ -4,14 +4,14 @@ Tags: woocommerce, marketplace, multivendor, seller, mobile-api
 Requires at least: 6.5
 Requires PHP: 8.0
 Requires Plugins: woocommerce
-Stable tag: 3.13.37
+Stable tag: 3.13.38
 License: GPLv2 or later
 
 One complete custom marketplace plugin for the MyNest website and The Nest mobile app.
 
 == Description ==
 
-Version 3.0.1 is a clean single-plugin rebuild. It replaces the older MyNest, The Nest, NorthCraft, seller portal, fee, payout, order breakdown, mobile bridge, operations, tracking, native checkout, and shipping plugins.
+Version 3.13.38 is the current single-plugin marketplace backend. It replaces the older MyNest, The Nest, NorthCraft, seller portal, fee, payout, order breakdown, mobile bridge, operations, tracking, native checkout, and shipping plugins.
 
 Features include seller applications and approval, seller products and orders, item-level platform fees, earnings ledger, payout requests, social feed, follows, messages, notifications, verified reviews, mobile REST APIs, saved addresses, native Stripe checkout, shipping profiles, Shippo labels, legacy shortcode compatibility, data migration, and system-health tools.
 
@@ -21,13 +21,20 @@ The plugin adds seller roles without replacing administrator roles. Automatic pa
 
 1. Keep WooCommerce and the currently active standard WordPress.com/WooCommerce plugins active.
 2. Leave all old custom MyNest, The Nest, and NorthCraft plugins inactive.
-3. Upload version 3.0.8.
+3. Upload the current MyNest Unified Marketplace ZIP.
 4. Choose "Replace current with uploaded" when WordPress detects the existing MyNest Unified Marketplace plugin.
-5. Confirm version 3.0.8 is active.
+5. Confirm version 3.13.38 is active.
 6. Open The Nest > System Health.
 7. Clear cache and complete the included test plan.
 
 == Changelog ==
+
+= 3.13.38 =
+* Fixed live-rate checkout so the $1.05 Shipping & Handling amount is identical in quote, order, Stripe charge, and postage accounting.
+* Added final tax/discount totals to native checkout responses for buyer review before payment.
+* Added atomic account-contact + address saving and enforced checkout-complete saved addresses.
+* Split pre-shipment cancellation eligibility from the 14-day post-delivery return window.
+* Hashed pending signup verification codes at rest and migrated the column for password hashes.
 
 = 3.13.37 =
 * Added built-in nest-trust/v1 buyer-protection disputes and server-side refund/dispute locking.

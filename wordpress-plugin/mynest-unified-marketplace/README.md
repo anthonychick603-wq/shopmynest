@@ -1,6 +1,6 @@
 # MyNest Unified Marketplace
 
-**Version 3.0.8 — mobile order breakdown fix**
+**Version 3.13.38 — operational consistency and checkout hardening**
 
 MyNest Unified Marketplace is the only custom marketplace plugin needed for the MyNest website and The Nest mobile app. It replaces the overlapping MyNest, The Nest, NorthCraft, seller portal, fee, payout, order breakdown, mobile bridge, native checkout, operations, tracking, and shipping plugins.
 
@@ -85,10 +85,10 @@ Version 3.0.0 could run its install routine from `plugins_loaded` and register a
 
 1. Leave WooCommerce and the other WordPress.com-managed plugins in place.
 2. Open **Plugins → Add Plugin → Upload Plugin**.
-3. Upload the version 3.0.8 ZIP.
+3. Upload the current MyNest Unified Marketplace ZIP.
 4. WordPress should identify the existing **MyNest Unified Marketplace** folder and offer **Replace current with uploaded**.
 5. Choose the replacement option. Do not install it as a second plugin under a different folder.
-6. Confirm **MyNest Unified Marketplace 3.0.8** is active.
+6. Confirm **MyNest Unified Marketplace 3.13.38** is active.
 7. Open **The Nest → System Health**.
 8. Clear the WordPress.com/Page Optimize cache.
 9. Test the homepage, WP Admin, product pages, cart, checkout, My Account order view, seller dashboard, and mobile app.
@@ -139,6 +139,14 @@ WordPress treats a POST field named `name` as the reserved post-slug query varia
 - Adds Quick Add buttons to WooCommerce shop archives, The Nest Browse page, and the home feed.
 - Variable products continue to show their normal options/select-product action.
 - Refreshes account, cart, checkout, catalog, marketplace form, and mobile navigation styling.
+
+## 3.13.38 operational consistency
+
+- One authoritative live shipping + handling calculation across quote, order, Stripe, and postage accounting.
+- Final tax/discount totals returned to the app for pre-payment review.
+- Atomic contact/address save endpoint with checkout-equivalent validation.
+- Pre-shipment cancellations separated from 14-day post-delivery returns.
+- Signup verification codes hashed at rest.
 
 ## 3.0.8 mobile order breakdown fix
 
